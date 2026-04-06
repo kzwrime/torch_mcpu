@@ -45,7 +45,7 @@ def build_deps():
 
     cmake_args = [
         "-DCMAKE_INSTALL_PREFIX="
-        + os.path.realpath(os.path.join(BASE_DIR, "torch_openreg")),
+        + os.path.realpath(os.path.join(BASE_DIR, "torch_mcpu")),
         "-DPYTHON_INCLUDE_DIR=" + sysconfig.get_paths().get("include"),
         "-DPYTORCH_INSTALL_DIR=" + get_pytorch_dir(),
     ]
@@ -75,12 +75,12 @@ def build_deps():
 
 class BuildClean(clean):
     def run(self):
-        for i in ["build", "install", "torch_openreg/lib"]:
+        for i in ["build", "install", "torch_mcpu/lib"]:
             dirs = os.path.join(BASE_DIR, i)
             if os.path.exists(dirs) and os.path.isdir(dirs):
                 shutil.rmtree(dirs)
 
-        for dirpath, _, filenames in os.walk(os.path.join(BASE_DIR, "torch_openreg")):
+        for dirpath, _, filenames in os.walk(os.path.join(BASE_DIR, "torch_mcpu")):
             for filename in filenames:
                 if filename.endswith(".so"):
                     os.remove(os.path.join(dirpath, filename))
@@ -114,18 +114,18 @@ def main():
 
     ext_modules = [
         Extension(
-            name="torch_openreg._C",
-            sources=["torch_openreg/csrc/stub.c"],
+            name="torch_mcpu._C",
+            sources=["torch_mcpu/csrc/stub.c"],
             language="c",
             extra_compile_args=extra_compile_args,
             libraries=["torch_bindings"],
-            library_dirs=[os.path.join(BASE_DIR, "torch_openreg/lib")],
+            library_dirs=[os.path.join(BASE_DIR, "torch_mcpu/lib")],
             extra_link_args=extra_link_args,
         )
     ]
 
     package_data = {
-        "torch_openreg": [
+        "torch_mcpu": [
             "lib/*.so*",
             "lib/*.dylib*",
             "lib/*.dll",
@@ -144,7 +144,7 @@ def main():
         include_package_data=False,
         entry_points={
             "torch.backends": [
-                "torch_openreg = torch_openreg:_autoload",
+                "torch_mcpu = torch_mcpu:_autoload",
             ],
         },
     )

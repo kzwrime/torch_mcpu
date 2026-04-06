@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-project(TORCH_OPENREG CXX C)
+project(TORCH_MCPU CXX C)
 
 include(GNUInstallDirs)
 include(CheckCXXCompilerFlag)
@@ -41,4 +41,4 @@ include(${PROJECT_SOURCE_DIR}/cmake/TorchPythonTargets.cmake)
 
 add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/openreg)
 add_subdirectory(${PROJECT_SOURCE_DIR}/csrc)
-add_subdirectory(${PROJECT_SOURCE_DIR}/torch_openreg/csrc)
+add_subdirectory(${PROJECT_SOURCE_DIR}/torch_mcpu/csrc)

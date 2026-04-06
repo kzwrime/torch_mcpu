@@ -27,7 +27,7 @@ static void openregCheck(orError_t result, const char* file, int line) {
     TORCH_CHECK(false, ss.str());
   }
 }
-#define TORCH_OPENREG_CHECK(result) openregCheck(result, __FILE__, __LINE__);
+#define TORCH_MCPU_CHECK(result) openregCheck(result, __FILE__, __LINE__);
 
 struct OpenRegMethods : public ProfilerStubs {
   void record(
@@ -43,7 +43,7 @@ struct OpenRegMethods : public ProfilerStubs {
 
     // Create OpenReg event
     orEvent_t openreg_event_ptr{nullptr};
-    TORCH_OPENREG_CHECK(orEventCreateWithFlags(&openreg_event_ptr, orEventEnableTiming));
+    TORCH_MCPU_CHECK(orEventCreateWithFlags(&openreg_event_ptr, orEventEnableTiming));
     *event = std::shared_ptr<orEvent>(openreg_event_ptr, [](orEvent_t ptr) {
       orEventDestroy(ptr);
     });
@@ -54,7 +54,7 @@ struct OpenRegMethods : public ProfilerStubs {
     }
 
     // Record event on stream
-    TORCH_OPENREG_CHECK(orEventRecord(openreg_event_ptr, stream.stream()));
+    TORCH_MCPU_CHECK(orEventRecord(openreg_event_ptr, stream.stream()));
   }
 
   float elapsed(
@@ -69,11 +69,11 @@ struct OpenRegMethods : public ProfilerStubs {
       return 0.0f;
     }
 
-    TORCH_OPENREG_CHECK(orEventSynchronize(event->get()));
-    TORCH_OPENREG_CHECK(orEventSynchronize(event2->get()));
+    TORCH_MCPU_CHECK(orEventSynchronize(event->get()));
+    TORCH_MCPU_CHECK(orEventSynchronize(event2->get()));
 
     float ms = 0;
-    TORCH_OPENREG_CHECK(orEventElapsedTime(&ms, event->get(), event2->get()));
+    TORCH_MCPU_CHECK(orEventElapsedTime(&ms, event->get(), event2->get()));
     // Convert milliseconds to microseconds
     return ms * 1000.0;
   }
@@ -106,7 +106,7 @@ struct OpenRegMethods : public ProfilerStubs {
   }
 
   void synchronize() const override {
-    TORCH_OPENREG_CHECK(orDeviceSynchronize());
+    TORCH_MCPU_CHECK(orDeviceSynchronize());
   }
 
   bool enabled() const override {

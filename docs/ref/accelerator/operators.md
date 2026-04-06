@@ -45,13 +45,13 @@ Now that we have defined the initial scope of operator support, we can begin dev
 :::{tab-item} C++
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/native/Minimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/native/Minimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: EMPTY.MEMORY_FORMAT IMPL
     :end-before: LITERALINCLUDE END: EMPTY.MEMORY_FORMAT IMPL
     :linenos:
 
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegMinimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegMinimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: EMPTY.MEMORY_FORMAT WRAPPER
     :end-before: LITERALINCLUDE END: EMPTY.MEMORY_FORMAT WRAPPER
@@ -75,7 +75,7 @@ dispatch:
 ::::{tab-set-code}
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegMinimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegMinimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: TORCH_LIBRARY_IMPL DEFAULT
     :end-before:  LITERALINCLUDE END: TORCH_LIBRARY_IMPL DEFAULT
@@ -96,20 +96,20 @@ By following {ref}`Step 1<step-one>`, we can complete the development and regist
 :::{tab-item} C++
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/native/Minimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/native/Minimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: FALLBACK IMPL
     :end-before: LITERALINCLUDE END: FALLBACK IMPL
     :emphasize-lines: 15
     :linenos:
 
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegMinimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegMinimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: FALLBACK WRAPPER
     :end-before: LITERALINCLUDE END: FALLBACK WRAPPER
     :linenos:
 
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegMinimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegMinimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: FALLBACK GLOBAL
     :end-before: LITERALINCLUDE END: FALLBACK GLOBAL
@@ -133,13 +133,13 @@ Enabling the fallback mechanism only for certain operators, while following PyTo
 :::{tab-item} C++
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegMinimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegMinimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: FALLBACK WRAPPER
     :end-before: LITERALINCLUDE END: FALLBACK WRAPPER
     :linenos:
 
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegMinimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegMinimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: FALLBACK SINGLE
     :end-before: LITERALINCLUDE END: FALLBACK SINGLE
@@ -155,7 +155,7 @@ Per-operator fallbacks are very similar to global fallbacks, the only difference
 ::::{tab-set-code}
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/native/Minimal.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/native/Minimal.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: FALLBACK IMPL
     :end-before: LITERALINCLUDE END: FALLBACK IMPL
@@ -208,7 +208,7 @@ The above listing contains the file that declares the `STUB` operator, where you
 :::{tab-item} C++
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/native/Extra.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/native/Extra.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: STUB ABS
     :end-before: LITERALINCLUDE END: STUB ABS
@@ -216,7 +216,7 @@ The above listing contains the file that declares the `STUB` operator, where you
 ```
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegExtra.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegExtra.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: STUB DEFAULT
     :end-before: LITERALINCLUDE END: STUB DEFAULT
@@ -253,7 +253,7 @@ Here, we'll briefly introduce the implementation process of custom operators, fo
     :::{tab-item} C++
 
     ```{eval-rst}
-    .. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegExtra.cpp
+    .. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegExtra.cpp
         :language: c++
         :start-after: LITERALINCLUDE START: CUSTOM OPERATOR SCHEMA
         :end-before: LITERALINCLUDE END: CUSTOM OPERATOR SCHEMA
@@ -279,7 +279,7 @@ Here, we'll briefly introduce the implementation process of custom operators, fo
     :::{tab-item} C++
 
     ```{eval-rst}
-    .. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/aten/OpenRegExtra.cpp
+    .. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/aten/OpenRegExtra.cpp
         :language: c++
         :start-after: LITERALINCLUDE START: CUSTOM OPERATOR DEFAULT
         :end-before: LITERALINCLUDE END: CUSTOM OPERATOR DEFAULT
@@ -296,7 +296,7 @@ Here, we'll briefly introduce the implementation process of custom operators, fo
     ::::{tab-set-code}
 
     ```{eval-rst}
-    .. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/openreg/meta.py
+    .. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/openreg/meta.py
         :language: python
         :start-after: LITERALINCLUDE START: CUSTOM OPERATOR META
         :end-before: LITERALINCLUDE END: CUSTOM OPERATOR META

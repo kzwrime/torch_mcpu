@@ -98,7 +98,7 @@ static PyMethodDef methods[] = {
  */
 extern "C" OPENREG_EXPORT PyObject* initOpenRegModule(void) {
   static struct PyModuleDef openreg_C_module = {
-      PyModuleDef_HEAD_INIT, "torch_openreg._C", nullptr, -1, methods};
+      PyModuleDef_HEAD_INIT, "torch_mcpu._C", nullptr, -1, methods};
   PyObject* mod = PyModule_Create(&openreg_C_module);
 
   return mod;

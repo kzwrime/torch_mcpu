@@ -33,14 +33,14 @@ For illustration, OpenReg (Open Registration) is a PyTorch integration example t
 Wrap the device‑runtime API and add error handling. The `SetDevice` function shows this pattern:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegFunctions.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegFunctions.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG SetDevice FUNCTION
     :end-before: LITERALINCLUDE END: OPENREG SetDevice FUNCTION
     :linenos:
 ```
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegFunctions.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegFunctions.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG set_device FUNCTION
     :end-before: LITERALINCLUDE END: OPENREG set_device FUNCTION
@@ -52,14 +52,14 @@ Wrap the device‑runtime API and add error handling. The `SetDevice` function s
 Expose the C++ functions to Python using pybind11:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/csrc/Module.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/csrc/Module.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: MODULE SET DEVICE HELPER
     :end-before: LITERALINCLUDE END: MODULE SET DEVICE HELPER
     :linenos:
 ```
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/csrc/Module.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/csrc/Module.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG MODULE METHODS
     :end-before: LITERALINCLUDE END: OPENREG MODULE METHODS
@@ -72,7 +72,7 @@ Expose the C++ functions to Python using pybind11:
 Wrap the C++ bindings with user-friendly Python functions:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/openreg/__init__.py
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/openreg/__init__.py
     :language: python
     :start-after: LITERALINCLUDE START: PYTHON SET DEVICE FUNCTION
     :end-before: LITERALINCLUDE END: PYTHON SET DEVICE FUNCTION
@@ -83,10 +83,10 @@ Here's the complete mapping from C++ to Python:
 
 | C++ binding function | C++ binding API (pybind11)               | Python user API                  | Description                                  |
 | -------------------- | ---------------------------------------- | -------------------------------- | -------------------------------------------- |
-| `_getDeviceCount`    | `torch_openreg._C._get_device_count()`   | `torch.openreg.device_count()`   | Returns the total number of devices          |
-| `_getDevice`         | `torch_openreg._C._get_device()`         | `torch.openreg.current_device()` | Returns the current active device index      |
-| `_setDevice`         | `torch_openreg._C._set_device(idx)`      | `torch.openreg.set_device(idx)`  | Sets the active device                       |
-| `_exchangeDevice`    | `torch_openreg._C._exchange_device(idx)` | N/A (internal use only)          | Atomically swaps device and returns previous |
+| `_getDeviceCount`    | `torch_mcpu._C._get_device_count()`   | `torch.openreg.device_count()`   | Returns the total number of devices          |
+| `_getDevice`         | `torch_mcpu._C._get_device()`         | `torch.openreg.current_device()` | Returns the current active device index      |
+| `_setDevice`         | `torch_mcpu._C._set_device(idx)`      | `torch.openreg.set_device(idx)`  | Sets the active device                       |
+| `_exchangeDevice`    | `torch_mcpu._C._exchange_device(idx)` | N/A (internal use only)          | Atomically swaps device and returns previous |
 
 (device-guard)=
 
@@ -97,7 +97,7 @@ Device guards provide automatic device switching with exception safety. They’r
 Implement `DeviceGuardImplInterface` to integrate with PyTorch's guard system:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegGuard.h
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegGuard.h
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG ALL DEVICE GUARD IMPL
     :end-before: LITERALINCLUDE END: OPENREG ALL DEVICE GUARD IMPL
@@ -106,4 +106,4 @@ Implement `DeviceGuardImplInterface` to integrate with PyTorch's guard system:
 
 This makes the guard available in PyTorch for the `PrivateUse1` device type; users can then use standard PyTorch device guards with the custom backend.
 
-[OpenReg Device Management]: https://github.com/pytorch/pytorch/blob/main/test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegFunctions.cpp "OpenReg Device Management"
+[OpenReg Device Management]: https://github.com/pytorch/pytorch/blob/main/test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegFunctions.cpp "OpenReg Device Management"

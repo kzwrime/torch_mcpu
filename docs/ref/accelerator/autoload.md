@@ -22,14 +22,14 @@ This tutorial will take **OpenReg** as a new out-of-the-tree device and guide yo
 
 ### Entry Point Setup
 
-To enable **Autoload**, register the `_autoload` function as an entry point in [setup.py](https://github.com/pytorch/pytorch/blob/main/test/cpp_extensions/open_registration_extension/torch_openreg/setup.py) file.
+To enable **Autoload**, register the `_autoload` function as an entry point in [setup.py](https://github.com/pytorch/pytorch/blob/main/test/cpp_extensions/open_registration_extension/torch_mcpu/setup.py) file.
 
 ::::{tab-set}
 
 :::{tab-item} Python
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/setup.py
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/setup.py
     :language: python
     :start-after: LITERALINCLUDE START: SETUP
     :end-before: LITERALINCLUDE END: SETUP
@@ -43,12 +43,12 @@ To enable **Autoload**, register the `_autoload` function as an entry point in [
 
 ### Backend Setup
 
-Define the initialization hook `_autoload` for backend initialization in [torch_openreg](https://github.com/pytorch/pytorch/blob/main/test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/__init__.py). This hook will be automatically invoked by PyTorch during startup.
+Define the initialization hook `_autoload` for backend initialization in [torch_mcpu](https://github.com/pytorch/pytorch/blob/main/test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/__init__.py). This hook will be automatically invoked by PyTorch during startup.
 
 ::::{tab-set-code}
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/__init__.py
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/__init__.py
     :language: python
     :start-after: LITERALINCLUDE START: AUTOLOAD
     :end-before: LITERALINCLUDE END: AUTOLOAD
@@ -67,13 +67,13 @@ After setting up the entry point and backend, build and install your backend. No
     .. grid-item-card:: :octicon:`terminal;1em;` Without Autoload
 
            >>> import torch
-           >>> import torch_openreg
+           >>> import torch_mcpu
            >>> torch.tensor(1, device="openreg")
            tensor(1, device='openreg:0')
 
     .. grid-item-card:: :octicon:`terminal;1em;` With Autoload
 
-           >>> import torch # Automatically import torch_openreg
+           >>> import torch # Automatically import torch_mcpu
            >>>
            >>> torch.tensor(1, device="openreg")
            tensor(1, device='openreg:0')

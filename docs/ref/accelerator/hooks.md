@@ -43,7 +43,7 @@ For illustration, OpenReg (Open Registration) is a PyTorch integration example t
 We use `getDefaultGenerator` as an example:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegHooks.h
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegHooks.h
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG HOOK EXAMPLES
     :end-before: LITERALINCLUDE END: OPENREG HOOK EXAMPLES
@@ -75,24 +75,24 @@ torch.openreg.manual_seed(42)
 
 ### Layer 2: Extension Python API
 
-The Python API layer manages device selection and calls into the C++ extension (defined in [`torch_openreg/openreg/random.py`][random.py]):
+The Python API layer manages device selection and calls into the C++ extension (defined in [`torch_mcpu/openreg/random.py`][random.py]):
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/openreg/random.py
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/openreg/random.py
     :language: python
     :start-after: LITERALINCLUDE START: OPENREG MANUAL SEED
     :end-before: LITERALINCLUDE END: OPENREG MANUAL SEED
     :linenos:
 ```
 
-The `manual_seed` function obtains the current device index, calls `torch_openreg._C._get_default_generator(idx)` to get the device‑specific generator, and sets its seed.
+The `manual_seed` function obtains the current device index, calls `torch_mcpu._C._get_default_generator(idx)` to get the device‑specific generator, and sets its seed.
 
 ### Layer 3: Python/C++ Bridge
 
 The C++ extension exposes `_getDefaultGenerator` to Python, which bridges into PyTorch core:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/csrc/Module.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/csrc/Module.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG GET DEFAULT GENERATOR
     :end-before: LITERALINCLUDE END: OPENREG GET DEFAULT GENERATOR
@@ -101,7 +101,7 @@ The C++ extension exposes `_getDefaultGenerator` to Python, which bridges into P
 ```
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/csrc/Module.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/csrc/Module.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG MODULE METHODS
     :end-before: LITERALINCLUDE END: OPENREG MODULE METHODS
@@ -126,7 +126,7 @@ PyTorch’s `Context` class dispatches to the appropriate accelerator hooks ([`a
 This layered architecture keeps PyTorch device‑agnostic while delegating hardware‑specific operations to accelerator implementations. Hooks are registered once at module load time:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegHooks.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegHooks.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG HOOK REGISTER
     :end-before: LITERALINCLUDE END: OPENREG HOOK REGISTER
@@ -139,7 +139,7 @@ This layered architecture keeps PyTorch device‑agnostic while delegating hardw
 The hooks interface provides the abstraction PyTorch uses to delegate to device‑specific implementations:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegHooks.h
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegHooks.h
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG HOOK EXAMPLES
     :end-before: LITERALINCLUDE END: OPENREG HOOK EXAMPLES
@@ -153,7 +153,7 @@ The `getDefaultGenerator` hook method overrides the base interface and delegates
 The device‑specific implementation manages per‑device generator instances:
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegGenerator.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegGenerator.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: OPENREG GET DEFAULT GENERATOR IMPL
     :end-before: LITERALINCLUDE END: OPENREG GET DEFAULT GENERATOR IMPL
@@ -162,6 +162,6 @@ The device‑specific implementation manages per‑device generator instances:
 
 This function maintains a static vector of generators (one per device), initializes them on first access, validates the device index, and returns the appropriate generator instance.
 
-[random.py]: https://github.com/pytorch/pytorch/tree/main/test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/openreg/random.py#L48-L53 "random.py"
+[random.py]: https://github.com/pytorch/pytorch/tree/main/test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/openreg/random.py#L48-L53 "random.py"
 [Context.h]: https://github.com/pytorch/pytorch/tree/main/aten/src/ATen/Context.h#L61-L102 "Context.h"
 [PrivateUse1HooksInterface.h]: https://github.com/pytorch/pytorch/tree/main/aten/src/ATen/detail/PrivateUse1HooksInterface.h#L15-L72 "PrivateUse1HooksInterface.h"

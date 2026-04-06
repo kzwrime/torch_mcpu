@@ -42,7 +42,7 @@ PyTorch defines a general list of operators for each of casting strategies menti
 Implement the `get_amp_supported_dtype` method to return the data types supported by the new accelerator in the AMP context.
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/torch_openreg/openreg/amp/__init__.py
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/torch_mcpu/openreg/amp/__init__.py
     :language: python
     :start-after: LITERALINCLUDE START: AMP GET_SUPPORTED_DTYPE
     :end-before: LITERALINCLUDE END: AMP GET_SUPPORTED_DTYPE
@@ -57,13 +57,13 @@ This section shows how AMP registers autocast kernels for the `AutocastPrivateUs
 - Register specific aten kernels under `AutocastPrivateUse1` using the `KERNEL_PRIVATEUSEONE` helper macro, which maps an op to the desired precision implementation (with enum `at::autocast::CastPolicy`)
 
 ```{eval-rst}
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/amp/autocast_mode.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/amp/autocast_mode.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: AMP FALLTHROUTH
     :end-before: LITERALINCLUDE END: AMP FALLTHROUTH
     :linenos:
 
-.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_openreg/csrc/amp/autocast_mode.cpp
+.. literalinclude:: ../../../test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/amp/autocast_mode.cpp
     :language: c++
     :start-after: LITERALINCLUDE START: AMP IMPL
     :end-before: LITERALINCLUDE END: AMP IMPL

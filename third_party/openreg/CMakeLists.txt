@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18 FATAL_ERROR)
 
-project(TORCH_OPENREG CXX C)
+project(TORCH_MCPU CXX C)
 
 option(USE_TEST "Build and run unit tests" ON)
 

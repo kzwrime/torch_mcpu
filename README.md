@@ -6,7 +6,7 @@ The third-party device integration mechanism based on PrivateUse1 has become the
 
 **Note:**
 
-The goal of `torch_openreg` is **not to implement a fully functional, high-performance PyTorch backend**, but to serve as a **minimalist reference implementation for mechanism verification**.
+The goal of `torch_mcpu` is **not to implement a fully functional, high-performance PyTorch backend**, but to serve as a **minimalist reference implementation for mechanism verification**.
 
 ### Purpose
 
@@ -22,7 +22,7 @@ The goal of `torch_openreg` is **not to implement a fully functional, high-perfo
 ## Directory Structure
 
 ```shell
-torch_openreg/
+torch_mcpu/
 ├── CMakeLists.txt
 ├── csrc
 │   ├── amp
@@ -54,7 +54,7 @@ torch_openreg/
 ├── setup.py
 ├── third_party
 │   └── openreg
-└── torch_openreg
+└── torch_mcpu
     ├── csrc
     │   ├── CMakeLists.txt
     │   ├── Module.cpp
@@ -75,21 +75,21 @@ graph LR
     A[Python]
     B[_C.so]
     C[libtorch_bindings.so]
-    D[libtorch_openreg.so]
+    D[libtorch_mcpu.so]
     E[libopenreg.so]
 
     A --> B --> C --> D --> E
 ```
 
-There are 4 DSOs in torch_openreg, and the dependencies between them are as follows:
+There are 4 DSOs in torch_mcpu, and the dependencies between them are as follows:
 
 - `_C.so`:
-  - **sources**: torch_openreg/csrc/stub.c
+  - **sources**: torch_mcpu/csrc/stub.c
   - **description**: Python C module entry point.
 - `libtorch_bindings.so`: The bridging code between Python and C++ should go here.
-  - **sources**: torch_openreg/csrc
+  - **sources**: torch_mcpu/csrc
   - **description**: A thin glue layer between Python and C++.
-- `libtorch_openreg.so`: All core implementations should go here.
+- `libtorch_mcpu.so`: All core implementations should go here.
   - **sources**: csrc
   - **description**: All core functionality, such as device runtime, operators, etc.
 - `libopenreg.so`: A DSO that uses the CPU to emulate a CUDA-like device, you can ignore it.
@@ -106,9 +106,9 @@ There are 4 DSOs in torch_openreg, and the dependencies between them are as foll
       - `csrc/aten/native/OpenRegExtra.cpp`: Implementations for other types of operators.
   - `csrc/runtime/`: Implementations for Host memory, device memory, Guard, Hooks, etc.
 - `third_party/`: A C++ library that simulates a CUDA-like device using the CPU.
-- `torch_openreg/`: Python interface implementation (Python code and C++ Bindings).
-  - `torch_openreg/csrc/`: Python C++ binding code.
-  - `torch_openreg/openreg/`: Python API.
+- `torch_mcpu/`: Python interface implementation (Python code and C++ Bindings).
+  - `torch_mcpu/csrc/`: Python C++ binding code.
+  - `torch_mcpu/openreg/`: Python API.
 
 ## Currently Implemented Features
 
@@ -131,10 +131,10 @@ There are 4 DSOs in torch_openreg, and the dependencies between them are as foll
 
 ### Autoload
 
-When `import torch`, installed accelerators (such as `torch_openreg`) will be automatically loaded, achieving the same experience as the built-in backends.
+When `import torch`, installed accelerators (such as `torch_mcpu`) will be automatically loaded, achieving the same experience as the built-in backends.
 
 - Register the backend with Python `entry points`: See `setup` in `setup.py`
-- Add a callable function for backend initialization: See `_autoload` in `torch_openreg/__init__.py`
+- Add a callable function for backend initialization: See `_autoload` in `torch_mcpu/__init__.py`
 - Dynamically loading the backend without explicit imports: See [Usage Example](#usage-example)
 
 ### AMP(Automatic Mixed Precision)
@@ -142,7 +142,7 @@ When `import torch`, installed accelerators (such as `torch_openreg`) will be au
 `AMP` provides convenience methods for mixed precision, where some operations use the `torch.float32` datatype and other operations use `lower precision` floating point datatype: `torch.float16` or `torch.bfloat16`.
 
 - Register specific operator conversion rules: See `autocat_mode.cpp` in `csrc/amp`.
-- Add support for new data types for different accelerators: See `get_amp_supported_dtype` in `torch_openreg/openreg/amp/__init__.py`
+- Add support for new data types for different accelerators: See `get_amp_supported_dtype` in `torch_mcpu/openreg/amp/__init__.py`
 
 ## Installation and Usage
 

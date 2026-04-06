@@ -8,7 +8,7 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "torch_openreg"
+name = "torch_mcpu"
 version = "0.0.1"
 description = "A minimal reference implementation of an out-of-tree backend"
 readme = "README.md"

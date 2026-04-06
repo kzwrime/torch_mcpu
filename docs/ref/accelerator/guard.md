@@ -52,5 +52,5 @@ Events provide synchronization primitives for coordinating execution across stre
 - Stream Guard Implementation (Upcoming)
 - Event Guard Implementation (Upcoming)
 
-[OpenReg Guard]: https://github.com/pytorch/pytorch/blob/main/test/cpp_extensions/open_registration_extension/torch_openreg/csrc/runtime/OpenRegGuard.h "OpenReg Guard"
+[OpenReg Guard]: https://github.com/pytorch/pytorch/blob/main/test/cpp_extensions/open_registration_extension/torch_mcpu/csrc/runtime/OpenRegGuard.h "OpenReg Guard"
 [DeviceGuardImplInterface]: https://github.com/pytorch/pytorch/blob/main/c10/core/impl/DeviceGuardImplInterface.h "DeviceGuardImplInterface"

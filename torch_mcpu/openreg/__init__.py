@@ -1,6 +1,6 @@
 import torch
 
-import torch_openreg._C  # type: ignore[misc]
+import torch_mcpu._C  # type: ignore[misc]
 
 from . import meta  # noqa: F401
 from .amp import get_amp_supported_dtype  # noqa: F401
@@ -22,10 +22,10 @@ class device:
         self.prev_idx = -1
 
     def __enter__(self):
-        self.prev_idx = torch_openreg._C._exchangeDevice(self.idx)
+        self.prev_idx = torch_mcpu._C._exchangeDevice(self.idx)
 
     def __exit__(self, type, value, traceback):
-        self.idx = torch_openreg._C._set_device(self.prev_idx)
+        self.idx = torch_mcpu._C._set_device(self.prev_idx)
         return False
 
 
@@ -34,17 +34,17 @@ def is_available():
 
 
 def device_count() -> int:
-    return torch_openreg._C._get_device_count()
+    return torch_mcpu._C._get_device_count()
 
 
 def current_device():
-    return torch_openreg._C._get_device()
+    return torch_mcpu._C._get_device()
 
 
 # LITERALINCLUDE START: PYTHON SET DEVICE FUNCTION
 def set_device(device) -> None:
     if device >= 0:
-        torch_openreg._C._set_device(device)
+        torch_mcpu._C._set_device(device)
 
 
 # LITERALINCLUDE END: PYTHON SET DEVICE FUNCTION
@@ -62,7 +62,7 @@ def _lazy_init():
     global _initialized
     if is_initialized():
         return
-    torch_openreg._C._init()
+    torch_mcpu._C._init()
     _initialized = True
 
 
