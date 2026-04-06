@@ -29,7 +29,7 @@ graph LR
     B[_C.so]
     C[libtorch_bindings.so]
     D[libtorch_mcpu.so]
-    E[libopenreg.so]
+    E[libmcpu.so]
 
     A --> B --> C --> D --> E
 ```
@@ -45,8 +45,8 @@ torch_mcpu 中有 4 个 DSO，它们之间的依赖关系如下：
 - `libtorch_mcpu.so`: 所有核心实现应该放在这里。
   - **源文件**: csrc
   - **描述**: 所有核心功能，如设备运行时、运算符等。
-- `libopenreg.so`: 一个使用 CPU 模拟类似 CUDA 设备的 DSO，你可以忽略它。
-  - **源文件**: third_party/openreg
+- `libmcpu.so`: 一个使用 CPU 模拟类似 CUDA 设备的 DSO，你可以忽略它。
+  - **源文件**: third_party/mcpu
   - **描述**: 提供类似于 libcudart.so 的底层设备功能。
 
 **关键目录**:
@@ -61,7 +61,7 @@ torch_mcpu 中有 4 个 DSO，它们之间的依赖关系如下：
 - `third_party/`: 一个使用 CPU 模拟类似 CUDA 设备的 C++ 库。
 - `torch_mcpu/`: Python 接口实现（Python 代码和 C++ 绑定）。
   - `torch_mcpu/csrc/`: Python C++ 绑定代码。
-  - `torch_mcpu/openreg/`: Python API。
+  - `torch_mcpu/mcpu/`: Python API。
 
 ## 当前已实现的功能
 
@@ -95,7 +95,7 @@ torch_mcpu 中有 4 个 DSO，它们之间的依赖关系如下：
 `AMP` 为混合精度提供便捷方法，某些操作使用 `torch.float32` 数据类型，其他操作使用`较低精度`的浮点数据类型：`torch.float16` 或 `torch.bfloat16`。
 
 - 注册特定的运算符转换规则：参见 `csrc/amp` 中的 `autocat_mode.cpp`
-- 为不同加速器添加新数据类型的支持：参见 `torch_mcpu/openreg/amp/__init__.py` 中的 `get_amp_supported_dtype`
+- 为不同加速器添加新数据类型的支持：参见 `torch_mcpu/mcpu/amp/__init__.py` 中的 `get_amp_supported_dtype`
 
 ## 安装和使用
 
@@ -108,18 +108,18 @@ python -m pip install --no-build-isolation . # 用于安装
 
 ### 使用示例
 
-安装后，你可以像使用任何其他常规设备一样在 Python 中使用 `openreg` 设备。
+安装后，你可以像使用任何其他常规设备一样在 Python 中使用 `mcpu` 设备。
 
 ```python
 import torch
 
-if not torch.openreg.is_available():
-    print("OpenReg backend is not available in this build.")
+if not torch.mcpu.is_available():
+    print("MCPU backend is not available in this build.")
     exit()
 
-print("OpenReg backend is available!")
+print("MCPU backend is available!")
 
-device = torch.device("openreg")
+device = torch.device("mcpu")
 
 x = torch.tensor([[1., 2.], [3., 4.]], device=device)
 y = x + 2

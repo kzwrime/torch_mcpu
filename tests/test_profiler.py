@@ -32,9 +32,9 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_basic(self):
         """Test basic profiler functionality with OpenReg device."""
-        with autograd_profile(use_device="openreg") as prof:
-            x = torch.randn(10, 10, device="openreg")
-            y = torch.randn(10, 10, device="openreg")
+        with autograd_profile(use_device="mcpu") as prof:
+            x = torch.randn(10, 10, device="mcpu")
+            y = torch.randn(10, 10, device="mcpu")
             x + y
 
         events = prof.function_events
@@ -47,29 +47,29 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_with_record_function(self):
         """Test profiler with custom record_function annotations."""
-        with autograd_profile(use_device="openreg") as prof:
-            with record_function("openreg_custom_operation"):
-                x = torch.randn(10, 10, device="openreg")
-                y = torch.randn(10, 10, device="openreg")
+        with autograd_profile(use_device="mcpu") as prof:
+            with record_function("mcpu_custom_operation"):
+                x = torch.randn(10, 10, device="mcpu")
+                y = torch.randn(10, 10, device="mcpu")
                 x @ y
 
         events = prof.function_events
         event_names = [e.name for e in events]
-        self.assertTrue(any("openreg_custom_operation" in name for name in event_names))
+        self.assertTrue(any("mcpu_custom_operation" in name for name in event_names))
 
     @skipIfTorchDynamo()
     def test_profiler_multiple_streams(self):
         """Test profiler with multiple OpenReg streams."""
-        stream1 = torch.Stream(device="openreg")
-        stream2 = torch.Stream(device="openreg")
+        stream1 = torch.Stream(device="mcpu")
+        stream2 = torch.Stream(device="mcpu")
 
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             with stream1:
-                x = torch.randn(10, 10, device="openreg")
+                x = torch.randn(10, 10, device="mcpu")
                 x + x
 
             with stream2:
-                z = torch.randn(10, 10, device="openreg")
+                z = torch.randn(10, 10, device="mcpu")
                 z * z
 
         events = prof.function_events
@@ -78,12 +78,12 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_event_synchronization(self):
         """Test that profiler correctly handles event synchronization."""
-        with autograd_profile(use_device="openreg") as prof:
-            stream = torch.Stream(device="openreg")
-            event = torch.Event(device="openreg", enable_timing=True)
+        with autograd_profile(use_device="mcpu") as prof:
+            stream = torch.Stream(device="mcpu")
+            event = torch.Event(device="mcpu", enable_timing=True)
 
             with stream:
-                x = torch.randn(10, 10, device="openreg")
+                x = torch.randn(10, 10, device="mcpu")
                 event.record(stream)
                 x + x
 
@@ -95,9 +95,9 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_nested_record_function(self):
         """Test profiler with nested record_function calls."""
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             with record_function("outer_operation"):
-                x = torch.randn(10, 10, device="openreg")
+                x = torch.randn(10, 10, device="mcpu")
 
                 with record_function("inner_operation_1"):
                     x + x
@@ -115,9 +115,9 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_key_averages(self):
         """Test that key_averages works correctly with OpenReg operations."""
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             for _ in range(10):
-                x = torch.randn(10, 10, device="openreg")
+                x = torch.randn(10, 10, device="mcpu")
                 x + x
 
         key_averages = prof.key_averages()
@@ -132,8 +132,8 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_table_output(self):
         """Test that profiler can generate table output."""
-        with autograd_profile(use_device="openreg") as prof:
-            x = torch.randn(10, 10, device="openreg")
+        with autograd_profile(use_device="mcpu") as prof:
+            x = torch.randn(10, 10, device="mcpu")
             y = x + x
             x @ y
 
@@ -145,8 +145,8 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_export_chrome_trace(self):
         """Test exporting profiler results to Chrome trace format."""
-        with autograd_profile(use_device="openreg") as prof:
-            x = torch.randn(10, 10, device="openreg")
+        with autograd_profile(use_device="mcpu") as prof:
+            x = torch.randn(10, 10, device="mcpu")
             y = x + x
             x @ y
 
@@ -175,9 +175,9 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_with_shapes(self):
         """Test profiler with shape recording enabled."""
-        with autograd_profile(use_device="openreg", record_shapes=True) as prof:
-            x = torch.randn(10, 20, device="openreg")
-            y = torch.randn(20, 30, device="openreg")
+        with autograd_profile(use_device="mcpu", record_shapes=True) as prof:
+            x = torch.randn(10, 20, device="mcpu")
+            y = torch.randn(20, 30, device="mcpu")
             x @ y
 
         key_averages = prof.key_averages(group_by_input_shape=True)
@@ -188,9 +188,9 @@ class TestProfiler(TestCase):
         """Test that profiler works without explicit stream initialization."""
         # This test verifies the bug fix: profiler should work even when
         # getStreamFromPool is not called first
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             # Use default stream without explicitly creating streams
-            x = torch.randn(10, 10, device="openreg")
+            x = torch.randn(10, 10, device="mcpu")
             x + 1.0
 
         events = prof.function_events
@@ -199,18 +199,18 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_stream_event_correlation(self):
         """Test that profiler correctly correlates events across streams."""
-        stream1 = torch.Stream(device="openreg")
-        stream2 = torch.Stream(device="openreg")
+        stream1 = torch.Stream(device="mcpu")
+        stream2 = torch.Stream(device="mcpu")
 
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             with record_function("stream1_ops"):
                 with stream1:
-                    x = torch.randn(10, 10, device="openreg")
+                    x = torch.randn(10, 10, device="mcpu")
                     x + x
 
             with record_function("stream2_ops"):
                 with stream2:
-                    z = torch.randn(10, 10, device="openreg")
+                    z = torch.randn(10, 10, device="mcpu")
                     z * z
 
         events = prof.function_events
@@ -223,12 +223,12 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_elapsed_time(self):
         """Test that event elapsed time is correctly calculated."""
-        with autograd_profile(use_device="openreg") as prof:
-            stream = torch.Stream(device="openreg")
+        with autograd_profile(use_device="mcpu") as prof:
+            stream = torch.Stream(device="mcpu")
 
             with stream:
-                x = torch.randn(100, 100, device="openreg")
-                y = torch.randn(100, 100, device="openreg")
+                x = torch.randn(100, 100, device="mcpu")
+                y = torch.randn(100, 100, device="mcpu")
                 # Multiple matmuls to ensure measurable time
                 for _ in range(10):
                     z = x @ y
@@ -248,9 +248,9 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_context_manager_multiple_times(self):
         """Test that profiler can be used multiple times."""
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             for i in range(3):
-                x = torch.randn(10, 10, device="openreg")
+                x = torch.randn(10, 10, device="mcpu")
                 x = x + i
 
         events = prof.function_events
@@ -259,9 +259,9 @@ class TestProfiler(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_with_backward_pass(self):
         """Test profiler with autograd operations."""
-        with autograd_profile(use_device="openreg", record_shapes=True) as prof:
-            x = torch.randn(10, 10, device="openreg", requires_grad=True)
-            y = torch.randn(10, 10, device="openreg", requires_grad=True)
+        with autograd_profile(use_device="mcpu", record_shapes=True) as prof:
+            x = torch.randn(10, 10, device="mcpu", requires_grad=True)
+            y = torch.randn(10, 10, device="mcpu", requires_grad=True)
             z = (x @ y).sum()
             z.backward()
 
@@ -281,7 +281,7 @@ class TestProfilerEdgeCases(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_empty_operations(self):
         """Test profiler with no operations."""
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             pass
 
         events = prof.function_events
@@ -292,8 +292,8 @@ class TestProfilerEdgeCases(TestCase):
     def test_profiler_exception_handling(self):
         """Test that profiler handles exceptions gracefully."""
         try:
-            with autograd_profile(use_device="openreg") as prof:
-                x = torch.randn(10, 10, device="openreg")  # noqa: F841
+            with autograd_profile(use_device="mcpu") as prof:
+                x = torch.randn(10, 10, device="mcpu")  # noqa: F841
                 raise RuntimeError("Test exception")
         except RuntimeError as e:
             self.assertEqual(str(e), "Test exception")
@@ -305,8 +305,8 @@ class TestProfilerEdgeCases(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_large_number_of_events(self):
         """Test profiler with large number of events."""
-        with autograd_profile(use_device="openreg") as prof:
-            x = torch.randn(10, 10, device="openreg")
+        with autograd_profile(use_device="mcpu") as prof:
+            x = torch.randn(10, 10, device="mcpu")
 
             # Create many small operations
             for i in range(100):
@@ -323,12 +323,12 @@ class TestProfilerMultiDevice(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_single_device(self):
         """Test profiler with explicit device specification."""
-        device_count = torch.openreg.device_count()
+        device_count = torch.mcpu.device_count()
         if device_count < 1:
             self.skipTest("No OpenReg devices available")
 
-        with autograd_profile(use_device="openreg") as prof:
-            x = torch.randn(10, 10, device="openreg:0")
+        with autograd_profile(use_device="mcpu") as prof:
+            x = torch.randn(10, 10, device="mcpu:0")
             x + x
 
         events = prof.function_events
@@ -337,13 +337,13 @@ class TestProfilerMultiDevice(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_multiple_devices(self):
         """Test profiler with operations on multiple devices."""
-        device_count = torch.openreg.device_count()
+        device_count = torch.mcpu.device_count()
         if device_count < 2:
             self.skipTest("Multiple OpenReg devices required")
 
-        with autograd_profile(use_device="openreg") as prof:
-            x0 = torch.randn(10, 10, device="openreg:0")
-            x1 = torch.randn(10, 10, device="openreg:1")
+        with autograd_profile(use_device="mcpu") as prof:
+            x0 = torch.randn(10, 10, device="mcpu:0")
+            x1 = torch.randn(10, 10, device="mcpu:1")
 
             x0 + x0
             x1 + x1
@@ -358,10 +358,10 @@ class TestProfilerIntegration(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_with_simple_model(self):
         """Test profiler with a simple neural network."""
-        model = SimpleModel().to("openreg")
-        x = torch.randn(32, 10, device="openreg")
+        model = SimpleModel().to("mcpu")
+        x = torch.randn(32, 10, device="mcpu")
 
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             model(x)
 
         events = prof.function_events
@@ -379,14 +379,14 @@ class TestProfilerIntegration(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_with_training_step(self):
         """Test profiler with a complete training step."""
-        model = SimpleModel().to("openreg")
+        model = SimpleModel().to("mcpu")
         optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
         criterion = nn.MSELoss()
 
-        x = torch.randn(32, 10, device="openreg")
-        target = torch.randn(32, 10, device="openreg")
+        x = torch.randn(32, 10, device="mcpu")
+        target = torch.randn(32, 10, device="mcpu")
 
-        with autograd_profile(use_device="openreg", record_shapes=True) as prof:
+        with autograd_profile(use_device="mcpu", record_shapes=True) as prof:
             # Forward pass
             with record_function("forward"):
                 output = model(x)
@@ -416,12 +416,12 @@ class TestProfilerIntegration(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_with_multiple_batches(self):
         """Test profiler with multiple training batches."""
-        model = SimpleModel().to("openreg")
+        model = SimpleModel().to("mcpu")
 
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             for i in range(5):
                 with record_function(f"batch_{i}"):
-                    x = torch.randn(16, 10, device="openreg")
+                    x = torch.randn(16, 10, device="mcpu")
                     model(x)
 
         events = prof.function_events
@@ -434,10 +434,10 @@ class TestProfilerIntegration(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_table_with_model(self):
         """Test that profiler table output works with model operations."""
-        model = SimpleModel().to("openreg")
-        x = torch.randn(32, 10, device="openreg")
+        model = SimpleModel().to("mcpu")
+        x = torch.randn(32, 10, device="mcpu")
 
-        with autograd_profile(use_device="openreg", record_shapes=True) as prof:
+        with autograd_profile(use_device="mcpu", record_shapes=True) as prof:
             for _ in range(10):
                 model(x)
 
@@ -455,13 +455,13 @@ class TestProfilerIntegration(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_with_inference(self):
         """Test profiler during model inference (no gradients)."""
-        model = SimpleModel().to("openreg")
+        model = SimpleModel().to("mcpu")
         model.eval()
 
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             with torch.no_grad():
                 for _ in range(5):
-                    x = torch.randn(16, 10, device="openreg")
+                    x = torch.randn(16, 10, device="mcpu")
                     model(x)
 
         events = prof.function_events
@@ -477,17 +477,17 @@ class TestProfilerIntegration(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_with_data_transfer(self):
         """Test profiler with CPU-OpenReg data transfers."""
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             # CPU tensor
             x_cpu = torch.randn(50, 50)
 
             # Transfer to OpenReg
-            with record_function("to_openreg"):
-                x_openreg = x_cpu.to("openreg")
+            with record_function("to_mcpu"):
+                x_mcpu = x_cpu.to("mcpu")
 
             # Compute on OpenReg
-            with record_function("compute_openreg"):
-                y = x_openreg @ x_openreg
+            with record_function("compute_mcpu"):
+                y = x_mcpu @ x_mcpu
 
             # Transfer back to CPU
             with record_function("to_cpu"):
@@ -496,15 +496,15 @@ class TestProfilerIntegration(TestCase):
         events = prof.function_events
         event_names = [e.name for e in events]
 
-        self.assertTrue(any("to_openreg" in name for name in event_names))
-        self.assertTrue(any("compute_openreg" in name for name in event_names))
+        self.assertTrue(any("to_mcpu" in name for name in event_names))
+        self.assertTrue(any("compute_mcpu" in name for name in event_names))
         self.assertTrue(any("to_cpu" in name for name in event_names))
 
     @skipIfTorchDynamo()
     def test_profiler_with_mixed_operations(self):
         """Test profiler with mixed tensor operations."""
-        with autograd_profile(use_device="openreg", record_shapes=True) as prof:
-            x = torch.randn(20, 20, device="openreg")
+        with autograd_profile(use_device="mcpu", record_shapes=True) as prof:
+            x = torch.randn(20, 20, device="mcpu")
 
             # Various operations
             y = x + 1.0
@@ -527,8 +527,8 @@ class TestProfilerPerformance(TestCase):
     @skipIfTorchDynamo()
     def test_profiler_overhead(self):
         """Verify profiler doesn't add excessive overhead."""
-        model = SimpleModel().to("openreg")
-        x = torch.randn(32, 10, device="openreg")
+        model = SimpleModel().to("mcpu")
+        x = torch.randn(32, 10, device="mcpu")
 
         # Warmup
         for _ in range(5):
@@ -539,7 +539,7 @@ class TestProfilerPerformance(TestCase):
 
         start = time.time()
 
-        with autograd_profile(use_device="openreg") as prof:
+        with autograd_profile(use_device="mcpu") as prof:
             for _ in range(100):
                 model(x)
 

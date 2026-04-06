@@ -14,11 +14,11 @@ __all__ = [
 ]
 
 
-def get_rng_state(device="openreg"):
+def get_rng_state(device="mcpu"):
     if isinstance(device, str):
         device = torch.device(device)
     elif isinstance(device, int):
-        device = torch.device("openreg", device)
+        device = torch.device("mcpu", device)
     idx = device.index
     if idx is None:
         idx = current_device()
@@ -26,11 +26,11 @@ def get_rng_state(device="openreg"):
     return default_generator.get_state()
 
 
-def set_rng_state(new_state, device="openreg"):
+def set_rng_state(new_state, device="mcpu"):
     if isinstance(device, str):
         device = torch.device(device)
     elif isinstance(device, int):
-        device = torch.device("openreg", device)
+        device = torch.device("mcpu", device)
     idx = device.index
     if idx is None:
         idx = current_device()

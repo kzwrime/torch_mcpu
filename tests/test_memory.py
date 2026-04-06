@@ -22,31 +22,31 @@ class TestDeviceAllocator(TestCase):
     def test_basic_allocation(self):
         """Test basic memory allocation with various sizes."""
         # Small allocation
-        x = torch.empty(100, device="openreg")
-        self.assertEqual(x.device.type, "openreg")
+        x = torch.empty(100, device="mcpu")
+        self.assertEqual(x.device.type, "mcpu")
         self.assertEqual(x.numel(), 100)
         # Large allocation
-        z = torch.empty(10000, device="openreg")
-        self.assertEqual(z.device.type, "openreg")
+        z = torch.empty(10000, device="mcpu")
+        self.assertEqual(z.device.type, "mcpu")
         self.assertEqual(z.numel(), 10000)
         # Multi-dimensional allocation
-        w = torch.empty(10, 20, 30, device="openreg")
-        self.assertEqual(w.device.type, "openreg")
+        w = torch.empty(10, 20, 30, device="mcpu")
+        self.assertEqual(w.device.type, "mcpu")
         self.assertEqual(w.shape, torch.Size([10, 20, 30]))
 
     def test_memory_lifecycle(self):
         """Test complete memory allocation and deallocation lifecycle."""
         # Allocate tensor
-        x = torch.empty(1000, device="openreg")
-        self.assertEqual(x.device.type, "openreg")
+        x = torch.empty(1000, device="mcpu")
+        self.assertEqual(x.device.type, "mcpu")
 
         # Explicitly delete tensor
         del x
         gc.collect()
 
         # Allocate again to ensure memory was freed
-        y = torch.empty(1000, device="openreg")
-        self.assertEqual(y.device.type, "openreg")
+        y = torch.empty(1000, device="mcpu")
+        self.assertEqual(y.device.type, "mcpu")
         del y
         gc.collect()
 
@@ -54,23 +54,23 @@ class TestDeviceAllocator(TestCase):
         """Test memory operations during tensor copies."""
         # CPU to OpenReg
         cpu_tensor = torch.randn(100)
-        openreg_tensor = cpu_tensor.to("openreg")
-        self.assertEqual(openreg_tensor.device.type, "openreg")
-        self.assertEqual(cpu_tensor.shape, openreg_tensor.shape)
+        mcpu_tensor = cpu_tensor.to("mcpu")
+        self.assertEqual(mcpu_tensor.device.type, "mcpu")
+        self.assertEqual(cpu_tensor.shape, mcpu_tensor.shape)
 
         # OpenReg to CPU
-        back_to_cpu = openreg_tensor.to("cpu")
+        back_to_cpu = mcpu_tensor.to("cpu")
         self.assertEqual(back_to_cpu.device.type, "cpu")
         self.assertTrue(torch.allclose(cpu_tensor, back_to_cpu))
 
         # OpenReg to OpenReg (clone)
-        cloned = openreg_tensor.clone()
-        self.assertEqual(cloned.device.type, "openreg")
-        self.assertTrue(torch.allclose(openreg_tensor.cpu(), cloned.cpu()))
+        cloned = mcpu_tensor.clone()
+        self.assertEqual(cloned.device.type, "mcpu")
+        self.assertTrue(torch.allclose(mcpu_tensor.cpu(), cloned.cpu()))
 
     def test_inplace_operations(self):
         """Test memory stability during inplace operations."""
-        x = torch.ones(100, device="openreg")
+        x = torch.ones(100, device="mcpu")
         original_data_ptr = x.data_ptr()
 
         # Inplace addition
@@ -85,7 +85,7 @@ class TestDeviceAllocator(TestCase):
 
     def test_view_operations(self):
         """Test that views share memory correctly."""
-        x = torch.randn(100, device="openreg")
+        x = torch.randn(100, device="mcpu")
         original_data_ptr = x.data_ptr()
 
         # Reshape view
@@ -103,14 +103,14 @@ class TestDeviceAllocator(TestCase):
         dtypes = [torch.float32, torch.float64, torch.int32, torch.int64]
 
         for dtype in dtypes:
-            x = torch.empty(100, dtype=dtype, device="openreg")
-            self.assertEqual(x.device.type, "openreg")
+            x = torch.empty(100, dtype=dtype, device="mcpu")
+            self.assertEqual(x.device.type, "mcpu")
             self.assertEqual(x.dtype, dtype)
             self.assertEqual(x.numel(), 100)
 
     def test_tensor_resize(self):
         """Test tensor resizing operations."""
-        x = torch.empty(100, device="openreg")
+        x = torch.empty(100, device="mcpu")
         _ = x.data_ptr()
 
         # Resize to smaller size (should reuse storage)
@@ -125,8 +125,8 @@ class TestDeviceAllocator(TestCase):
     def test_empty_cache_operation(self):
         """Test empty cache functionality."""
         # Allocate some tensors
-        x = torch.empty(1000, device="openreg")
-        y = torch.empty(2000, device="openreg")
+        x = torch.empty(1000, device="mcpu")
+        y = torch.empty(2000, device="mcpu")
 
         # Delete tensors
         del x, y
@@ -139,58 +139,58 @@ class TestDeviceAllocator(TestCase):
     def test_memory_format_allocation(self):
         """Test allocation with different memory formats."""
         # Channels last format
-        x = torch.empty(2, 3, 4, 4, device="openreg", memory_format=torch.channels_last)
-        self.assertEqual(x.device.type, "openreg")
+        x = torch.empty(2, 3, 4, 4, device="mcpu", memory_format=torch.channels_last)
+        self.assertEqual(x.device.type, "mcpu")
         self.assertTrue(x.is_contiguous(memory_format=torch.channels_last))
 
         # Contiguous format (default)
         y = torch.empty(
-            2, 3, 4, 4, device="openreg", memory_format=torch.contiguous_format
+            2, 3, 4, 4, device="mcpu", memory_format=torch.contiguous_format
         )
-        self.assertEqual(y.device.type, "openreg")
+        self.assertEqual(y.device.type, "mcpu")
         self.assertTrue(y.is_contiguous())
 
     def test_large_allocation(self):
         """Test large memory allocation."""
         # Allocate a large tensor (10MB approximately)
         size = 10 * 1024 * 1024 // 4  # 10MB in float32
-        x = torch.empty(size, device="openreg")
-        self.assertEqual(x.device.type, "openreg")
+        x = torch.empty(size, device="mcpu")
+        self.assertEqual(x.device.type, "mcpu")
         self.assertEqual(x.numel(), size)
 
     def test_sequential_allocations_and_deallocations(self):
         """Test sequential allocation and deallocation patterns."""
         for i in range(10):
-            x = torch.empty(1000 + i * 100, device="openreg")
-            self.assertEqual(x.device.type, "openreg")
+            x = torch.empty(1000 + i * 100, device="mcpu")
+            self.assertEqual(x.device.type, "mcpu")
             # Let tensor go out of scope
             del x
         gc.collect()
 
     def test_allocation_with_requires_grad(self):
         """Test allocation of tensors with gradient tracking."""
-        x = torch.empty(100, device="openreg", requires_grad=True)
-        self.assertEqual(x.device.type, "openreg")
+        x = torch.empty(100, device="mcpu", requires_grad=True)
+        self.assertEqual(x.device.type, "mcpu")
         self.assertTrue(x.requires_grad)
 
-        y = torch.randn(100, device="openreg", requires_grad=True)
-        self.assertEqual(y.device.type, "openreg")
+        y = torch.randn(100, device="mcpu", requires_grad=True)
+        self.assertEqual(y.device.type, "mcpu")
         self.assertTrue(y.requires_grad)
 
     def test_storage_operations(self):
         """Test storage-level operations."""
-        x = torch.randn(100, device="openreg")
+        x = torch.randn(100, device="mcpu")
         storage = x.storage()
 
         # Verify storage is on correct device
-        self.assertTrue(storage.device.type == "openreg")
+        self.assertTrue(storage.device.type == "mcpu")
 
         # Verify storage size
         self.assertGreaterEqual(storage.size(), x.numel())
 
     def test_tensor_from_blob(self):
         """Test creating tensors that reference existing memory."""
-        x = torch.randn(100, device="openreg")
+        x = torch.randn(100, device="mcpu")
 
         # Create a view that references the same data
         y = x.view_as(x)
@@ -215,7 +215,7 @@ class TestMemoryLeaks(TestCase):
         """Test that simple allocations don't leak memory."""
         # Warm-up
         for _ in range(10):
-            x = torch.empty(1000, device="openreg")
+            x = torch.empty(1000, device="mcpu")
             del x
         gc.collect()
         time.sleep(0.1)
@@ -223,7 +223,7 @@ class TestMemoryLeaks(TestCase):
         # Perform many allocations and deallocations
         iterations = 1000
         for i in range(iterations):
-            x = torch.empty(1000, device="openreg")
+            x = torch.empty(1000, device="mcpu")
             del x
 
             if i % 100 == 0:
@@ -243,7 +243,7 @@ class TestMemoryLeaks(TestCase):
 
         for i in range(iterations):
             size = sizes[i % len(sizes)]
-            x = torch.empty(size, device="openreg")
+            x = torch.empty(size, device="mcpu")
             del x
 
             if i % 50 == 0:
@@ -258,13 +258,13 @@ class TestMemoryLeaks(TestCase):
 
         for i in range(iterations):
             # Create tensor
-            x = torch.randn(500, device="openreg")
+            x = torch.randn(500, device="mcpu")
 
             # Copy to CPU
             cpu_copy = x.cpu()
 
             # Copy back to device
-            device_copy = cpu_copy.to("openreg")
+            device_copy = cpu_copy.to("mcpu")
 
             # Clone
             cloned = device_copy.clone()
@@ -283,7 +283,7 @@ class TestMemoryLeaks(TestCase):
         iterations = 500
 
         for i in range(iterations):
-            x = torch.randn(1000, device="openreg")
+            x = torch.randn(1000, device="mcpu")
 
             # Create various views
             view1 = x.view(10, 100)
@@ -304,7 +304,7 @@ class TestMemoryLeaks(TestCase):
         iterations = 500
 
         for i in range(iterations):
-            x = torch.ones(1000, device="openreg")
+            x = torch.ones(1000, device="mcpu")
 
             # Multiple inplace operations
             x.add_(1)
@@ -325,8 +325,8 @@ class TestMemoryLeaks(TestCase):
         iterations = 300
 
         for i in range(iterations):
-            x = torch.randn(100, device="openreg", requires_grad=True)
-            y = torch.randn(100, device="openreg", requires_grad=True)
+            x = torch.randn(100, device="mcpu", requires_grad=True)
+            y = torch.randn(100, device="mcpu", requires_grad=True)
 
             # Operation that creates computation graph
             z = x + y
@@ -347,7 +347,7 @@ class TestMemoryLeaks(TestCase):
         iterations = 50
 
         for i in range(iterations):
-            x = torch.empty(size, device="openreg")
+            x = torch.empty(size, device="mcpu")
             del x
             gc.collect()
             time.sleep(0.05)  # Allow time for cleanup
@@ -369,7 +369,7 @@ class TestMemoryLeaks(TestCase):
 
             # Allocate many tensors
             for i in range(allocations_per_cycle):
-                t = torch.empty(1000, device="openreg")
+                t = torch.empty(1000, device="mcpu")
                 tensors.append(t)
 
             # Verify all allocated
@@ -382,8 +382,8 @@ class TestMemoryLeaks(TestCase):
 
         # Final verification - if there were leaks, memory would be exhausted
         # The test passes if we can still allocate
-        final_tensor = torch.empty(10000, device="openreg")
-        self.assertEqual(final_tensor.device.type, "openreg")
+        final_tensor = torch.empty(10000, device="mcpu")
+        self.assertEqual(final_tensor.device.type, "mcpu")
         del final_tensor
 
 
@@ -399,40 +399,40 @@ class TestPinMemory(TestCase):
 
         tensor = torch.randn(10)
         storage = tensor.storage()
-        self.assertFalse(storage.is_pinned("openreg"))
-        pinned_storage = storage.pin_memory("openreg")
-        self.assertTrue(pinned_storage.is_pinned("openreg"))
+        self.assertFalse(storage.is_pinned("mcpu"))
+        pinned_storage = storage.pin_memory("mcpu")
+        self.assertTrue(pinned_storage.is_pinned("mcpu"))
 
         tensor = torch.randn(10)
         untyped_storage = tensor.untyped_storage()
-        self.assertFalse(untyped_storage.is_pinned("openreg"))
-        pinned_untyped_storage = untyped_storage.pin_memory("openreg")
-        self.assertTrue(pinned_untyped_storage.is_pinned("openreg"))
+        self.assertFalse(untyped_storage.is_pinned("mcpu"))
+        pinned_untyped_storage = untyped_storage.pin_memory("mcpu")
+        self.assertTrue(pinned_untyped_storage.is_pinned("mcpu"))
 
 
 class TestMultiDeviceAllocation(TestCase):
     """Test basic multi-device allocation functionality."""
 
     def setUp(self):
-        self.device_count = torch.openreg.device_count()
+        self.device_count = torch.mcpu.device_count()
         self.assertEqual(self.device_count, 2, "This test requires 2 OpenReg devices")
         gc.collect()
 
     def tearDown(self):
         """Restore device 0 to avoid affecting subsequent tests."""
-        torch.openreg.set_device(0)
+        torch.mcpu.set_device(0)
         gc.collect()
 
     def test_allocation_on_device_1(self):
-        torch.openreg.set_device(1)
-        x = torch.empty(100, device="openreg:1")
-        self.assertEqual(x.device.type, "openreg")
+        torch.mcpu.set_device(1)
+        x = torch.empty(100, device="mcpu:1")
+        self.assertEqual(x.device.type, "mcpu")
         self.assertEqual(x.device.index, 1)
 
     def test_simultaneous_device_allocations(self):
         """Test allocations on both devices simultaneously."""
-        x = torch.empty(100, device="openreg:0")
-        y = torch.empty(200, device="openreg:1")
+        x = torch.empty(100, device="mcpu:0")
+        y = torch.empty(200, device="mcpu:1")
 
         self.assertEqual(x.device.index, 0)
         self.assertEqual(y.device.index, 1)
@@ -441,8 +441,8 @@ class TestMultiDeviceAllocation(TestCase):
     def test_memory_isolation_between_devices(self):
         """Test that memory allocations are isolated between devices."""
 
-        tensors_dev0 = [torch.empty(1000, device="openreg:0") for _ in range(10)]
-        tensors_dev1 = [torch.empty(1000, device="openreg:1") for _ in range(10)]
+        tensors_dev0 = [torch.empty(1000, device="mcpu:0") for _ in range(10)]
+        tensors_dev1 = [torch.empty(1000, device="mcpu:1") for _ in range(10)]
 
         # Verify all device 0 tensors are on device 0
         for t in tensors_dev0:
@@ -464,7 +464,7 @@ class TestMultiDeviceAllocation(TestCase):
         tensors = []
         for i in range(20):
             device_idx = i % 2
-            t = torch.empty(100 + i, device=f"openreg:{device_idx}")
+            t = torch.empty(100 + i, device=f"mcpu:{device_idx}")
             self.assertEqual(t.device.index, device_idx)
             tensors.append(t)
 
@@ -478,23 +478,23 @@ class TestCrossDeviceOperations(TestCase):
     """Test cross-device tensor operations."""
 
     def setUp(self):
-        self.device_count = torch.openreg.device_count()
+        self.device_count = torch.mcpu.device_count()
         self.assertEqual(self.device_count, 2)
         gc.collect()
 
     def tearDown(self):
         """Restore device 0 to avoid affecting subsequent tests."""
-        torch.openreg.set_device(0)
+        torch.mcpu.set_device(0)
         gc.collect()
 
     def test_tensor_to_different_device(self):
         """Test moving tensor from one device to another."""
         # Create on device 0
-        x = torch.randn(100, device="openreg:0")
+        x = torch.randn(100, device="mcpu:0")
         self.assertEqual(x.device.index, 0)
 
         # Move to device 1
-        y = x.to("openreg:1")
+        y = x.to("mcpu:1")
         self.assertEqual(y.device.index, 1)
         self.assertNotEqual(x.data_ptr(), y.data_ptr())
 
@@ -503,15 +503,15 @@ class TestCrossDeviceOperations(TestCase):
 
     def test_bidirectional_device_transfer(self):
         """Test transferring tensor back and forth between devices."""
-        original = torch.randn(100, device="openreg:0")
+        original = torch.randn(100, device="mcpu:0")
         original_cpu = original.cpu()
 
         # 0 -> 1
-        on_dev1 = original.to("openreg:1")
+        on_dev1 = original.to("mcpu:1")
         self.assertTrue(torch.allclose(original_cpu, on_dev1.cpu()))
 
         # 1 -> 0
-        back_to_dev0 = on_dev1.to("openreg:0")
+        back_to_dev0 = on_dev1.to("mcpu:0")
         self.assertTrue(torch.allclose(original_cpu, back_to_dev0.cpu()))
 
 

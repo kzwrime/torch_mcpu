@@ -145,13 +145,13 @@ REGISTER_PRIVATEUSE1_DISPATCH(
 
 // Registration of custom operators
 // LITERALINCLUDE START: CUSTOM OPERATOR SCHEMA
-TORCH_LIBRARY(openreg, m) {
+TORCH_LIBRARY(mcpu, m) {
   m.def("custom_abs(Tensor input)-> Tensor");
 }
 // LITERALINCLUDE END: CUSTOM OPERATOR SCHEMA
 
 // LITERALINCLUDE START: CUSTOM OPERATOR DEFAULT
-TORCH_LIBRARY_IMPL(openreg, PrivateUse1, m) {
+TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
   m.impl("custom_abs", &wrapper_custom_abs);
 }
 // LITERALINCLUDE END: CUSTOM OPERATOR DEFAULT
@@ -174,12 +174,12 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
       &wrapper_scaled_dot_product_fused_attention_overrideable_backward);
 }
 
-TORCH_LIBRARY_FRAGMENT(openreg, m) {
+TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def("custom_autograd_fn_returns_self(Tensor input)-> Tensor");
   m.def("custom_autograd_fn_aliasing(Tensor(a) input)-> Tensor(a)");
 }
 
-TORCH_LIBRARY_IMPL(openreg, AutogradPrivateUse1, m) {
+TORCH_LIBRARY_IMPL(mcpu, AutogradPrivateUse1, m) {
   m.impl(
       "custom_autograd_fn_returns_self",
       &wrapper_custom_autograd_fn_returns_self);

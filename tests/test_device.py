@@ -32,7 +32,7 @@ class TestDevice(TestCase):
             torch.accelerator.set_device_index(2)
 
     def test_device_capability(self):
-        capability = torch.accelerator.get_device_capability("openreg:0")
+        capability = torch.accelerator.get_device_capability("mcpu:0")
         supported_dtypes = capability["supported_dtypes"]
         expected_dtypes = get_all_dtypes(include_complex32=True, include_qint=True)
 

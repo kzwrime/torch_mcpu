@@ -8,8 +8,8 @@ from torch.testing._internal.common_utils import run_tests, TestCase
 
 class TestDLPack(TestCase):
     def test_open_device_dlpack(self):
-        """Test DLPack conversion for openreg device"""
-        x_in = torch.randn(2, 3).to("openreg")
+        """Test DLPack conversion for mcpu device"""
+        x_in = torch.randn(2, 3).to("mcpu")
         capsule = torch.utils.dlpack.to_dlpack(x_in)
         x_out = torch.from_dlpack(capsule)
         self.assertTrue(x_out.device == x_in.device)
@@ -20,7 +20,7 @@ class TestDLPack(TestCase):
 
     def test_dlpack_roundtrip(self):
         """Test DLPack roundtrip conversion"""
-        x = torch.randn(2, 3, device="openreg")
+        x = torch.randn(2, 3, device="mcpu")
         capsule = torch.utils.dlpack.to_dlpack(x)
         y = torch.from_dlpack(capsule)
 
@@ -32,7 +32,7 @@ class TestDLPack(TestCase):
         shapes = [(1,), (2, 3), (4, 5, 6), (1, 2, 3, 4)]
 
         for shape in shapes:
-            x = torch.randn(*shape, device="openreg")
+            x = torch.randn(*shape, device="mcpu")
             capsule = torch.utils.dlpack.to_dlpack(x)
             y = torch.from_dlpack(capsule)
 
@@ -45,7 +45,7 @@ class TestDLPack(TestCase):
         dtypes = [torch.float32, torch.float16, torch.int32, torch.int64]
 
         for dtype in dtypes:
-            x = torch.randn(2, 3, device="openreg", dtype=dtype)
+            x = torch.randn(2, 3, device="mcpu", dtype=dtype)
             capsule = torch.utils.dlpack.to_dlpack(x)
             y = torch.from_dlpack(capsule)
 
@@ -55,17 +55,17 @@ class TestDLPack(TestCase):
     def test_dlpack_cross_device(self):
         """Test DLPack conversion across devices"""
         x_cpu = torch.randn(2, 3)
-        x_openreg = x_cpu.to("openreg")
+        x_mcpu = x_cpu.to("mcpu")
 
-        capsule = torch.utils.dlpack.to_dlpack(x_openreg)
+        capsule = torch.utils.dlpack.to_dlpack(x_mcpu)
         y = torch.from_dlpack(capsule)
 
-        self.assertEqual(y.device.type, "openreg")
+        self.assertEqual(y.device.type, "mcpu")
         self.assertEqual(x_cpu, y.cpu())
 
     def test_dlpack_non_contiguous(self):
         """Test DLPack with non-contiguous tensors"""
-        x = torch.randn(3, 4, device="openreg")
+        x = torch.randn(3, 4, device="mcpu")
         x_t = x.t()  # Transpose creates non-contiguous tensor
 
         capsule = torch.utils.dlpack.to_dlpack(x_t)

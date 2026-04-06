@@ -21,7 +21,7 @@ class TestAutograd(TestCase):
     @skipIfTorchDynamo()
     def test_autograd_init(self):
         # Make sure autograd is initialized
-        torch.ones(2, requires_grad=True, device="openreg").sum().backward()
+        torch.ones(2, requires_grad=True, device="mcpu").sum().backward()
 
         pid = os.getpid()
         task_path = f"/proc/{pid}/task"
