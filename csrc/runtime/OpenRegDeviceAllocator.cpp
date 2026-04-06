@@ -6,7 +6,7 @@
 
 using namespace c10::CachingAllocator;
 
-namespace c10::openreg {
+namespace c10::mcpu {
 
 constexpr size_t kAggregate = static_cast<size_t>(StatType::AGGREGATE);
 
@@ -28,7 +28,7 @@ void* DeviceMemoryAllocator::malloc(size_t nbytes) {
       ret == orSuccess && data != nullptr,
       "Failed to allocate ",
       nbytes,
-      " bytes on openreg device ",
+      " bytes on mcpu device ",
       device_index_,
       ". ",
       "Allocated: ",
@@ -70,7 +70,7 @@ void DeviceMemoryAllocator::free(void* ptr) {
       allocation_sizes_.erase(it);
     } else {
       TORCH_WARN(
-          "Successfully freed OpenReg memory pointer ",
+          "Successfully freed Mcpu memory pointer ",
           ptr,
           " on device ",
           device_index_,
@@ -148,17 +148,17 @@ void DeviceMemoryAllocator::resetPeakStats() {
 
 namespace {
 
-OpenRegDeviceAllocator g_allocator;
+McpuDeviceAllocator g_allocator;
 
-void deleteOpenRegMemory(void* ptr) {
+void deleteMcpuMemory(void* ptr) {
   g_allocator.freeMemory(ptr);
 }
 
 }
 
-OpenRegDeviceAllocator::OpenRegDeviceAllocator() {
+McpuDeviceAllocator::McpuDeviceAllocator() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
-  const auto device_count = c10::openreg::device_count();
+  const auto device_count = c10::mcpu::device_count();
   device_allocators_.resize(device_count);
   for (const auto i : c10::irange(device_count)) {
     device_allocators_[i] = std::make_unique<DeviceMemoryAllocator>(i);
@@ -166,10 +166,10 @@ OpenRegDeviceAllocator::OpenRegDeviceAllocator() {
 }
 
 
-at::DataPtr OpenRegDeviceAllocator::allocate(size_t nbytes) {
+at::DataPtr McpuDeviceAllocator::allocate(size_t nbytes) {
   int current_device_index = -1;
   auto ret = orGetDevice(&current_device_index);
-  TORCH_CHECK(ret == orSuccess, "Failed to get current OpenReg device");
+  TORCH_CHECK(ret == orSuccess, "Failed to get current Mcpu device");
 
   auto curr_device =
       c10::Device(c10::DeviceType::PrivateUse1, current_device_index);
@@ -184,28 +184,28 @@ at::DataPtr OpenRegDeviceAllocator::allocate(size_t nbytes) {
     allocated_blocks_[data] = current_device_index;
   }
 
-  return {data, data, &deleteOpenRegMemory, curr_device};
+  return {data, data, &deleteMcpuMemory, curr_device};
 }
 
-at::DeleterFnPtr OpenRegDeviceAllocator::raw_deleter() const {
-  return &deleteOpenRegMemory;
+at::DeleterFnPtr McpuDeviceAllocator::raw_deleter() const {
+  return &deleteMcpuMemory;
 }
 
-void OpenRegDeviceAllocator::copy_data(
+void McpuDeviceAllocator::copy_data(
     void* dest,
     const void* src,
     std::size_t count) const {
   auto ret = orMemcpy(dest, src, count, orMemcpyDeviceToDevice);
   TORCH_CHECK(
-      ret == orSuccess, "Failed to copy ", count, " bytes on openreg device");
+      ret == orSuccess, "Failed to copy ", count, " bytes on mcpu device");
 }
 
-bool OpenRegDeviceAllocator::initialized() {
+bool McpuDeviceAllocator::initialized() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
   return !device_allocators_.empty();
 }
 
-void OpenRegDeviceAllocator::freeMemory(void* ptr) {
+void McpuDeviceAllocator::freeMemory(void* ptr) {
   if (!ptr) {
     return;
   }
@@ -233,43 +233,43 @@ void OpenRegDeviceAllocator::freeMemory(void* ptr) {
     auto ret = orFree(ptr);
 
     // Only warn if orFree actually failed (not just "not found")
-    // In OpenReg's case, orFree returns orErrorUnknown if pointer not in registry
+    // In Mcpu's case, orFree returns orErrorUnknown if pointer not in registry
     // which is expected for already-freed memory
     if (ret != orSuccess && ret != orErrorUnknown) {
       TORCH_WARN(
-          "orFree failed for untracked OpenReg memory pointer ",
+          "orFree failed for untracked Mcpu memory pointer ",
           ptr,
           ". Error code: ", ret);
     }
   }
 }
 
-c10::CachingDeviceAllocator::DeviceStats OpenRegDeviceAllocator::
+c10::CachingDeviceAllocator::DeviceStats McpuDeviceAllocator::
     getDeviceStats(c10::DeviceIndex device) {
   return device_allocators_[device]->getStats();
 }
 
-void OpenRegDeviceAllocator::resetAccumulatedStats(c10::DeviceIndex device) {
+void McpuDeviceAllocator::resetAccumulatedStats(c10::DeviceIndex device) {
   device_allocators_[device]->resetAccumulatedStats();
 }
 
-void OpenRegDeviceAllocator::resetPeakStats(c10::DeviceIndex device) {
+void McpuDeviceAllocator::resetPeakStats(c10::DeviceIndex device) {
   device_allocators_[device]->resetPeakStats();
 }
 
-void OpenRegDeviceAllocator::emptyCache(MempoolId_t mempool_id) {
-  // OpenReg doesn't implement caching yet
+void McpuDeviceAllocator::emptyCache(MempoolId_t mempool_id) {
+  // Mcpu doesn't implement caching yet
   // TODO: When caching is implemented, release all free blocks here
 }
 
-void OpenRegDeviceAllocator::recordStream(
+void McpuDeviceAllocator::recordStream(
     const DataPtr& ptr,
     c10::Stream stream) {
-  // OpenReg doesn't track stream usage yet
+  // Mcpu doesn't track stream usage yet
   // TODO: When stream support is added, track which streams are using this pointer
 }
 // ============ Global Registration ============
 
 REGISTER_ALLOCATOR(c10::DeviceType::PrivateUse1, &g_allocator);
 
-} // namespace c10::openreg
+} // namespace c10::mcpu

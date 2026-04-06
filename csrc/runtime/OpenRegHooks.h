@@ -11,13 +11,13 @@
 #include "OpenRegFunctions.h"
 #include "OpenRegGenerator.h"
 
-namespace c10::openreg {
-struct OPENREG_EXPORT OpenRegHooksInterface : public at::PrivateUse1HooksInterface {
-  OpenRegHooksInterface() {};
-  ~OpenRegHooksInterface() override = default;
+namespace c10::mcpu {
+struct MCPU_EXPORT McpuHooksInterface : public at::PrivateUse1HooksInterface {
+  McpuHooksInterface() {};
+  ~McpuHooksInterface() override = default;
 
   void init() const override {
-    // Initialize OpenReg runtime if needed
+    // Initialize Mcpu runtime if needed
     // This is called when PyTorch first accesses the device
   }
 
@@ -26,12 +26,12 @@ struct OPENREG_EXPORT OpenRegHooksInterface : public at::PrivateUse1HooksInterfa
   }
 
   bool isBuilt() const override {
-    // This extension is compiled as part of the OpenReg test extension.
+    // This extension is compiled as part of the Mcpu test extension.
     return true;
   }
 
   bool isAvailable() const override {
-    // Consider OpenReg available if there's at least one device reported.
+    // Consider Mcpu available if there's at least one device reported.
     return device_count() > 0;
   }
 
@@ -81,15 +81,15 @@ struct OPENREG_EXPORT OpenRegHooksInterface : public at::PrivateUse1HooksInterfa
     }
     return at::Device(at::DeviceType::PrivateUse1, current_device());
   }
-  // LITERALINCLUDE START: OPENREG HOOK EXAMPLES
+  // LITERALINCLUDE MCPU HOOK EXAMPLES
   const at::Generator& getDefaultGenerator(DeviceIndex device_index) const override {
-    return getDefaultOpenRegGenerator(device_index);
+    return getDefaultMcpuGenerator(device_index);
   }
-  // LITERALINCLUDE END: OPENREG HOOK EXAMPLES
+  // LITERALINCLUDE MCPU HOOK EXAMPLES
 
   at::Generator getNewGenerator(DeviceIndex device_index) const override {
-    return at::make_generator<OpenRegGeneratorImpl>(device_index);
+    return at::make_generator<McpuGeneratorImpl>(device_index);
   }
 };
 
-} // namespace c10::openreg
+} // namespace c10::mcpu

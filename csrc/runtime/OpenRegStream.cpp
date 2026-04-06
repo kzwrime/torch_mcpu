@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <deque>
 
-namespace c10::openreg {
+namespace c10::mcpu {
 
 namespace {
 
@@ -31,7 +31,7 @@ int max_stream_priorities;
 std::deque<c10::once_flag> device_flags;
 std::vector<std::array<
     std::array<orStream_t, kStreamsPerPool>,
-    c10::openreg::max_compile_time_stream_priorities>>
+    c10::mcpu::max_compile_time_stream_priorities>>
     streams;
 std::deque<
     std::array<std::atomic<uint32_t>, max_compile_time_stream_priorities>>
@@ -54,7 +54,7 @@ thread_local std::unique_ptr<StreamId[]> current_streams = nullptr;
  *  110 = default stream
  *  111 = external stream
 
- * The range 000 to 101 is reserved for stream pools of different priorities and can be expanded as needed. (OpenReg currently supports two priorities: 0 and 1)
+ * The range 000 to 101 is reserved for stream pools of different priorities and can be expanded as needed. (Mcpu currently supports two priorities: 0 and 1)
  *
  * For external stream, StreamID is a orStream_t pointer. This means that last
  * bit will always be 0. So when constructing StreamId for a native stream we
@@ -128,17 +128,17 @@ void initGlobalStreamState() {
   streams.resize(num_devices);
   priority_counters.resize(num_devices);
   int leastPriority = -1, greatestPriority = -1;
-  OPENREG_CHECK(
+  MCPU_CHECK(
       orDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
   auto range = greatestPriority - leastPriority + 1;
-  max_stream_priorities = range >= c10::openreg::max_compile_time_stream_priorities
-      ? c10::openreg::max_compile_time_stream_priorities
+  max_stream_priorities = range >= c10::mcpu::max_compile_time_stream_priorities
+      ? c10::mcpu::max_compile_time_stream_priorities
       : range;
 }
 
 void initSingleDeviceStream(int priority, DeviceIndex device_index, int i) {
   auto& stream = streams[device_index][priority][i];
-  OPENREG_CHECK(orStreamCreateWithPriority(&stream, 0, priority));
+  MCPU_CHECK(orStreamCreateWithPriority(&stream, 0, priority));
   priority_counters[device_index][priority] = 0;
 }
 
@@ -153,7 +153,7 @@ void initDeviceStreamState(DeviceIndex device_index) {
   }
 }
 
-void initOpenRegStreamsOnce() {
+void initMcpuStreamsOnce() {
   c10::call_once(init_flag, initGlobalStreamState);
   for (const auto i : c10::irange(num_devices)) {
     c10::call_once(
@@ -186,9 +186,9 @@ uint32_t get_idx(std::atomic<uint32_t>& counter) {
   return raw % kStreamsPerPool;
 }
 
-OpenRegStream OpenRegStreamForId(DeviceIndex device_index, StreamId stream_id) {
-  return OpenRegStream(
-      OpenRegStream::UNCHECKED,
+McpuStream McpuStreamForId(DeviceIndex device_index, StreamId stream_id) {
+  return McpuStream(
+      McpuStream::UNCHECKED,
       Stream(
           Stream::UNSAFE,
           c10::Device(DeviceType::PrivateUse1, device_index),
@@ -198,12 +198,12 @@ OpenRegStream OpenRegStreamForId(DeviceIndex device_index, StreamId stream_id) {
 } // anonymous namespace
 
 // See Note [StreamId assignment]
-orStream_t OpenRegStream::stream() const {
+orStream_t McpuStream::stream() const {
   c10::DeviceIndex device_index = stream_.device_index();
   StreamId stream_id = stream_.id();
   StreamIdType st = streamIdType(stream_id);
   size_t si = streamIdIndex(stream_id);
-  // OpenReg does not support a default stream natively.
+  // Mcpu does not support a default stream natively.
   // Here, we designate stream 0 from the priority 0 stream pool to serve as the default stream.
   if(st.isDefault()){
     return streams[device_index][0][0];
@@ -227,56 +227,56 @@ orStream_t OpenRegStream::stream() const {
 // Returns a stream from the requested pool
 // Note: when called the first time on a device, this will create the
 // stream pools for that device.
-OpenRegStream getStreamFromPool(const int priority, DeviceIndex device_index) {
-  initOpenRegStreamsOnce();
+McpuStream getStreamFromPool(const int priority, DeviceIndex device_index) {
+  initMcpuStreamsOnce();
   if (device_index == -1) {
     device_index = current_device();
   }
   auto pri_idx = std::clamp(priority, 0, max_stream_priorities - 1);
   const auto idx = get_idx(priority_counters[device_index][pri_idx]);
   auto id_type = static_cast<StreamIdType>(pri_idx);
-  return OpenRegStreamForId(device_index, makeStreamId(id_type, idx));
+  return McpuStreamForId(device_index, makeStreamId(id_type, idx));
 }
 
-OpenRegStream getStreamFromPool(const bool isHighPriority, DeviceIndex device) {
-  initOpenRegStreamsOnce();
+McpuStream getStreamFromPool(const bool isHighPriority, DeviceIndex device) {
+  initMcpuStreamsOnce();
   int priority = isHighPriority ? max_stream_priorities - 1 : 0;
   return getStreamFromPool(priority, device);
 }
 
-OpenRegStream getStreamFromExternal(
+McpuStream getStreamFromExternal(
     orStream_t ext_stream,
     DeviceIndex device_index) {
-  return OpenRegStreamForId(
+  return McpuStreamForId(
       device_index, reinterpret_cast<int64_t>(ext_stream));
 }
 
-OpenRegStream getDefaultOpenRegStream(DeviceIndex device_index) {
-  initOpenRegStreamsOnce();
+McpuStream getDefaultMcpuStream(DeviceIndex device_index) {
+  initMcpuStreamsOnce();
   if (device_index == -1) {
     device_index = current_device();
   }
   check_device(device_index);
-  return OpenRegStreamForId(
+  return McpuStreamForId(
       device_index, makeStreamId(StreamIdType::DEFAULT, 0));
 }
 
-OpenRegStream getCurrentOpenRegStream(DeviceIndex device_index) {
-  initOpenRegStreamsOnce();
+McpuStream getCurrentMcpuStream(DeviceIndex device_index) {
+  initMcpuStreamsOnce();
   if (device_index == -1) {
     device_index = current_device();
   }
   check_device(device_index);
-  return OpenRegStreamForId(device_index, current_streams[device_index]);
+  return McpuStreamForId(device_index, current_streams[device_index]);
 }
 
-void setCurrentOpenRegStream(OpenRegStream stream) {
-  initOpenRegStreamsOnce();
+void setCurrentMcpuStream(McpuStream stream) {
+  initMcpuStreamsOnce();
   current_streams[stream.device_index()] = stream.id();
 }
 
-std::ostream& operator<<(std::ostream& stream, const OpenRegStream& s) {
+std::ostream& operator<<(std::ostream& stream, const McpuStream& s) {
   return stream << s.unwrap();
 }
 
-} // namespace c10::openreg
+} // namespace c10::mcpu

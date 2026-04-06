@@ -6,7 +6,7 @@
 #include <torch/csrc/autograd/autograd_not_implemented_fallback.h>
 #include <torch/library.h>
 
-namespace at::openreg {
+namespace at::mcpu {
 
 namespace {
 at::Tensor wrapper_quantize_per_tensor(
@@ -14,7 +14,7 @@ at::Tensor wrapper_quantize_per_tensor(
     double scale,
     int64_t zero_point,
     at::ScalarType dtype) {
-  return at::native::openreg::quantize_per_tensor(
+  return at::native::mcpu::quantize_per_tensor(
       self, scale, zero_point, dtype);
 }
 
@@ -27,7 +27,7 @@ int64_t wrapper__fused_sdp_choice(
     bool is_causal,
     std::optional<double> scale,
     bool enable_gqa) {
-  return at::native::openreg::_fused_sdp_choice(
+  return at::native::mcpu::_fused_sdp_choice(
       query, key, value, attn_mask, dropout_p, is_causal, scale, enable_gqa);
 }
 
@@ -36,7 +36,7 @@ void wrapper_quantize_tensor_per_tensor_affine_stub(
     at::Tensor& qtensor,
     double scale,
     int64_t zero_point) {
-  at::native::openreg::quantize_tensor_per_tensor_affine_stub(
+  at::native::mcpu::quantize_tensor_per_tensor_affine_stub(
       rtensor, qtensor, scale, zero_point);
 }
 
@@ -59,7 +59,7 @@ wrapper__scaled_dot_product_fused_attention_overrideable(
     bool is_causal,
     bool return_debug_mask,
     std::optional<double> scale) {
-  return at::native::openreg::_scaled_dot_product_fused_attention_overrideable(
+  return at::native::mcpu::_scaled_dot_product_fused_attention_overrideable(
       query,
       key,
       value,
@@ -89,7 +89,7 @@ wrapper_scaled_dot_product_fused_attention_overrideable_backward(
     const at::Tensor& philox_seed,
     const at::Tensor& philox_offset,
     std::optional<double> scale) {
-  return at::native::openreg::
+  return at::native::mcpu::
       _scaled_dot_product_fused_attention_overrideable_backward(
           grad_out,
           query,
@@ -111,23 +111,23 @@ wrapper_scaled_dot_product_fused_attention_overrideable_backward(
 }
 
 at::Tensor wrapper_custom_autograd_fn_returns_self(at::Tensor x) {
-  return at::native::openreg::custom_autograd_fn_returns_self(x);
+  return at::native::mcpu::custom_autograd_fn_returns_self(x);
 }
 
 at::Tensor wrapper_custom_autograd_fn_aliasing(at::Tensor x) {
-  return at::native::openreg::custom_autograd_fn_aliasing(x);
+  return at::native::mcpu::custom_autograd_fn_aliasing(x);
 }
 
 at::Tensor& wrapper_abs_out(const at::Tensor& self, at::Tensor& out) {
-  return at::native::openreg::abs_out(self, out);
+  return at::native::mcpu::abs_out(self, out);
 }
 
 void wrapper_abs_stub(at::TensorIteratorBase& iter) {
-  at::native::openreg::abs_kernel(iter);
+  at::native::mcpu::abs_kernel(iter);
 }
 
 at::Tensor wrapper_custom_abs(at::Tensor x) {
-  return at::native::openreg::custom_abs(x);
+  return at::native::mcpu::custom_abs(x);
 }
 } // namespace
 
@@ -186,4 +186,4 @@ TORCH_LIBRARY_IMPL(mcpu, AutogradPrivateUse1, m) {
   m.impl("custom_autograd_fn_aliasing", &wrapper_custom_autograd_fn_aliasing);
 }
 
-} // namespace at::openreg
+} // namespace at::mcpu

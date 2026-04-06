@@ -27,7 +27,7 @@
 
 #include <include/openreg.h>
 
-namespace at::native::openreg {
+namespace at::native::mcpu {
 
 class MemoryGuard {
  public:
@@ -94,4 +94,4 @@ class MemoryGuard {
   std::unordered_set<void*> unprotected_pointers_;
 };
 
-} // namespace at::native::openreg
+} // namespace at::native::mcpu

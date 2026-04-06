@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace c10::openreg {
+namespace c10::mcpu {
 
 class DeviceMemoryAllocator {
  public:
@@ -42,9 +42,9 @@ class DeviceMemoryAllocator {
 };
 
 
-class OpenRegDeviceAllocator final : public c10::DeviceAllocator {
+class McpuDeviceAllocator final : public c10::DeviceAllocator {
  public:
-  OpenRegDeviceAllocator();
+  McpuDeviceAllocator();
 
   at::DataPtr allocate(size_t nbytes) override;
   at::DeleterFnPtr raw_deleter() const override;

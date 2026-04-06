@@ -4,7 +4,7 @@
 #include "OpenRegException.h"
 #include "OpenRegFunctions.h"
 
-namespace c10::openreg {
+namespace c10::mcpu {
 
 orError_t GetDeviceCount(int* dev_count) {
   return orGetDeviceCount(dev_count);
@@ -16,16 +16,16 @@ orError_t GetDevice(DeviceIndex* device) {
   *device = static_cast<DeviceIndex>(tmp_device);
   return err;
 }
-// LITERALINCLUDE START: OPENREG SetDevice FUNCTION
+// LITERALINCLUDE MCPU SetDevice FUNCTION
 orError_t SetDevice(DeviceIndex device) {
   int cur_device = -1;
-  OPENREG_CHECK(orGetDevice(&cur_device));
+  MCPU_CHECK(orGetDevice(&cur_device));
   if (device == cur_device) {
     return orSuccess;
   }
   return orSetDevice(device);
 }
-// LITERALINCLUDE END: OPENREG SetDevice FUNCTION
+// LITERALINCLUDE MCPU SetDevice FUNCTION
 
 int device_count_impl() {
   int count = 0;
@@ -33,7 +33,7 @@ int device_count_impl() {
   return count;
 }
 
-OPENREG_EXPORT DeviceIndex device_count() noexcept {
+MCPU_EXPORT DeviceIndex device_count() noexcept {
   // initialize number of devices only once
   static int count = []() {
     try {
@@ -52,20 +52,20 @@ OPENREG_EXPORT DeviceIndex device_count() noexcept {
   return static_cast<DeviceIndex>(count);
 }
 
-OPENREG_EXPORT DeviceIndex current_device() {
+MCPU_EXPORT DeviceIndex current_device() {
   DeviceIndex cur_device = -1;
-  OPENREG_CHECK(GetDevice(&cur_device));
+  MCPU_CHECK(GetDevice(&cur_device));
   return cur_device;
 }
 
-// LITERALINCLUDE START: OPENREG set_device FUNCTION
-OPENREG_EXPORT void set_device(DeviceIndex device) {
+// LITERALINCLUDE MCPU set_device FUNCTION
+MCPU_EXPORT void set_device(DeviceIndex device) {
   check_device_index(device);
-  OPENREG_CHECK(SetDevice(device));
+  MCPU_CHECK(SetDevice(device));
 }
-// LITERALINCLUDE END: OPENREG set_device FUNCTION
+// LITERALINCLUDE MCPU set_device FUNCTION
 
-OPENREG_EXPORT DeviceIndex ExchangeDevice(DeviceIndex device) {
+MCPU_EXPORT DeviceIndex ExchangeDevice(DeviceIndex device) {
   int current_device = -1;
   orGetDevice(&current_device);
 
@@ -76,8 +76,8 @@ OPENREG_EXPORT DeviceIndex ExchangeDevice(DeviceIndex device) {
   return current_device;
 }
 
-OPENREG_EXPORT DeviceIndex maybe_exchange_device(DeviceIndex to_device) {
+MCPU_EXPORT DeviceIndex maybe_exchange_device(DeviceIndex to_device) {
   check_device_index(to_device);
   return ExchangeDevice(to_device);
 }
-} // namespace c10::openreg
+} // namespace c10::mcpu

@@ -6,7 +6,7 @@
 
 void orCheckFail(const char* func, const char* file, uint32_t line, const char* msg = "");
 
-#define OPENREG_CHECK(EXPR, ...)                                                       \
+#define MCPU_CHECK(EXPR, ...)                                                       \
   do {                                                                                 \
     const orError_t __err = EXPR;                                                      \
     if (C10_UNLIKELY(__err != orSuccess)) {                                            \

@@ -1,6 +1,6 @@
 #include "Common.h"
 
-namespace at::native::openreg {
+namespace at::native::mcpu {
 
 at::Tensor quantize_per_tensor(
     const at::Tensor& self,
@@ -66,4 +66,4 @@ at::Tensor& abs_out(const at::Tensor& self, at::Tensor& out);
 void abs_kernel(at::TensorIteratorBase& iter);
 at::Tensor custom_abs(at::Tensor x);
 
-} // namespace at::native::openreg
+} // namespace at::native::mcpu

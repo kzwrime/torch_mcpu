@@ -1,8 +1,8 @@
 #include "OpenRegHostAllocator.h"
 
-namespace c10::openreg {
+namespace c10::mcpu {
 
-OpenRegHostAllocator caching_host_allocator;
+McpuHostAllocator caching_host_allocator;
 REGISTER_HOST_ALLOCATOR(at::kPrivateUse1, &caching_host_allocator);
 
-} // namespace c10::openreg
+} // namespace c10::mcpu

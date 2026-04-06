@@ -17,7 +17,7 @@ static PyObject* _initExtension(PyObject* self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
-// LITERALINCLUDE START: OPENREG GET DEFAULT GENERATOR
+// LITERALINCLUDE MCPU GET DEFAULT GENERATOR
 static PyObject* _getDefaultGenerator(PyObject* self, PyObject* arg) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(
@@ -32,7 +32,7 @@ static PyObject* _getDefaultGenerator(PyObject* self, PyObject* arg) {
 
   END_HANDLE_TH_ERRORS
 }
-// LITERALINCLUDE END: OPENREG GET DEFAULT GENERATOR
+// LITERALINCLUDE MCPU GET DEFAULT GENERATOR
 
 // LITERALINCLUDE START: MODULE SET DEVICE HELPER
 
@@ -41,7 +41,7 @@ PyObject* _setDevice(PyObject* self, PyObject* arg) {
   TORCH_CHECK(THPUtils_checkLong(arg), "invalid argument to setDevice");
   auto device = THPUtils_unpackDeviceIndex(arg);
   torch::utils::device_lazy_init(at::kPrivateUse1);
-  c10::openreg::set_device(device);
+  c10::mcpu::set_device(device);
 
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
@@ -58,7 +58,7 @@ PyObject* _exchangeDevice(PyObject* self, PyObject* arg) {
   }
 
   torch::utils::device_lazy_init(at::kPrivateUse1);
-  auto current_device = c10::openreg::ExchangeDevice(device_index);
+  auto current_device = c10::mcpu::ExchangeDevice(device_index);
 
   return THPUtils_packDeviceIndex(current_device);
   END_HANDLE_TH_ERRORS
@@ -67,18 +67,18 @@ PyObject* _exchangeDevice(PyObject* self, PyObject* arg) {
 PyObject* _getDevice(PyObject* self, PyObject* noargs) {
   HANDLE_TH_ERRORS
   torch::utils::device_lazy_init(at::kPrivateUse1);
-  auto device = static_cast<int32_t>(c10::openreg::current_device());
+  auto device = static_cast<int32_t>(c10::mcpu::current_device());
   return THPUtils_packInt32(device);
   END_HANDLE_TH_ERRORS
 }
 
 PyObject* _getDeviceCount(PyObject* self, PyObject* noargs) {
   HANDLE_TH_ERRORS
-  return THPUtils_packUInt64(c10::openreg::device_count());
+  return THPUtils_packUInt64(c10::mcpu::device_count());
   END_HANDLE_TH_ERRORS
 }
 
-// LITERALINCLUDE START: OPENREG MODULE METHODS
+// LITERALINCLUDE MCPU MODULE METHODS
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
     {"_get_default_generator", _getDefaultGenerator, METH_O, nullptr},
@@ -87,7 +87,7 @@ static PyMethodDef methods[] = {
     {"_exchangeDevice", _exchangeDevice, METH_O, nullptr},
     {"_get_device_count", _getDeviceCount, METH_NOARGS, nullptr},
     {nullptr, nullptr, 0, nullptr}};
-// LITERALINCLUDE END: OPENREG MODULE METHODS
+// LITERALINCLUDE MCPU MODULE METHODS
 /*
  * When ASAN is enabled, PyTorch modifies the dlopen flag during import,
  * causing all global and weak symbols in _C.so and its dependent libraries
@@ -96,10 +96,10 @@ static PyMethodDef methods[] = {
  * Therefore, it cannot be named initModule here, otherwise initModule
  * in torch/csrc/Module.cpp will be called, resulting in failure.
  */
-extern "C" OPENREG_EXPORT PyObject* initOpenRegModule(void) {
-  static struct PyModuleDef openreg_C_module = {
+extern "C" MCPU_EXPORT PyObject* initMcpuModule(void) {
+  static struct PyModuleDef mcpu_C_module = {
       PyModuleDef_HEAD_INIT, "torch_mcpu._C", nullptr, -1, methods};
-  PyObject* mod = PyModule_Create(&openreg_C_module);
+  PyObject* mod = PyModule_Create(&mcpu_C_module);
 
   return mod;
 }

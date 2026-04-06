@@ -2,7 +2,7 @@
 
 #include <unordered_set>
 
-namespace at::native::openreg {
+namespace at::native::mcpu {
 
 // LITERALINCLUDE START: EMPTY.MEMORY_FORMAT IMPL
 at::Tensor empty_memory_format(
@@ -175,11 +175,11 @@ void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         false,
         "Operator '",
         op_name,
-        "' is not implemented for device openreg.");
+        "' is not implemented for device mcpu.");
   } else {
     at::native::cpu_fallback(op, stack);
   }
 }
 // LITERALINCLUDE END: FALLBACK IMPL
 
-} // namespace at::native::openreg
+} // namespace at::native::mcpu

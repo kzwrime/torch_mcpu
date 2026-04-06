@@ -1,6 +1,6 @@
 #include "Common.h"
 
-namespace at::native::openreg {
+namespace at::native::mcpu {
 
 at::Tensor empty_memory_format(
     c10::IntArrayRef size,
@@ -58,4 +58,4 @@ at::Tensor view(const at::Tensor& self, c10::SymIntArrayRef size);
 
 void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack);
 
-} // namespace at::native::openreg
+} // namespace at::native::mcpu

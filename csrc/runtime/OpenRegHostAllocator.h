@@ -7,9 +7,9 @@
 
 #include <include/openreg.h>
 
-namespace c10::openreg {
-struct OpenRegHostAllocator final : at::HostAllocator {
-  OpenRegHostAllocator() = default;
+namespace c10::mcpu {
+struct McpuHostAllocator final : at::HostAllocator {
+  McpuHostAllocator() = default;
 
   static void ReportAndDelete(void* ptr) {
     if (!ptr) {
@@ -47,4 +47,4 @@ struct OpenRegHostAllocator final : at::HostAllocator {
   void reset_peak_stats() override {}
 };
 
-} // namespace c10::openreg
+} // namespace c10::mcpu

@@ -10,18 +10,18 @@
 #include "OpenRegFunctions.h"
 #include "OpenRegStream.h"
 
-namespace c10::openreg {
+namespace c10::mcpu {
 
-struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
+struct McpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   static constexpr DeviceType static_type = c10::DeviceType::PrivateUse1;
 
-  OpenRegGuardImpl() = default;
+  McpuGuardImpl() = default;
 
-  explicit OpenRegGuardImpl(DeviceType t) {
-    TORCH_CHECK(t == static_type, "OpenRegGuardImpl initialized with non-PrivateUse1 DeviceType: ", t);
+  explicit McpuGuardImpl(DeviceType t) {
+    TORCH_CHECK(t == static_type, "McpuGuardImpl initialized with non-PrivateUse1 DeviceType: ", t);
   }
 
-  // LITERALINCLUDE START: OPENREG ALL DEVICE GUARD IMPL
+  // LITERALINCLUDE MCPU ALL DEVICE GUARD IMPL
   /**
    * Return the type of device managed by this guard implementation.
    */
@@ -31,14 +31,14 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   /**
    * Set the current device to device d, and return the previous Device.
    */
-  // LITERALINCLUDE START: OPENREG GUARD DEVICE MANAGEMENT
+  // LITERALINCLUDE MCPU GUARD DEVICE MANAGEMENT
   Device exchangeDevice(Device d) const override {
     TORCH_CHECK(d.is_privateuseone(), "Expected a PrivateUse1 device, but got ", d);
 
     auto old_device_index = ExchangeDevice(d.index());
     return Device(static_type, old_device_index);
   }
-  // LITERALINCLUDE END: OPENREG GUARD DEVICE MANAGEMENT
+  // LITERALINCLUDE MCPU GUARD DEVICE MANAGEMENT
 
   /**
    * Get the current device.
@@ -50,7 +50,7 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
 
   /**
    * Get the device capability for a given device.
-   * By default, OpenReg has 2 same devices with the same capability.
+   * By default, Mcpu has 2 same devices with the same capability.
    */
   DeviceCapability getDeviceCapability(Device /*unused*/) const override {
     return DeviceCapability();
@@ -89,23 +89,23 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    * completed running on the device.
    */
   void synchronizeDevice(const DeviceIndex device_index) const override {
-    OPENREG_CHECK(orDeviceSynchronize());
+    MCPU_CHECK(orDeviceSynchronize());
   }
-  // LITERALINCLUDE END: OPENREG ALL DEVICE GUARD IMPL
+  // LITERALINCLUDE MCPU ALL DEVICE GUARD IMPL
 
-  // LITERALINCLUDE START: OPENREG ALL STREAM GUARD IMPL
+  // LITERALINCLUDE MCPU ALL STREAM GUARD IMPL
   /**
    * Get the current stream for a given device.
    */
   Stream getStream(Device d) const noexcept override {
-    return getCurrentOpenRegStream(d.index()).unwrap();
+    return getCurrentMcpuStream(d.index()).unwrap();
   }
 
   /**
    * Get the default stream for a given device.
    */
   Stream getDefaultStream(Device d) const override {
-    return getDefaultOpenRegStream(d.index());
+    return getDefaultMcpuStream(d.index());
   }
 
   /**
@@ -130,9 +130,9 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    * to set the current device to match the device of this stream.
    */
   Stream exchangeStream(Stream s) const noexcept override {
-    const OpenRegStream stream(s);
-    const auto old_stream = getCurrentOpenRegStream(s.device().index());
-    setCurrentOpenRegStream(stream);
+    const McpuStream stream(s);
+    const auto old_stream = getCurrentMcpuStream(s.device().index());
+    setCurrentMcpuStream(stream);
     return old_stream.unwrap();
   }
 
@@ -141,7 +141,7 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    * asynchronous execution has completed running on the device.
    */
   bool queryStream(const Stream& stream) const override {
-    OpenRegStream or_stream{stream};
+    McpuStream or_stream{stream};
     return or_stream.query();
   }
 
@@ -150,12 +150,12 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    * enqueued on the stream has completed running on the device.
    */
   void synchronizeStream(const Stream& stream) const override {
-    OpenRegStream or_stream{stream};
+    McpuStream or_stream{stream};
     or_stream.synchronize();
   }
-  // LITERALINCLUDE END: OPENREG ALL STREAM GUARD IMPL
+  // LITERALINCLUDE MCPU ALL STREAM GUARD IMPL
 
-  // LITERALINCLUDE START: OPENREG ALL EVENT GUARD IMPL
+  // LITERALINCLUDE MCPU ALL EVENT GUARD IMPL
   /**
    * Destroys the given event.
    */
@@ -166,7 +166,7 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
     auto or_event = static_cast<orEvent_t>(event);
     auto orig_device = current_device();
     set_device(device_index);
-    OPENREG_CHECK(orEventDestroy(or_event));
+    MCPU_CHECK(orEventDestroy(or_event));
     set_device(orig_device);
   }
 
@@ -176,7 +176,7 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    * it notifies all streams waiting on / blocked by that version of the
    * event to continue and marks that version as recorded.
    * */
-  // LITERALINCLUDE START: OPENREG GUARD EVENT RECORD
+  // LITERALINCLUDE MCPU GUARD EVENT RECORD
   void record(void** event, const Stream& stream, const DeviceIndex device_index, const EventFlag flag) const override {
     TORCH_CHECK(device_index == -1 || device_index == stream.device_index(),
                 "Event device index ",
@@ -186,7 +186,7 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
                 ".");
 
     orEvent_t or_event = static_cast<orEvent_t>(*event);
-    OpenRegStream or_stream{stream};
+    McpuStream or_stream{stream};
 
     const auto orig_device = current_device();
     set_device(stream.device().index());
@@ -204,15 +204,15 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
           TORCH_CHECK(false, "Received unknown flag");
       }
 
-      OPENREG_CHECK(orEventCreateWithFlags(&or_event, or_flag));
+      MCPU_CHECK(orEventCreateWithFlags(&or_event, or_flag));
     }
 
-    OPENREG_CHECK(orEventRecord(or_event, or_stream));
+    MCPU_CHECK(orEventRecord(or_event, or_stream));
     *event = or_event;
 
     set_device(orig_device);
   }
-  // LITERALINCLUDE END: OPENREG GUARD EVENT RECORD
+  // LITERALINCLUDE MCPU GUARD EVENT RECORD
 
   /**
    * Does nothing if the event has not been scheduled to be recorded.
@@ -227,10 +227,10 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
       return;
 
     orEvent_t or_event = static_cast<orEvent_t>(event);
-    OpenRegStream or_stream{stream};
+    McpuStream or_stream{stream};
     const auto orig_device = current_device();
     set_device(stream.device().index());
-    OPENREG_CHECK(orStreamWaitEvent(or_stream, or_event, 0));
+    MCPU_CHECK(orStreamWaitEvent(or_stream, or_event, 0));
     set_device(orig_device);
   }
 
@@ -259,7 +259,7 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
       return;
 
     orEvent_t or_event = static_cast<orEvent_t>(event);
-    OPENREG_CHECK(orEventSynchronize(or_event));
+    MCPU_CHECK(orEventSynchronize(or_event));
   }
 
   /**
@@ -273,13 +273,13 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
     orEvent_t or_event1 = static_cast<orEvent_t>(event1);
     orEvent_t or_event2 = static_cast<orEvent_t>(event2);
     float time_ms = 0;
-    OPENREG_CHECK(orEventElapsedTime(&time_ms, or_event1, or_event2));
+    MCPU_CHECK(orEventElapsedTime(&time_ms, or_event1, or_event2));
 
     set_device(orig_device);
 
     return static_cast<double>(time_ms);
   }
-  // LITERALINCLUDE END: OPENREG ALL EVENT GUARD IMPL
+  // LITERALINCLUDE MCPU ALL EVENT GUARD IMPL
 };
 
-} // namespace c10::openreg
+} // namespace c10::mcpu

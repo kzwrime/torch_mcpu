@@ -5,7 +5,7 @@
 
 #include <torch/library.h>
 
-namespace at::openreg {
+namespace at::mcpu {
 
 namespace {
 
@@ -17,7 +17,7 @@ at::Tensor wrapper_empty_memory_format(
     std::optional<c10::Device> device_opt,
     std::optional<bool> pin_memory_opt,
     std::optional<c10::MemoryFormat> memory_format_opt) {
-  return at::native::openreg::empty_memory_format(
+  return at::native::mcpu::empty_memory_format(
       size,
       dtype_opt,
       layout_opt,
@@ -34,7 +34,7 @@ at::Tensor wrapper_empty_strided(
     std::optional<c10::Layout> layout_opt,
     std::optional<c10::Device> device_opt,
     std::optional<bool> pin_memory_opt) {
-  return at::native::openreg::empty_strided(
+  return at::native::mcpu::empty_strided(
       size, stride, dtype_opt, layout_opt, device_opt, pin_memory_opt);
 }
 
@@ -43,48 +43,48 @@ at::Tensor wrapper_as_strided(
     c10::SymIntArrayRef size,
     c10::SymIntArrayRef stride,
     std::optional<c10::SymInt> storage_offset) {
-  return at::native::openreg::as_strided(self, size, stride, storage_offset);
+  return at::native::mcpu::as_strided(self, size, stride, storage_offset);
 }
 
 const at::Tensor& wrapper_resize_(
     const at::Tensor& self,
     c10::SymIntArrayRef size,
     ::std::optional<at::MemoryFormat> memory_format) {
-  return at::native::openreg::resize_(self, size, memory_format);
+  return at::native::mcpu::resize_(self, size, memory_format);
 }
 
 at::Tensor wrapper__reshape_alias(
     const at::Tensor& self,
     c10::SymIntArrayRef size,
     c10::SymIntArrayRef stride) {
-  return at::native::openreg::_reshape_alias(self, size, stride);
+  return at::native::mcpu::_reshape_alias(self, size, stride);
 }
 
 at::Tensor wrapper__copy_from(
     const at::Tensor& self,
     const at::Tensor& dst,
     bool non_blocking) {
-  return at::native::openreg::_copy_from(self, dst, non_blocking);
+  return at::native::mcpu::_copy_from(self, dst, non_blocking);
 }
 
 at::Tensor wrapper__copy_from_and_resize(
     const at::Tensor& self,
     const at::Tensor& dst) {
-  return at::native::openreg::_copy_from_and_resize(self, dst);
+  return at::native::mcpu::_copy_from_and_resize(self, dst);
 }
 
 at::Scalar wrapper__local_scalar_densor(const at::Tensor& self) {
-  return at::native::openreg::_local_scalar_dense(self);
+  return at::native::mcpu::_local_scalar_dense(self);
 }
 
 at::Tensor& wrapper_set_source_Tensor_(
     at::Tensor& self,
     const at::Tensor& source) {
-  return at::native::openreg::set_source_Tensor_(self, source);
+  return at::native::mcpu::set_source_Tensor_(self, source);
 }
 
 at::Tensor& wrapper_set_source_Storage_(at::Tensor& self, at::Storage source) {
-  return at::native::openreg::set_source_Storage_(self, source);
+  return at::native::mcpu::set_source_Storage_(self, source);
 }
 
 at::Tensor& wrapper_set_source_Storage_storage_offsetset_(
@@ -93,19 +93,19 @@ at::Tensor& wrapper_set_source_Storage_storage_offsetset_(
     int64_t storage_offset,
     c10::IntArrayRef size,
     c10::IntArrayRef stride) {
-  return at::native::openreg::set_source_Storage_storage_offset_(
+  return at::native::mcpu::set_source_Storage_storage_offset_(
       result, storage, storage_offset, size, stride);
 }
 
 at::Tensor wrapper_view(const at::Tensor& self, c10::SymIntArrayRef size) {
-  return at::native::openreg::view(self, size);
+  return at::native::mcpu::view(self, size);
 }
 
 // LITERALINCLUDE START: FALLBACK WRAPPER
 void wrapper_cpu_fallback(
     const c10::OperatorHandle& op,
     torch::jit::Stack* stack) {
-  at::native::openreg::cpu_fallback(op, stack);
+  at::native::mcpu::cpu_fallback(op, stack);
 }
 // LITERALINCLUDE END: FALLBACK WRAPPER
 
@@ -145,4 +145,4 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
 }
 // LITERALINCLUDE END: FALLBACK SINGLE
 
-} // namespace at::openreg
+} // namespace at::mcpu

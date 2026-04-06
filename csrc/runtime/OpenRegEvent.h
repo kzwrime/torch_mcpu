@@ -5,24 +5,24 @@
 #include "OpenRegException.h"
 #include "OpenRegStream.h"
 
-namespace c10::openreg {
+namespace c10::mcpu {
 
-struct OpenRegEvent {
-  OpenRegEvent(bool enable_timing) noexcept : enable_timing_{enable_timing} {}
+struct McpuEvent {
+  McpuEvent(bool enable_timing) noexcept : enable_timing_{enable_timing} {}
 
-  ~OpenRegEvent() {
+  ~McpuEvent() {
     if (is_created_) {
-      OPENREG_CHECK(orEventDestroy(event_));
+      MCPU_CHECK(orEventDestroy(event_));
     }
   }
 
-  OpenRegEvent(const OpenRegEvent&) = delete;
-  OpenRegEvent& operator=(const OpenRegEvent&) = delete;
+  McpuEvent(const McpuEvent&) = delete;
+  McpuEvent& operator=(const McpuEvent&) = delete;
 
-  OpenRegEvent(OpenRegEvent&& other) noexcept {
+  McpuEvent(McpuEvent&& other) noexcept {
     moveHelper(std::move(other));
   }
-  OpenRegEvent& operator=(OpenRegEvent&& other) noexcept {
+  McpuEvent& operator=(McpuEvent&& other) noexcept {
     if (this != &other) {
       moveHelper(std::move(other));
     }
@@ -67,15 +67,15 @@ struct OpenRegEvent {
   }
 
   void record() {
-    record(getCurrentOpenRegStream());
+    record(getCurrentMcpuStream());
   }
 
-  void recordOnce(const OpenRegStream& stream) {
+  void recordOnce(const McpuStream& stream) {
     if (!was_recorded_)
       record(stream);
   }
 
-  void record(const OpenRegStream& stream) {
+  void record(const McpuStream& stream) {
     if (!is_created_) {
       createEvent(stream.device_index());
     }
@@ -88,17 +88,17 @@ struct OpenRegEvent {
         stream.device_index(),
         ".");
 
-    OPENREG_CHECK(orEventRecord(event_, stream));
+    MCPU_CHECK(orEventRecord(event_, stream));
     was_recorded_ = true;
   }
 
-  void block(const OpenRegStream& stream) {
+  void block(const McpuStream& stream) {
     if (is_created_) {
-      OPENREG_CHECK(orStreamWaitEvent(stream, event_, 0));
+      MCPU_CHECK(orStreamWaitEvent(stream, event_, 0));
     }
   }
 
-  float elapsed_time(const OpenRegEvent& other) const {
+  float elapsed_time(const McpuEvent& other) const {
     TORCH_CHECK_VALUE(
         !(enable_timing_ & orEventDisableTiming) &&
             !(other.enable_timing_ & orEventDisableTiming),
@@ -111,13 +111,13 @@ struct OpenRegEvent {
         "Both events must be completed before calculating elapsed time.");
 
     float time_ms = 0;
-    OPENREG_CHECK(orEventElapsedTime(&time_ms, event_, other.event_));
+    MCPU_CHECK(orEventElapsedTime(&time_ms, event_, other.event_));
     return time_ms;
   }
 
   void synchronize() const {
     if (is_created_) {
-      OPENREG_CHECK(orEventSynchronize(event_));
+      MCPU_CHECK(orEventSynchronize(event_));
     }
   }
 
@@ -130,11 +130,11 @@ struct OpenRegEvent {
 
   void createEvent(DeviceIndex device_index) {
     device_index_ = device_index;
-    OPENREG_CHECK(orEventCreateWithFlags(&event_, enable_timing_));
+    MCPU_CHECK(orEventCreateWithFlags(&event_, enable_timing_));
     is_created_ = true;
   }
 
-  void moveHelper(OpenRegEvent&& other) {
+  void moveHelper(McpuEvent&& other) {
     std::swap(enable_timing_, other.enable_timing_);
     std::swap(is_created_, other.is_created_);
     std::swap(was_recorded_, other.was_recorded_);
@@ -143,4 +143,4 @@ struct OpenRegEvent {
   }
 };
 
-} // namespace c10::openreg
+} // namespace c10::mcpu

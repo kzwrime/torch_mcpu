@@ -1,9 +1,9 @@
 #include "OpenRegGuard.h"
 
-namespace c10::openreg {
+namespace c10::mcpu {
 
-// LITERALINCLUDE START: OPENREG GUARD REGISTRATION
-C10_REGISTER_GUARD_IMPL(PrivateUse1, OpenRegGuardImpl);
-// LITERALINCLUDE END: OPENREG GUARD REGISTRATION
+// LITERALINCLUDE MCPU GUARD REGISTRATION
+C10_REGISTER_GUARD_IMPL(PrivateUse1, McpuGuardImpl);
+// LITERALINCLUDE MCPU GUARD REGISTRATION
 
-} // namespace c10::openreg
+} // namespace c10::mcpu

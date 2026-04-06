@@ -15,36 +15,36 @@
 namespace torch::profiler::impl {
 namespace {
 
-static void openregCheck(orError_t result, const char* file, int line) {
+static void mcpuCheck(orError_t result, const char* file, int line) {
   if (result != orSuccess) {
     std::stringstream ss;
     ss << file << ":" << line << ": ";
     if (result == orErrorNotReady) {
-      ss << "OpenReg operation not ready";
+      ss << "Mcpu operation not ready";
     } else {
-      ss << "OpenReg error: " << result;
+      ss << "Mcpu error: " << result;
     }
     TORCH_CHECK(false, ss.str());
   }
 }
-#define TORCH_MCPU_CHECK(result) openregCheck(result, __FILE__, __LINE__);
+#define TORCH_MCPU_CHECK(result) mcpuCheck(result, __FILE__, __LINE__);
 
-struct OpenRegMethods : public ProfilerStubs {
+struct McpuMethods : public ProfilerStubs {
   void record(
       c10::DeviceIndex* device,
       ProfilerVoidEventStub* event,
       int64_t* cpu_ns) const override {
-    auto stream = c10::openreg::getCurrentOpenRegStream();
+    auto stream = c10::mcpu::getCurrentMcpuStream();
 
     // Get current device if requested
     if (device) {
-      *device = c10::openreg::current_device();
+      *device = c10::mcpu::current_device();
     }
 
-    // Create OpenReg event
-    orEvent_t openreg_event_ptr{nullptr};
-    TORCH_MCPU_CHECK(orEventCreateWithFlags(&openreg_event_ptr, orEventEnableTiming));
-    *event = std::shared_ptr<orEvent>(openreg_event_ptr, [](orEvent_t ptr) {
+    // Create Mcpu event
+    orEvent_t mcpu_event_ptr{nullptr};
+    TORCH_MCPU_CHECK(orEventCreateWithFlags(&mcpu_event_ptr, orEventEnableTiming));
+    *event = std::shared_ptr<orEvent>(mcpu_event_ptr, [](orEvent_t ptr) {
       orEventDestroy(ptr);
     });
 
@@ -54,7 +54,7 @@ struct OpenRegMethods : public ProfilerStubs {
     }
 
     // Record event on stream
-    TORCH_MCPU_CHECK(orEventRecord(openreg_event_ptr, stream.stream()));
+    TORCH_MCPU_CHECK(orEventRecord(mcpu_event_ptr, stream.stream()));
   }
 
   float elapsed(
@@ -79,26 +79,26 @@ struct OpenRegMethods : public ProfilerStubs {
   }
 
   void mark(const char* name) const override {
-    // OpenReg doesn't have built-in annotation support like NVTX
+    // Mcpu doesn't have built-in annotation support like NVTX
     // This is a no-op for KINETO_PRIVATEUSE1_FALLBACK mode
-    // PRIVATEUSE1 mode will use OpenReg defined `enter()` and `exit()` instead
+    // PRIVATEUSE1 mode will use Mcpu defined `enter()` and `exit()` instead
   }
 
   void rangePush(const char* name) const override {
-    // OpenReg doesn't have built-in annotation support like NVTX
+    // Mcpu doesn't have built-in annotation support like NVTX
     // This is a no-op for KINETO_PRIVATEUSE1_FALLBACK mode
-    // PRIVATEUSE1 mode will use OpenReg defined `enter()` and `exit()` instead
+    // PRIVATEUSE1 mode will use Mcpu defined `enter()` and `exit()` instead
   }
 
   void rangePop() const override {
-    // OpenReg doesn't have built-in annotation support like NVTX
+    // Mcpu doesn't have built-in annotation support like NVTX
     // This is a no-op for KINETO_PRIVATEUSE1_FALLBACK mode
-    // PRIVATEUSE1 mode will use OpenReg defined `enter()` and `exit()` instead
+    // PRIVATEUSE1 mode will use Mcpu defined `enter()` and `exit()` instead
   }
 
   void onEachDevice(std::function<void(int)> op) const override {
     c10::DeviceGuard device_guard(c10::DeviceType::PrivateUse1);
-    int device_count = c10::openreg::device_count();
+    int device_count = c10::mcpu::device_count();
     for (const auto i : c10::irange(device_count)) {
       device_guard.set_index(i);
       op(i);
@@ -114,13 +114,13 @@ struct OpenRegMethods : public ProfilerStubs {
   }
 };
 
-struct RegisterOpenRegMethods {
-  RegisterOpenRegMethods() {
-    static OpenRegMethods methods;
+struct RegisterMcpuMethods {
+  RegisterMcpuMethods() {
+    static McpuMethods methods;
     registerPrivateUse1Methods(&methods);
   }
 };
-RegisterOpenRegMethods reg;
+RegisterMcpuMethods reg;
 
 } // namespace
 } // namespace torch::profiler::impl
