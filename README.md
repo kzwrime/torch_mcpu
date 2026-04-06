@@ -1,74 +1,27 @@
 # PyTorch OpenReg
 
-## Background
+## 背景
 
-The third-party device integration mechanism based on PrivateUse1 has become the official mainstream method for new backends to integrate with PyTorch. Ensuring the availability of this mechanism is crucial for enriching PyTorch's hardware ecosystem.
+基于 PrivateUse1 的第三方设备集成机制已成为新后端集成到 PyTorch 的官方主流方法。确保该机制的可用性对于丰富 PyTorch 的硬件生态系统至关重要。
 
-**Note:**
+**注意：**
 
-The goal of `torch_mcpu` is **not to implement a fully functional, high-performance PyTorch backend**, but to serve as a **minimalist reference implementation for mechanism verification**.
+`torch_mcpu` 的目标**不是实现一个功能完整、高性能的 PyTorch 后端**，而是作为**机制验证的极简参考实现**。
 
-### Purpose
+### 目的
 
-- **Test Backend**: To serve as an in-tree test backend for PrivateUse1, ensuring quality stability through CI/CD.
-- **Integration Example**: To serve as a reference example for new backend integration.
-- **Integration Documentation**: To provide module-level integration documentation that corresponds with the code.
+- **测试后端**：作为 PrivateUse1 的树内测试后端，通过 CI/CD 确保质量稳定性。
+- **集成示例**：作为新后端集成的参考示例。
+- **集成文档**：提供与代码对应的模块级集成文档。
 
-### Design Principles
+### 设计原则
 
-- **Minimality Principle**: The fundamental goal is to enable/verify all integration paths/mechanisms for a new backend to integrate to PyTorch. All functions follow a "just right" strategy to ensure the correctness of relevant integration capabilities.
-- **Authenticity Principle**: To complete the OpenReg integration in the same way a real accelerator backend would integrate with PyTorch.
+- **最小化原则**：根本目标是启用/验证新后端集成到 PyTorch 的所有集成路径/机制。所有功能遵循"恰到好处"策略，确保相关集成能力的正确性。
+- **真实性原则**：以真实加速器后端集成到 PyTorch 的相同方式完成 OpenReg 集成。
 
-## Directory Structure
+## 目录结构
 
-```shell
-torch_mcpu/
-├── CMakeLists.txt
-├── csrc
-│   ├── amp
-│   │   └── autocast_mode.cpp
-│   ├── aten
-│   │   ├── native
-│   │   │   ├── Extra.cpp
-│   │   │   ├── Minimal.cpp
-│   │   │   └── ...
-│   │   ├── OpenRegExtra.cpp
-│   │   └── OpenRegMinimal.cpp
-│   ├── CMakeLists.txt
-│   └── runtime
-│       ├── OpenRegDeviceAllocator.cpp
-│       ├── OpenRegDeviceAllocator.h
-│       ├── OpenRegFunctions.cpp
-│       ├── OpenRegFunctions.h
-│       ├── OpenRegGenerator.cpp
-│       ├── OpenRegGenerator.h
-│       ├── OpenRegGuard.cpp
-│       ├── OpenRegGuard.h
-│       ├── OpenRegHooks.cpp
-│       ├── OpenRegHooks.h
-│       ├── OpenRegHostAllocator.cpp
-│       ├── OpenRegHostAllocator.h
-│       └── ...
-├── pyproject.toml
-├── README.md
-├── setup.py
-├── third_party
-│   └── openreg
-└── torch_mcpu
-    ├── csrc
-    │   ├── CMakeLists.txt
-    │   ├── Module.cpp
-    │   └── stub.c
-    ├── __init__.py
-    └── openreg
-        ├── amp
-        │   └── __init__.py
-        ├── __init__.py
-        ├── meta.py
-        └── random.py
-```
-
-**Dependencies**:
+**依赖关系**:
 
 ```mermaid
 graph LR
@@ -81,81 +34,81 @@ graph LR
     A --> B --> C --> D --> E
 ```
 
-There are 4 DSOs in torch_mcpu, and the dependencies between them are as follows:
+torch_mcpu 中有 4 个 DSO，它们之间的依赖关系如下：
 
 - `_C.so`:
-  - **sources**: torch_mcpu/csrc/stub.c
-  - **description**: Python C module entry point.
-- `libtorch_bindings.so`: The bridging code between Python and C++ should go here.
-  - **sources**: torch_mcpu/csrc
-  - **description**: A thin glue layer between Python and C++.
-- `libtorch_mcpu.so`: All core implementations should go here.
-  - **sources**: csrc
-  - **description**: All core functionality, such as device runtime, operators, etc.
-- `libopenreg.so`: A DSO that uses the CPU to emulate a CUDA-like device, you can ignore it.
-  - **sources**: third_party/openreg
-  - **description**: Provides low-level device functionality similar to libcudart.so.
+  - **源文件**: torch_mcpu/csrc/stub.c
+  - **描述**: Python C 模块入口点。
+- `libtorch_bindings.so`: Python 和 C++ 之间的桥接代码应该放在这里。
+  - **源文件**: torch_mcpu/csrc
+  - **描述**: Python 和 C++ 之间的薄胶水层。
+- `libtorch_mcpu.so`: 所有核心实现应该放在这里。
+  - **源文件**: csrc
+  - **描述**: 所有核心功能，如设备运行时、运算符等。
+- `libopenreg.so`: 一个使用 CPU 模拟类似 CUDA 设备的 DSO，你可以忽略它。
+  - **源文件**: third_party/openreg
+  - **描述**: 提供类似于 libcudart.so 的底层设备功能。
 
-**Key Directories**:
+**关键目录**:
 
-- `csrc/`: Core device implementation, including operator registration, runtime, etc.
-  - `csrc/amp/`: AMP(Automatic Mixed Precision)
-  - `csrc/aten/`: Operator registration
-    - `csrc/aten/native/`: Specific operator implementations for the OpenReg device.
-      - `csrc/aten/native/OpenRegMinimal.cpp`: The most minimal set of operator implementations (allowing for the creation of Tensors and related operations upon completion).
-      - `csrc/aten/native/OpenRegExtra.cpp`: Implementations for other types of operators.
-  - `csrc/runtime/`: Implementations for Host memory, device memory, Guard, Hooks, etc.
-- `third_party/`: A C++ library that simulates a CUDA-like device using the CPU.
-- `torch_mcpu/`: Python interface implementation (Python code and C++ Bindings).
-  - `torch_mcpu/csrc/`: Python C++ binding code.
-  - `torch_mcpu/openreg/`: Python API.
+- `csrc/`: 核心设备实现，包括运算符注册、运行时等。
+  - `csrc/amp/`: AMP（自动混合精度）
+  - `csrc/aten/`: 运算符注册
+    - `csrc/aten/native/`: OpenReg 设备的特定运算符实现。
+      - `csrc/aten/native/OpenRegMinimal.cpp`: 最小的运算符实现集（完成后允许创建 Tensor 及相关操作）。
+      - `csrc/aten/native/OpenRegExtra.cpp`: 其他类型运算符的实现。
+  - `csrc/runtime/`: Host 内存、设备内存、Guard、Hooks 等的实现。
+- `third_party/`: 一个使用 CPU 模拟类似 CUDA 设备的 C++ 库。
+- `torch_mcpu/`: Python 接口实现（Python 代码和 C++ 绑定）。
+  - `torch_mcpu/csrc/`: Python C++ 绑定代码。
+  - `torch_mcpu/openreg/`: Python API。
 
-## Currently Implemented Features
+## 当前已实现的功能
 
-### Operator Registration
+### 运算符注册
 
-- Operator Implementation
+- 运算符实现
 
-  - Register for builtin PyTorch Operators
-    - `TORCH_LIBRARY_IMPL` form: See `empty.memory_format
-    - `STUB` form: See `abs_stub`
-  - Register for custom operators
-    - Schema Registration: See `custom_abs`
-    - Kernel Registration: See `custom_abs`
-    - Fallback Registration for `AutogradPriavateUse1`: See `custom_abs`
-    - Meta Registration: See `custom_abs`
-    - `torch.autograd.Function`: See `custom_autograd_fn_aliasing`
-  - Register for fallback
-    - Per-operator Fallback: See `sub.Tensor`
-    - Global Fallback: See `wrapper_cpu_fallback`
+  - 为内置 PyTorch 运算符注册
+    - `TORCH_LIBRARY_IMPL` 形式：参见 `empty.memory_format
+    - `STUB` 形式：参见 `abs_stub`
+  - 为自定义运算符注册
+    - Schema 注册：参见 `custom_abs`
+    - Kernel 注册：参见 `custom_abs`
+    - 为 `AutogradPriavateUse1` 注册 Fallback：参见 `custom_abs`
+    - Meta 注册：参见 `custom_abs`
+    - `torch.autograd.Function`：参见 `custom_autograd_fn_aliasing`
+  - 为 fallback 注册
+    - 按运算符 Fallback：参见 `sub.Tensor`
+    - 全局 Fallback：参见 `wrapper_cpu_fallback`
 
-### Autoload
+### 自动加载
 
-When `import torch`, installed accelerators (such as `torch_mcpu`) will be automatically loaded, achieving the same experience as the built-in backends.
+当 `import torch` 时，已安装的加速器（如 `torch_mcpu`）将被自动加载，实现与内置后端相同的体验。
 
-- Register the backend with Python `entry points`: See `setup` in `setup.py`
-- Add a callable function for backend initialization: See `_autoload` in `torch_mcpu/__init__.py`
-- Dynamically loading the backend without explicit imports: See [Usage Example](#usage-example)
+- 使用 Python `entry points` 注册后端：参见 `setup.py` 中的 `setup`
+- 添加后端初始化的可调用函数：参见 `torch_mcpu/__init__.py` 中的 `_autoload`
+- 无需显式导入即可动态加载后端：参见 [使用示例](#使用示例)
 
-### AMP(Automatic Mixed Precision)
+### AMP（自动混合精度）
 
-`AMP` provides convenience methods for mixed precision, where some operations use the `torch.float32` datatype and other operations use `lower precision` floating point datatype: `torch.float16` or `torch.bfloat16`.
+`AMP` 为混合精度提供便捷方法，某些操作使用 `torch.float32` 数据类型，其他操作使用`较低精度`的浮点数据类型：`torch.float16` 或 `torch.bfloat16`。
 
-- Register specific operator conversion rules: See `autocat_mode.cpp` in `csrc/amp`.
-- Add support for new data types for different accelerators: See `get_amp_supported_dtype` in `torch_mcpu/openreg/amp/__init__.py`
+- 注册特定的运算符转换规则：参见 `csrc/amp` 中的 `autocat_mode.cpp`
+- 为不同加速器添加新数据类型的支持：参见 `torch_mcpu/openreg/amp/__init__.py` 中的 `get_amp_supported_dtype`
 
-## Installation and Usage
+## 安装和使用
 
-### Installation
+### 安装
 
 ```python
-python -m pip install --no-build-isolation -e . # for develop
-python -m pip install --no-build-isolation . # for install
+python -m pip install --no-build-isolation -e . # 用于开发
+python -m pip install --no-build-isolation . # 用于安装
 ```
 
-### Usage Example
+### 使用示例
 
-After installation, you can use the `openreg` device in Python just like any other regular device.
+安装后，你可以像使用任何其他常规设备一样在 Python 中使用 `openreg` 设备。
 
 ```python
 import torch
@@ -178,17 +131,17 @@ print("Result z:\n", z)
 print(f"Device of z: {z.device}")
 ```
 
-## Documentation
+## 文档
 
-Please refer to [this](https://docs.pytorch.org/docs/main/accelerator/index.html) for a series of documents on integrating new accelerators into PyTorch, which will be kept in sync with the `OpenReg` codebase as well.
+请参阅[此文档](https://docs.pytorch.org/docs/main/accelerator/index.html)，了解将新加速器集成到 PyTorch 的一系列文档，这些文档将与 `OpenReg` 代码库保持同步。
 
-## Future Plans
+## 未来计划
 
-- **Enhance Features**:
-  - Device-agnostic APIs
-  - Memory Management
-  - Generator
-  - Distributed
-  - Custom Tensor&Storage
+- **增强功能**：
+  - 设备无关 API
+  - 内存管理
+  - 生成器
+  - 分布式
+  - 自定义 Tensor&Storage
   - ...
-- **Improve Tests**: Add more test cases related to the integration mechanism.
+- **改进测试**：添加更多与集成机制相关的测试用例。
