@@ -415,7 +415,8 @@ class TestMultiDeviceAllocation(TestCase):
 
     def setUp(self):
         self.device_count = torch.mcpu.device_count()
-        self.assertEqual(self.device_count, 2, "This test requires 2 OpenReg devices")
+        if self.device_count < 2:
+            self.skipTest("This test requires 2 OpenReg devices, but only 1 is available")
         gc.collect()
 
     def tearDown(self):
@@ -479,7 +480,8 @@ class TestCrossDeviceOperations(TestCase):
 
     def setUp(self):
         self.device_count = torch.mcpu.device_count()
-        self.assertEqual(self.device_count, 2)
+        if self.device_count < 2:
+            self.skipTest("This test requires 2 OpenReg devices, but only 1 is available")
         gc.collect()
 
     def tearDown(self):

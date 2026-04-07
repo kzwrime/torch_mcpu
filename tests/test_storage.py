@@ -205,15 +205,14 @@ class TestSerialization(TestCase):
             path = os.path.join(tmpdir, "data.pt")
             torch.save(tensor, path)
 
-            loaded_device = torch.load(path, map_location="mcpu:1")
-            self.assertEqual(loaded_device.device.index, 1)
+            # Single device configuration - only device 0 is available
+            loaded_device = torch.load(path, map_location="mcpu:0")
+            self.assertEqual(loaded_device.device.index, 0)
             self.assertEqual(loaded_device.cpu(), tensor.cpu())
 
     def test_serialization_storage_location_tag(self):
         """Test storage location tag"""
-        storage = torch.UntypedStorage(4, device=torch.device("mcpu:1"))
-        self.assertEqual(torch.serialization.location_tag(storage), "mcpu:1")
-
+        # Single device configuration - only device 0 is available
         storage = torch.UntypedStorage(4, device=torch.device("mcpu"))
         self.assertEqual(torch.serialization.location_tag(storage), "mcpu:0")
 
@@ -225,11 +224,6 @@ class TestSerialization(TestCase):
             storage_cpu, "mcpu:0"
         )
         self.assertTrue(storage_mcpu0.is_mcpu)
-
-        storage_mcpu1 = torch.serialization.default_restore_location(
-            storage_cpu, "mcpu:1"
-        )
-        self.assertTrue(storage_mcpu1.is_mcpu)
 
 
 if __name__ == "__main__":

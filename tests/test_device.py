@@ -8,12 +8,10 @@ from torch.testing._internal.common_utils import run_tests, TestCase
 class TestDevice(TestCase):
     def test_device_count(self):
         count = torch.accelerator.device_count()
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 1)  # Single device configuration
 
     def test_device_switch(self):
-        torch.accelerator.set_device_index(1)
-        self.assertEqual(torch.accelerator.current_device_index(), 1)
-
+        # Only device 0 is available in single-device configuration
         torch.accelerator.set_device_index(0)
         self.assertEqual(torch.accelerator.current_device_index(), 0)
 
@@ -23,8 +21,9 @@ class TestDevice(TestCase):
             self.assertEqual(torch.accelerator.current_device_index(), device)
         self.assertEqual(torch.accelerator.current_device_index(), device)
 
-        with torch.accelerator.device_index(1):
-            self.assertEqual(torch.accelerator.current_device_index(), 1)
+        # Only device 0 is available in single-device configuration
+        with torch.accelerator.device_index(0):
+            self.assertEqual(torch.accelerator.current_device_index(), 0)
         self.assertEqual(torch.accelerator.current_device_index(), device)
 
     def test_invalid_device_index(self):

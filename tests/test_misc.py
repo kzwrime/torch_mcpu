@@ -28,7 +28,7 @@ class TestBackendModule(TestCase):
         with self.assertRaisesRegex(RuntimeError, "Try to call torch.mcpu"):
             torch.utils.backend_registration._get_custom_mod_func("func_name_")
         self.assertTrue(
-            torch.utils.backend_registration._get_custom_mod_func("device_count")() == 2
+            torch.utils.backend_registration._get_custom_mod_func("device_count")() == 1
         )
 
 

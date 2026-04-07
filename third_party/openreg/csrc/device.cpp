@@ -3,7 +3,7 @@
 namespace {
 
 // Total device numbers
-constexpr int DEVICE_COUNT = 2;
+constexpr int DEVICE_COUNT = 1;
 // Current device index
 thread_local int gCurrentDevice = 0;
 

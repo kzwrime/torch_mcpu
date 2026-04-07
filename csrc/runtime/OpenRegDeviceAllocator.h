@@ -3,20 +3,22 @@
 #include <c10/core/Allocator.h>
 #include <c10/core/CachingDeviceAllocator.h>
 #include <c10/core/Device.h>
-#include <c10/util/flat_hash_map.h>
 
 #include <include/openreg.h>
 
 #include <memory>
 #include <mutex>
 #include <unordered_map>
-#include <vector>
 
 namespace c10::mcpu {
 
+/**
+ * Device memory allocator for single-device Mcpu backend.
+ * Manages memory allocation, deallocation, and statistics tracking.
+ */
 class DeviceMemoryAllocator {
  public:
-  explicit DeviceMemoryAllocator(c10::DeviceIndex device_index);
+  DeviceMemoryAllocator();
 
   DeviceMemoryAllocator(const DeviceMemoryAllocator&) = delete;
   DeviceMemoryAllocator& operator=(const DeviceMemoryAllocator&) = delete;
@@ -32,8 +34,6 @@ class DeviceMemoryAllocator {
   void resetPeakStats();
 
  private:
-  c10::DeviceIndex device_index_;
-
   c10::CachingDeviceAllocator::DeviceStats stats_;
 
   std::unordered_map<void*, size_t> allocation_sizes_;
@@ -42,6 +42,10 @@ class DeviceMemoryAllocator {
 };
 
 
+/**
+ * PyTorch DeviceAllocator interface implementation for Mcpu backend.
+ * Simplified for single-device operation.
+ */
 class McpuDeviceAllocator final : public c10::DeviceAllocator {
  public:
   McpuDeviceAllocator();
@@ -49,7 +53,6 @@ class McpuDeviceAllocator final : public c10::DeviceAllocator {
   at::DataPtr allocate(size_t nbytes) override;
   at::DeleterFnPtr raw_deleter() const override;
   void copy_data(void* dest, const void* src, std::size_t count) const final;
-
 
   bool initialized() override;
   void emptyCache(MempoolId_t mempool_id = {0, 0}) override;
@@ -59,19 +62,14 @@ class McpuDeviceAllocator final : public c10::DeviceAllocator {
   void resetAccumulatedStats(c10::DeviceIndex device) override;
   void resetPeakStats(c10::DeviceIndex device) override;
 
-
   void freeMemory(void* ptr);
 
  private:
+  // Single device allocator (no per-device vector needed)
+  std::unique_ptr<DeviceMemoryAllocator> device_allocator_;
 
-  // Per-device allocators
-  std::vector<std::unique_ptr<DeviceMemoryAllocator>> device_allocators_;
-
-  // Global mapping from pointer to device index
   std::recursive_mutex mutex_;
-  ska::flat_hash_map<void*, c10::DeviceIndex> allocated_blocks_;
 };
-
 
 
 

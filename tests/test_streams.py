@@ -10,13 +10,13 @@ class TestStream(TestCase):
         """Test stream creation with different methods"""
         stream = torch.Stream(device="mcpu")
         self.assertEqual(stream.device_index, torch.mcpu.current_device())
-        stream = torch.Stream(device="mcpu:1")
+        stream = torch.Stream(device="mcpu:0")
         self.assertEqual(stream.device.type, "mcpu")
-        self.assertEqual(stream.device_index, 1)
+        self.assertEqual(stream.device_index, 0)
 
-        stream = torch.Stream(1)
+        stream = torch.Stream(0)
         self.assertEqual(stream.device.type, "mcpu")
-        self.assertEqual(stream.device_index, 1)
+        self.assertEqual(stream.device_index, 0)
 
         stream1 = torch.Stream(
             stream_id=stream.stream_id,
@@ -28,12 +28,12 @@ class TestStream(TestCase):
     @skipIfTorchDynamo()
     def test_stream_context(self):
         """Test stream context manager"""
-        with torch.Stream(device="mcpu:1") as stream:
+        with torch.Stream(device="mcpu:0") as stream:
             self.assertEqual(torch.accelerator.current_stream(), stream)
 
     def test_stream_context_exception_restore(self):
         prev = torch.accelerator.current_stream()
-        inner_stream = torch.Stream(device="mcpu:1")
+        inner_stream = torch.Stream(device="mcpu:0")
         try:
             with inner_stream:
                 # inside the context we should be on the inner stream
@@ -52,7 +52,7 @@ class TestStream(TestCase):
         current_stream = torch.accelerator.current_stream()
         self.assertEqual(current_stream, stream1)
 
-        stream2 = torch.Stream(device="mcpu:1")
+        stream2 = torch.Stream(device="mcpu:0")
         current_stream = torch.accelerator.current_stream()
         self.assertEqual(current_stream, stream1)
         torch.accelerator.set_stream(stream2)
@@ -62,7 +62,7 @@ class TestStream(TestCase):
     @skipIfTorchDynamo()
     def test_stream_synchronize(self):
         """Test stream synchronization"""
-        stream = torch.Stream(device="mcpu:1")
+        stream = torch.Stream(device="mcpu:0")
         self.assertEqual(True, stream.query())
 
         event = torch.Event()
@@ -73,16 +73,16 @@ class TestStream(TestCase):
     @skipIfTorchDynamo()
     def test_stream_repr(self):
         """Test stream string representation"""
-        stream = torch.Stream(device="mcpu:1")
+        stream = torch.Stream(device="mcpu:0")
         self.assertTrue(
-            "torch.Stream device_type=mcpu, device_index=1" in repr(stream)
+            "torch.Stream device_type=mcpu, device_index=0" in repr(stream)
         )
 
     @skipIfTorchDynamo()
     def test_stream_wait_stream(self):
         """Test stream waiting on another stream"""
         stream_1 = torch.Stream(device="mcpu:0")
-        stream_2 = torch.Stream(device="mcpu:1")
+        stream_2 = torch.Stream(device="mcpu:0")
         stream_2.wait_stream(stream_1)
 
     @skipIfTorchDynamo()
@@ -116,6 +116,10 @@ class TestStream(TestCase):
     @skipIfTorchDynamo()
     def test_stream_multiple_devices(self):
         """Test streams on multiple devices"""
+        # Skip this test in single-device configuration
+        if torch.mcpu.device_count() < 2:
+            self.skipTest("This test requires 2 devices, but only 1 is available")
+
         stream0 = torch.Stream(device="mcpu:0")
         stream1 = torch.Stream(device="mcpu:1")
 

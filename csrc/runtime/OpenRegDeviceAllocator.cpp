@@ -11,8 +11,7 @@ namespace c10::mcpu {
 constexpr size_t kAggregate = static_cast<size_t>(StatType::AGGREGATE);
 
 
-DeviceMemoryAllocator::DeviceMemoryAllocator(c10::DeviceIndex device_index)
-    : device_index_(device_index) {}
+DeviceMemoryAllocator::DeviceMemoryAllocator() {}
 
 void* DeviceMemoryAllocator::malloc(size_t nbytes) {
   if (nbytes == 0) {
@@ -28,9 +27,7 @@ void* DeviceMemoryAllocator::malloc(size_t nbytes) {
       ret == orSuccess && data != nullptr,
       "Failed to allocate ",
       nbytes,
-      " bytes on mcpu device ",
-      device_index_,
-      ". ",
+      " bytes on mcpu device. ",
       "Allocated: ",
       stats_.allocated_bytes[0].current,
       " bytes, ",
@@ -72,8 +69,6 @@ void DeviceMemoryAllocator::free(void* ptr) {
       TORCH_WARN(
           "Successfully freed Mcpu memory pointer ",
           ptr,
-          " on device ",
-          device_index_,
           " that was not tracked by the allocator. "
           "Statistics may be inaccurate.");
     }
@@ -86,17 +81,14 @@ void DeviceMemoryAllocator::free(void* ptr) {
           ptr,
           " with size ",
           it->second,
-          " bytes on device ",
-          device_index_,
-          ". Return code: ",
+          " bytes. ",
+          "Return code: ",
           ret,
           ". Keeping tracking record - this may indicate a double-free or invalid pointer.");
     } else {
       TORCH_WARN(
           "orFree failed for untracked pointer ",
           ptr,
-          " on device ",
-          device_index_,
           ". Return code: ",
           ret,
           ". This likely indicates a double-free or invalid pointer.");
@@ -158,30 +150,21 @@ void deleteMcpuMemory(void* ptr) {
 
 McpuDeviceAllocator::McpuDeviceAllocator() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
-  const auto device_count = c10::mcpu::device_count();
-  device_allocators_.resize(device_count);
-  for (const auto i : c10::irange(device_count)) {
-    device_allocators_[i] = std::make_unique<DeviceMemoryAllocator>(i);
-  }
+  // Single device allocator (no loop needed)
+  device_allocator_ = std::make_unique<DeviceMemoryAllocator>();
 }
 
 
 at::DataPtr McpuDeviceAllocator::allocate(size_t nbytes) {
-  int current_device_index = -1;
-  auto ret = orGetDevice(&current_device_index);
-  TORCH_CHECK(ret == orSuccess, "Failed to get current Mcpu device");
-
+  // Always use device 0 for single-device configuration
+  constexpr int device_index = 0;
   auto curr_device =
-      c10::Device(c10::DeviceType::PrivateUse1, current_device_index);
+      c10::Device(c10::DeviceType::PrivateUse1, device_index);
 
   void* data = nullptr;
   if (nbytes > 0) {
-    // Allocate memory via device-specific allocator
-    data = device_allocators_[current_device_index]->malloc(nbytes);
-
-    // Track which device owns this pointer
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    allocated_blocks_[data] = current_device_index;
+    // Allocate memory via device allocator
+    data = device_allocator_->malloc(nbytes);
   }
 
   return {data, data, &deleteMcpuMemory, curr_device};
@@ -202,7 +185,7 @@ void McpuDeviceAllocator::copy_data(
 
 bool McpuDeviceAllocator::initialized() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
-  return !device_allocators_.empty();
+  return device_allocator_ != nullptr;
 }
 
 void McpuDeviceAllocator::freeMemory(void* ptr) {
@@ -210,51 +193,25 @@ void McpuDeviceAllocator::freeMemory(void* ptr) {
     return;
   }
 
-  // Try to find which device owns this pointer
-  c10::DeviceIndex device_index = -1;
-  bool found_in_map = false;
-
-  {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    auto it = allocated_blocks_.find(ptr);
-    if (it != allocated_blocks_.end()) {
-      device_index = it->second;
-      allocated_blocks_.erase(it);
-      found_in_map = true;
-    }
-  }
-
-  if (found_in_map) {
-    // Pointer was tracked - free via device-specific allocator with stats
-    device_allocators_[device_index]->free(ptr);
-  } else {
-    // Pointer not tracked - might be already freed by storage or other path
-    // Try to free it directly via orFree without updating statistics
-    auto ret = orFree(ptr);
-
-    // Only warn if orFree actually failed (not just "not found")
-    // In Mcpu's case, orFree returns orErrorUnknown if pointer not in registry
-    // which is expected for already-freed memory
-    if (ret != orSuccess && ret != orErrorUnknown) {
-      TORCH_WARN(
-          "orFree failed for untracked Mcpu memory pointer ",
-          ptr,
-          ". Error code: ", ret);
-    }
-  }
+  // Directly free via device allocator
+  // No need to track which device owns the pointer (single device)
+  device_allocator_->free(ptr);
 }
 
 c10::CachingDeviceAllocator::DeviceStats McpuDeviceAllocator::
-    getDeviceStats(c10::DeviceIndex device) {
-  return device_allocators_[device]->getStats();
+getDeviceStats(c10::DeviceIndex device) {
+  // Ignore device index for single-device configuration
+  return device_allocator_->getStats();
 }
 
 void McpuDeviceAllocator::resetAccumulatedStats(c10::DeviceIndex device) {
-  device_allocators_[device]->resetAccumulatedStats();
+  // Ignore device index for single-device configuration
+  device_allocator_->resetAccumulatedStats();
 }
 
 void McpuDeviceAllocator::resetPeakStats(c10::DeviceIndex device) {
-  device_allocators_[device]->resetPeakStats();
+  // Ignore device index for single-device configuration
+  device_allocator_->resetPeakStats();
 }
 
 void McpuDeviceAllocator::emptyCache(MempoolId_t mempool_id) {

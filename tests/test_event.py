@@ -12,7 +12,7 @@ class TestEvent(TestCase):
         self.assertEqual(event.device.index, None)
         self.assertEqual(event.event_id, 0)
 
-        event = torch.Event(device="mcpu:1")
+        event = torch.Event(device="mcpu:0")
         self.assertEqual(event.device.type, "mcpu")
         self.assertEqual(event.device.index, None)
         self.assertEqual(event.event_id, 0)
@@ -22,10 +22,10 @@ class TestEvent(TestCase):
         self.assertEqual(event.device.index, None)
         self.assertEqual(event.event_id, 0)
 
-        stream = torch.Stream(device="mcpu:1")
+        stream = torch.Stream(device="mcpu:0")
         event = stream.record_event()
         self.assertEqual(event.device.type, "mcpu")
-        self.assertEqual(event.device.index, 1)
+        self.assertEqual(event.device.index, 0)
         self.assertNotEqual(event.event_id, 0)
 
     @skipIfTorchDynamo()
@@ -33,14 +33,14 @@ class TestEvent(TestCase):
         event = torch.Event()
         self.assertTrue(event.query())
 
-        stream = torch.Stream(device="mcpu:1")
+        stream = torch.Stream(device="mcpu:0")
         event = stream.record_event()
         event.synchronize()
         self.assertTrue(event.query())
 
     @skipIfTorchDynamo()
     def test_event_record(self):
-        stream = torch.Stream(device="mcpu:1")
+        stream = torch.Stream(device="mcpu:0")
         event1 = stream.record_event()
         self.assertNotEqual(0, event1.event_id)
 
@@ -51,11 +51,11 @@ class TestEvent(TestCase):
 
     @skipIfTorchDynamo()
     def test_event_elapsed_time(self):
-        stream = torch.Stream(device="mcpu:1")
+        stream = torch.Stream(device="mcpu:0")
 
-        event1 = torch.Event(device="mcpu:1", enable_timing=True)
+        event1 = torch.Event(device="mcpu:0", enable_timing=True)
         event1.record(stream)
-        event2 = torch.Event(device="mcpu:1", enable_timing=True)
+        event2 = torch.Event(device="mcpu:0", enable_timing=True)
         event2.record(stream)
 
         stream.synchronize()

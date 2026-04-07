@@ -13,7 +13,7 @@ class DeviceTest : public ::testing::Test {
 TEST_F(DeviceTest, GetDeviceCountValid) {
   int count = -1;
   EXPECT_EQ(orGetDeviceCount(&count), orSuccess);
-  EXPECT_EQ(count, 2);
+  EXPECT_EQ(count, 1);  // Single device configuration
 }
 
 TEST_F(DeviceTest, GetDeviceCountNullptr) {
@@ -33,13 +33,10 @@ TEST_F(DeviceTest, GetDeviceNullptr) {
 }
 
 TEST_F(DeviceTest, SetDeviceValid) {
-  EXPECT_EQ(orSetDevice(1), orSuccess);
+  // Only device 0 is available in single-device configuration
+  EXPECT_EQ(orSetDevice(0), orSuccess);
 
   int device = -1;
-  EXPECT_EQ(orGetDevice(&device), orSuccess);
-  EXPECT_EQ(device, 1);
-
-  EXPECT_EQ(orSetDevice(0), orSuccess);
   EXPECT_EQ(orGetDevice(&device), orSuccess);
   EXPECT_EQ(device, 0);
 }
@@ -49,8 +46,8 @@ TEST_F(DeviceTest, SetDeviceInvalidNegative) {
 }
 
 TEST_F(DeviceTest, SetDeviceInvalidTooLarge) {
-  // Device indices are 0-based and strictly less than DEVICE_COUNT (2).
-  EXPECT_EQ(orSetDevice(2), orErrorUnknown);
+  // Device indices are 0-based and strictly less than DEVICE_COUNT (1).
+  EXPECT_EQ(orSetDevice(1), orErrorUnknown);
 }
 
 } // namespace
