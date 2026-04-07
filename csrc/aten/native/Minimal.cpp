@@ -1,4 +1,5 @@
 #include "Minimal.h"
+#include "MCPUFallback.h"
 
 #include <unordered_set>
 
@@ -177,7 +178,8 @@ void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         op_name,
         "' is not implemented for device mcpu.");
   } else {
-    at::native::cpu_fallback(op, stack);
+    // Call our custom CPU fallback implementation instead of PyTorch's
+    at::native::mcpu::custom::cpu_fallback(op, stack);
   }
 }
 // LITERALINCLUDE END: FALLBACK IMPL
