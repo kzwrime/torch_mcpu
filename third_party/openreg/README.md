@@ -106,9 +106,9 @@ Simulating multiple devices and thread-safe device context switching:
 
 Simulating device memory, host memory, and memory copies:
 
-1. **Allocation**: A page-aligned memory block is allocated using `mmap` + `mprotect` with the permission flag `PROT_NONE`. Read, write, and execute operations on this memory region are all prohibited.
-2. **Deallocation**: Memory is freed using `munmap`.
-3. **Authorization**: When a legitimate memory access is required, an RAII guard restores the memory permissions to `PROT_READ | PROT_WRITE`. The permissions are automatically reverted to `PROT_NONE` when the scope is exited.
+1. **Allocation**: Memory is allocated using regular aligned allocation (e.g., `posix_memalign` or `_aligned_malloc`) with a fixed alignment of 32 bytes. Both device and host memory use the same underlying allocation mechanism.
+2. **Deallocation**: Memory is freed using the corresponding deallocation function (e.g., `free` or `_aligned_free`).
+3. **Memory Tracking**: The memory manager tracks all allocations in a registry to distinguish between device and host memory for validation purposes.
 
 ### Stream&Event Principles
 

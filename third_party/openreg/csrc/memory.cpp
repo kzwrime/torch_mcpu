@@ -12,7 +12,6 @@ struct Block {
   int device = -1;
   void* pointer = nullptr;
   size_t size = 0;
-  int refcount{0};
 };
 
 class MemoryManager {
@@ -27,28 +26,20 @@ class MemoryManager {
       return orErrorUnknown;
 
     std::lock_guard<std::mutex> lock(m_mutex);
-    long page_size = openreg::get_pagesize();
-    size_t aligned_size = ((size - 1) / page_size + 1) * page_size;
+    constexpr size_t alignment = openreg::kAlignment;
+    size_t aligned_size = ((size - 1) / alignment + 1) * alignment;
     void* mem = nullptr;
     int current_device = -1;
 
     if (type == orMemoryType::orMemoryTypeDevice) {
       orGetDevice(&current_device);
-
-      mem = openreg::mmap(aligned_size);
-      if (mem == nullptr)
-        return orErrorUnknown;
-      if (openreg::mprotect(mem, aligned_size, F_PROT_NONE) != 0) {
-        openreg::munmap(mem, aligned_size);
-        return orErrorUnknown;
-      }
-    } else {
-      if (openreg::alloc(&mem, page_size, aligned_size) != 0) {
-        return orErrorUnknown;
-      }
     }
 
-    m_registry[mem] = {type, current_device, mem, aligned_size, 0};
+    if (openreg::alloc(&mem, alignment, aligned_size) != 0) {
+      return orErrorUnknown;
+    }
+
+    m_registry[mem] = {type, current_device, mem, aligned_size};
     *ptr = mem;
     return orSuccess;
   }
@@ -63,12 +54,7 @@ class MemoryManager {
       return orErrorUnknown;
 
     const auto& info = it->second;
-    if (info.type == orMemoryType::orMemoryTypeDevice) {
-      openreg::mprotect(info.pointer, info.size, F_PROT_READ | F_PROT_WRITE);
-      openreg::munmap(info.pointer, info.size);
-    } else {
-      openreg::free(info.pointer);
-    }
+    openreg::free(info.pointer);
 
     m_registry.erase(it);
     return orSuccess;
@@ -109,11 +95,7 @@ class MemoryManager {
         break;
     }
 
-    unprotectNoLock(dst_info);
-    unprotectNoLock(src_info);
     ::memcpy(dst, src, count);
-    protectNoLock(dst_info);
-    protectNoLock(src_info);
 
     return orSuccess;
   }
@@ -140,47 +122,8 @@ class MemoryManager {
     return orSuccess;
   }
 
-  orError_t unprotect(void* ptr) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return unprotectNoLock(getBlockInfoNoLock(ptr));
-  }
-
-  orError_t protect(void* ptr) {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return protectNoLock(getBlockInfoNoLock(ptr));
-  }
-
  private:
   MemoryManager() = default;
-
-  orError_t unprotectNoLock(Block* info) {
-    if (info && info->type == orMemoryType::orMemoryTypeDevice) {
-      if (info->refcount == 0) {
-        if (openreg::mprotect(
-                info->pointer, info->size, F_PROT_READ | F_PROT_WRITE) != 0) {
-          return orErrorUnknown;
-        }
-      }
-
-      info->refcount++;
-    }
-
-    return orSuccess;
-  }
-
-  orError_t protectNoLock(Block* info) {
-    if (info && info->type == orMemoryType::orMemoryTypeDevice) {
-      if (info->refcount == 1) {
-        if (openreg::mprotect(info->pointer, info->size, F_PROT_NONE) != 0) {
-          return orErrorUnknown;
-        }
-      }
-
-      info->refcount--;
-    }
-
-    return orSuccess;
-  }
 
   Block* getBlockInfoNoLock(const void* ptr) {
     auto it = m_registry.upper_bound(const_cast<void*>(ptr));
@@ -251,9 +194,11 @@ orError_t orPointerGetAttributes(
 }
 
 orError_t orMemoryUnprotect(void* devPtr) {
-  return MemoryManager::getInstance().unprotect(devPtr);
+  // No-op: protection functionality removed
+  return orSuccess;
 }
 
 orError_t orMemoryProtect(void* devPtr) {
-  return MemoryManager::getInstance().protect(devPtr);
+  // No-op: protection functionality removed
+  return orSuccess;
 }
