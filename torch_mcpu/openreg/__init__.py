@@ -29,8 +29,12 @@ class device:
         return False
 
 class Stream(torch.Stream):
-    def __new__(cls, priority=0, **kwargs):
-        return super().__new__(cls, priority=priority, **kwargs)
+    def __new__(cls, device=None, priority=0, **kwargs):
+        if device is None:
+            return super().__new__(cls, priority=priority, **kwargs)
+        else:
+            with torch.mcpu.device(device):
+                return super().__new__(cls, priority=priority, **kwargs)
 
     @classmethod
     def priority_range(cls):
@@ -144,6 +148,23 @@ def reset_peak_memory_stats(device=None) -> None:
     torch_mcpu._C._reset_peak_memory_stats(device)
 
 
+def get_mcpu_view_from_cpu_tensor(cpu_tensor: "torch.Tensor") -> "torch.Tensor":
+    """Return an mcpu tensor that is a view of *cpu_tensor*'s memory.
+
+    For pinned input the returned tensor shares the same physical memory
+    (writes from either side are immediately visible on the other).  For
+    non-pinned input a contiguous copy is pinned first, so only the initial
+    values are shared — subsequent mutations to *cpu_tensor* are not reflected.
+
+    Args:
+        cpu_tensor: A CPU tensor (pinned or unpinned).
+
+    Returns:
+        An mcpu tensor backed by the same (or a pinned copy of the) memory.
+    """
+    return torch_mcpu._C._get_mcpu_view_from_cpu_tensor(cpu_tensor)
+
+
 def reset_accumulated_memory_stats(device=None) -> None:
     """Reset accumulated memory usage statistics for the given device."""
     if device is None:
@@ -199,6 +220,7 @@ __all__ = [
     "init",
     "is_initialized",
     "empty_cache",
+    "get_mcpu_view_from_cpu_tensor",
     "memory_stats",
     "reset_peak_memory_stats",
     "reset_accumulated_memory_stats",
