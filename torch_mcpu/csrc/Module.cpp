@@ -147,6 +147,14 @@ static PyObject* _resetAccumulatedMemoryStats(PyObject* self, PyObject* arg) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* _getStreamPriorityRange(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  int least = 0, greatest = 0;
+  c10::mcpu::getStreamPriorityRange(&least, &greatest);
+  return Py_BuildValue("(ii)", least, greatest);
+  END_HANDLE_TH_ERRORS
+}
+
 // LITERALINCLUDE MCPU MODULE METHODS
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
@@ -159,6 +167,7 @@ static PyMethodDef methods[] = {
     {"_memory_stats", _memoryStats, METH_O, nullptr},
     {"_reset_peak_memory_stats", _resetPeakMemoryStats, METH_O, nullptr},
     {"_reset_accumulated_memory_stats", _resetAccumulatedMemoryStats, METH_O, nullptr},
+    {"_get_stream_priority_range", _getStreamPriorityRange, METH_NOARGS, nullptr},
     {nullptr, nullptr, 0, nullptr}};
 // LITERALINCLUDE MCPU MODULE METHODS
 /*

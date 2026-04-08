@@ -16,6 +16,8 @@ MCPU_EXPORT DeviceIndex maybe_exchange_device(DeviceIndex to_device);
 
 MCPU_EXPORT DeviceIndex ExchangeDevice(DeviceIndex device);
 
+MCPU_EXPORT void getStreamPriorityRange(int* least_priority, int* greatest_priority);
+
 static inline void check_device_index(int64_t device) {
   TORCH_CHECK(device >= 0 && device < c10::mcpu::device_count(),
               "The device index is out of range. It must be in [0, ",

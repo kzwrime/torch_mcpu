@@ -259,17 +259,17 @@ if __name__ == "__main__":
             self.assertEqual(s0, torch.xpu.current_stream())
         self.assertEqual(s2, torch.xpu.current_stream())
 
-    # def test_stream_priority(self):
-    #     low, high = torch.xpu.Stream.priority_range()
-    #     s0 = torch.xpu.Stream(device=0, priority=low)
+    def test_stream_priority(self):
+        low, high = torch.xpu.Stream.priority_range()
+        s0 = torch.xpu.Stream(device=0, priority=low)
 
-    #     self.assertEqual(low, s0.priority)
-    #     self.assertEqual(torch.device("xpu:0"), s0.device)
+        self.assertEqual(low, s0.priority)
+        self.assertEqual(torch.device("mcpu:0"), s0.device)
 
-    #     s1 = torch.xpu.Stream(device=0, priority=high)
+        s1 = torch.xpu.Stream(device=0, priority=high)
 
-    #     self.assertEqual(high, s1.priority)
-    #     self.assertEqual(torch.device("xpu:0"), s1.device)
+        self.assertEqual(high, s1.priority)
+        self.assertEqual(torch.device("mcpu:0"), s1.device)
 
     def test_stream_event_repr(self):
         s = torch.xpu.current_stream()

@@ -32,6 +32,26 @@ class Stream(torch.Stream):
     def __new__(cls, priority=0, **kwargs):
         return super().__new__(cls, priority=priority, **kwargs)
 
+    @classmethod
+    def priority_range(cls):
+        """Return (least_priority, greatest_priority) for this device."""
+        return torch_mcpu._C._get_stream_priority_range()
+
+    @property
+    def priority(self):
+        """Return the priority of this stream (0=normal, 1=high)."""
+        # Decode priority from stream_id encoding:
+        # stream_id bits: [si | stream_type (3 bits) | native (1 bit)]
+        # stream_type 0x6 = DEFAULT (treated as priority 0)
+        stream_id = self.stream_id
+        if not (stream_id & 1):  # external stream
+            return 0
+        kStreamTypeBits = 3
+        stream_type = (stream_id >> 1) & ((1 << kStreamTypeBits) - 1)
+        if stream_type == 0x6:  # DEFAULT stream
+            return 0
+        return stream_type
+
 class StreamContext:
     r"""Context-manager that selects a given stream.
 
