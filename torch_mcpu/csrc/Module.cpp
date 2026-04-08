@@ -6,7 +6,18 @@
 #include <torch/csrc/utils/object_ptr.h>
 #include <torch/csrc/utils/python_numbers.h>
 
+#include <c10/core/CachingDeviceAllocator.h>
 #include <runtime/OpenRegFunctions.h>
+
+// Forward-declare allocator management functions from libtorch_mcpu.so.
+// (DeviceCachingAllocator.h transitively includes openreg.h which is not on
+//  torch_bindings include path, so we use explicit declarations instead.)
+namespace c10::mcpu {
+void emptyCache(c10::MempoolId_t mempool_id = {0, 0});
+c10::CachingDeviceAllocator::DeviceStats getDeviceStats(c10::DeviceIndex device);
+void resetPeakStats(c10::DeviceIndex device);
+void resetAccumulatedStats(c10::DeviceIndex device);
+} // namespace c10::mcpu
 
 static PyObject* _initExtension(PyObject* self, PyObject* noargs) {
   HANDLE_TH_ERRORS
@@ -78,6 +89,64 @@ PyObject* _getDeviceCount(PyObject* self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* _emptyCache(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  c10::mcpu::emptyCache();
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _memoryStats(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(THPUtils_checkLong(arg), "_memory_stats expects a device index");
+  auto device = THPUtils_unpackDeviceIndex(arg);
+  auto stats = c10::mcpu::getDeviceStats(device);
+
+  PyObject* dict = PyDict_New();
+  auto insert = [&](const char* key, size_t val) {
+    PyObject* v = PyLong_FromSize_t(val);
+    PyDict_SetItemString(dict, key, v);
+    Py_DECREF(v);
+  };
+  auto insert_stat = [&](const char* prefix, const c10::CachingDeviceAllocator::Stat& s) {
+    std::string cur = std::string(prefix) + ".current";
+    std::string peak = std::string(prefix) + ".peak";
+    std::string alloc = std::string(prefix) + ".allocated";
+    std::string freed = std::string(prefix) + ".freed";
+    insert(cur.c_str(), static_cast<size_t>(s.current));
+    insert(peak.c_str(), static_cast<size_t>(s.peak));
+    insert(alloc.c_str(), static_cast<size_t>(s.allocated));
+    insert(freed.c_str(), static_cast<size_t>(s.freed));
+  };
+  insert_stat("allocated_bytes.all", stats.allocated_bytes[0]);
+  insert_stat("reserved_bytes.all", stats.reserved_bytes[0]);
+  insert_stat("active_bytes.all", stats.active_bytes[0]);
+  insert("num_alloc_retries", static_cast<size_t>(stats.num_alloc_retries));
+  return dict;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _resetPeakMemoryStats(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(
+      THPUtils_checkLong(arg), "_reset_peak_memory_stats expects a device index");
+  auto device = THPUtils_unpackDeviceIndex(arg);
+  c10::mcpu::resetPeakStats(device);
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _resetAccumulatedMemoryStats(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(
+      THPUtils_checkLong(arg),
+      "_reset_accumulated_memory_stats expects a device index");
+  auto device = THPUtils_unpackDeviceIndex(arg);
+  c10::mcpu::resetAccumulatedStats(device);
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
 // LITERALINCLUDE MCPU MODULE METHODS
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
@@ -86,6 +155,10 @@ static PyMethodDef methods[] = {
     {"_set_device", _setDevice, METH_O, nullptr},
     {"_exchangeDevice", _exchangeDevice, METH_O, nullptr},
     {"_get_device_count", _getDeviceCount, METH_NOARGS, nullptr},
+    {"_empty_cache", _emptyCache, METH_NOARGS, nullptr},
+    {"_memory_stats", _memoryStats, METH_O, nullptr},
+    {"_reset_peak_memory_stats", _resetPeakMemoryStats, METH_O, nullptr},
+    {"_reset_accumulated_memory_stats", _resetAccumulatedMemoryStats, METH_O, nullptr},
     {nullptr, nullptr, 0, nullptr}};
 // LITERALINCLUDE MCPU MODULE METHODS
 /*

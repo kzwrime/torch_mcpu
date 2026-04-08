@@ -1,50 +1,19 @@
+// Ported from pytorch/aten/src/ATen/xpu/CachingHostAllocator.h
+// Changes from XPU source:
+//  [1]  namespace at::xpu → c10::mcpu
+//  [2]  XPUStream → McpuStream / XPUEvent → McpuEvent
+//  [3]  Removed deprecated getCachingHostAllocator / CachingHostAllocator_recordEvent
+//       / CachingHostAllocator_emptyCache / HostAlloc helper wrappers (YAGNI)
 #pragma once
 
 #include <ATen/core/CachingHostAllocator.h>
-
 #include <c10/core/Allocator.h>
-#include <c10/core/Device.h>
 
-#include <include/openreg.h>
+#include "OpenRegEvent.h"
+#include "OpenRegStream.h"
 
-namespace c10::mcpu {
-struct McpuHostAllocator final : at::HostAllocator {
-  McpuHostAllocator() = default;
+namespace c10::mcpu { // [1]
 
-  static void ReportAndDelete(void* ptr) {
-    if (!ptr) {
-      return;
-    }
-    orFreeHost(ptr);
-  }
-
-  at::DataPtr allocate(size_t nbytes) override {
-    void* data = nullptr;
-    if (nbytes > 0) {
-      orMallocHost(&data, nbytes);
-      TORCH_CHECK(data, "Failed to allocator ", nbytes, " bytes on host.");
-    }
-    return {data, data, &ReportAndDelete, at::Device(at::kCPU)};
-  }
-
-  at::DeleterFnPtr raw_deleter() const override {
-    return &ReportAndDelete;
-  }
-
-  void copy_data(void* dest, const void* src, std::size_t count) const final {
-    orMemcpy(dest, src, count, orMemcpyHostToHost);
-  }
-
-  // ignore
-  bool record_event(void* ptr, void* ctx, c10::Stream stream) override {
-    return true;
-  }
-  void empty_cache() override {}
-  at::HostStats get_stats() override {
-    return at::HostStats();
-  }
-  void reset_accumulated_stats() override {}
-  void reset_peak_stats() override {}
-};
+// [3] Deprecated helper wrappers omitted — use at::getHostAllocator(at::kPrivateUse1) directly.
 
 } // namespace c10::mcpu

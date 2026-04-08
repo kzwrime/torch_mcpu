@@ -4,7 +4,7 @@ import torch_mcpu._C  # type: ignore[misc]
 
 from . import meta  # noqa: F401
 from .amp import get_amp_supported_dtype  # noqa: F401
-
+from typing import Optional, Any
 
 _initialized = False
 
@@ -28,9 +28,107 @@ class device:
         self.idx = torch_mcpu._C._set_device(self.prev_idx)
         return False
 
+class Stream(torch.Stream):
+    def __new__(cls, priority=0, **kwargs):
+        return super().__new__(cls, priority=priority, **kwargs)
+
+class StreamContext:
+    r"""Context-manager that selects a given stream.
+
+    All CUDA kernels queued within its context will be enqueued on a selected
+    stream.
+
+    Args:
+        Stream (Stream): selected stream. This manager is a no-op if it's
+            ``None``.
+    .. note:: Streams are per-device.
+    """
+
+    cur_stream: Optional[Stream]
+
+    def __init__(self, stream: Optional[Stream]):
+        self.stream = stream
+        self.idx = torch.accelerator._get_device_index(None, True)
+        if not torch.jit.is_scripting():
+            if self.idx is None:
+                # pyrefly: ignore [bad-assignment]
+                self.idx = -1
+
+        self.src_prev_stream = (
+            None if not torch.jit.is_scripting() else torch.accelerator.current_stream(None)
+        )
+        self.dst_prev_stream = (
+            None if not torch.jit.is_scripting() else torch.accelerator.current_stream(None)
+        )
+
+    def __enter__(self):
+        # Local cur_stream variable for type refinement
+        cur_stream = self.stream
+        # Return if stream is None or CUDA device not available
+        if cur_stream is None or self.idx == -1:
+            return
+        self.src_prev_stream = torch.accelerator.current_stream(None)
+
+        # If the stream is not on the current device, then
+        # set the current stream on the device
+        if self.src_prev_stream.device != cur_stream.device:
+            with torch.mcpu.device(cur_stream.device):
+                self.dst_prev_stream = torch.accelerator.current_stream(cur_stream.device)
+        torch.accelerator.set_stream(cur_stream)
+
+    def __exit__(self, type: Any, value: Any, traceback: Any):
+        # Local cur_stream variable for type refinement
+        cur_stream = self.stream
+        # If stream is None or no CUDA device available, return
+        if cur_stream is None or self.idx == -1:
+            return
+
+        # Reset the stream on the original device
+        # and destination device
+        if self.src_prev_stream.device != cur_stream.device:  # type: ignore[union-attr]
+            torch.accelerator.set_stream(self.dst_prev_stream)  # type: ignore[arg-type]
+        torch.accelerator.set_stream(self.src_prev_stream)  # type: ignore[arg-type]
+
+def stream(stream: Optional[Stream]) -> StreamContext:
+    r"""Wrap around the Context-manager StreamContext that selects a given stream.
+
+    Arguments:
+        stream (Stream): selected stream. This manager is a no-op if it's
+            ``None``.
+    .. note::
+        In eager mode stream is of type Stream class while in JIT it is
+        an object of the custom class ``torch.classes.cuda.Stream``.
+    """
+    return StreamContext(stream)
 
 def is_available():
     return True
+
+
+def empty_cache() -> None:
+    """Release all unoccupied cached memory back to the OS."""
+    torch_mcpu._C._empty_cache()
+
+
+def memory_stats(device=None) -> dict:
+    """Return a dict of memory allocator statistics for the given device."""
+    if device is None:
+        device = current_device()
+    return torch_mcpu._C._memory_stats(device)
+
+
+def reset_peak_memory_stats(device=None) -> None:
+    """Reset peak memory usage statistics for the given device."""
+    if device is None:
+        device = current_device()
+    torch_mcpu._C._reset_peak_memory_stats(device)
+
+
+def reset_accumulated_memory_stats(device=None) -> None:
+    """Reset accumulated memory usage statistics for the given device."""
+    if device is None:
+        device = current_device()
+    torch_mcpu._C._reset_accumulated_memory_stats(device)
 
 
 def device_count() -> int:
@@ -45,7 +143,6 @@ def current_device():
 def set_device(device) -> None:
     if device >= 0:
         torch_mcpu._C._set_device(device)
-
 
 # LITERALINCLUDE END: PYTHON SET DEVICE FUNCTION
 
@@ -71,6 +168,9 @@ from .random import *  # noqa: F403
 
 __all__ = [
     "device",
+    "Stream",
+    "StreamContext",
+    "stream",
     "device_count",
     "current_device",
     "set_device",
@@ -78,6 +178,10 @@ __all__ = [
     "is_available",
     "init",
     "is_initialized",
+    "empty_cache",
+    "memory_stats",
+    "reset_peak_memory_stats",
+    "reset_accumulated_memory_stats",
     "random",
     "manual_seed",
     "manual_seed_all",

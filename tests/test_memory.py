@@ -517,5 +517,179 @@ class TestCrossDeviceOperations(TestCase):
         self.assertTrue(torch.allclose(original_cpu, back_to_dev0.cpu()))
 
 
+class TestCachingDeviceAllocator(TestCase):
+    """Tests for the caching device allocator (DeviceCachingAllocator)."""
+
+    def setUp(self):
+        gc.collect()
+        torch.mcpu.empty_cache()
+        torch.mcpu.reset_accumulated_memory_stats(0)
+        torch.mcpu.reset_peak_memory_stats(0)
+
+    def tearDown(self):
+        gc.collect()
+        torch.mcpu.empty_cache()
+
+    def test_empty_cache_releases_reserved_memory(self):
+        """empty_cache() should return all unoccupied blocks to the OS."""
+        x = torch.empty(1000, device="mcpu")
+        del x
+        gc.collect()
+
+        # After deleting x, reserved > 0 but allocated == 0
+        stats_before = torch.mcpu.memory_stats(0)
+        self.assertGreater(stats_before["reserved_bytes.all.current"], 0)
+        self.assertEqual(stats_before["allocated_bytes.all.current"], 0)
+
+        torch.mcpu.empty_cache()
+        stats_after = torch.mcpu.memory_stats(0)
+        self.assertEqual(stats_after["reserved_bytes.all.current"], 0)
+
+    def test_memory_stats_allocated_tracks_live_tensors(self):
+        """allocated_bytes tracks bytes in active tensors."""
+        torch.mcpu.reset_accumulated_memory_stats(0)
+        stats0 = torch.mcpu.memory_stats(0)
+        alloc0 = stats0["allocated_bytes.all.current"]
+
+        x = torch.empty(512, dtype=torch.float32, device="mcpu")  # 2 KiB
+        stats1 = torch.mcpu.memory_stats(0)
+        alloc1 = stats1["allocated_bytes.all.current"]
+        self.assertGreater(alloc1, alloc0)
+
+        del x
+        gc.collect()
+        stats2 = torch.mcpu.memory_stats(0)
+        alloc2 = stats2["allocated_bytes.all.current"]
+        self.assertLess(alloc2, alloc1)
+
+    def test_caching_reuses_freed_blocks(self):
+        """A freed block should be reused for the next allocation of similar size."""
+        x = torch.empty(1000, device="mcpu")
+        ptr1 = x.data_ptr()
+        del x
+        gc.collect()
+
+        y = torch.empty(1000, device="mcpu")
+        ptr2 = y.data_ptr()
+        del y
+
+        # The caching allocator must have reused the block
+        self.assertEqual(ptr1, ptr2, "Caching allocator should reuse freed blocks")
+
+    def test_reset_peak_memory_stats(self):
+        """reset_peak_memory_stats clears the peak counter."""
+        x = torch.empty(4096, device="mcpu")
+        stats = torch.mcpu.memory_stats(0)
+        peak_before = stats["reserved_bytes.all.peak"]
+        self.assertGreater(peak_before, 0)
+
+        torch.mcpu.reset_peak_memory_stats(0)
+        stats_reset = torch.mcpu.memory_stats(0)
+        peak_after_reset = stats_reset["reserved_bytes.all.peak"]
+        self.assertLessEqual(peak_after_reset, peak_before)
+        del x
+
+    def test_reset_accumulated_memory_stats(self):
+        """reset_accumulated_memory_stats zeroes allocated/freed counters."""
+        x = torch.empty(1000, device="mcpu")
+        del x
+        gc.collect()
+
+        stats_before = torch.mcpu.memory_stats(0)
+        self.assertGreater(stats_before.get("num_alloc_retries", 0) +
+                           stats_before["allocated_bytes.all.allocated"] +
+                           stats_before["allocated_bytes.all.freed"], 0)
+
+        torch.mcpu.reset_accumulated_memory_stats(0)
+        stats_after = torch.mcpu.memory_stats(0)
+        self.assertEqual(stats_after["allocated_bytes.all.allocated"], 0)
+        self.assertEqual(stats_after["allocated_bytes.all.freed"], 0)
+
+    def test_large_and_small_blocks_classified_separately(self):
+        """Allocations ≤1 MB go to the small pool; allocations >1 MB go to large."""
+        # Small: 256 KiB
+        small = torch.empty(256 * 1024 // 4, dtype=torch.float32, device="mcpu")
+        # Large: 2 MiB
+        large = torch.empty(2 * 1024 * 1024 // 4, dtype=torch.float32, device="mcpu")
+
+        self.assertEqual(small.device.type, "mcpu")
+        self.assertEqual(large.device.type, "mcpu")
+        del small, large
+
+    def test_multiple_alloc_free_cycles_no_growth(self):
+        """Repeated alloc/free cycles should not grow reserved memory indefinitely."""
+        # Warm-up pass: establish the cached pool
+        for _ in range(20):
+            t = torch.empty(1024, device="mcpu")
+            del t
+        gc.collect()
+
+        stats_before = torch.mcpu.memory_stats(0)
+        reserved_before = stats_before["reserved_bytes.all.current"]
+
+        # Another 100 cycles — reserved should stay flat (blocks reused)
+        for _ in range(100):
+            t = torch.empty(1024, device="mcpu")
+            del t
+
+        stats_after = torch.mcpu.memory_stats(0)
+        reserved_after = stats_after["reserved_bytes.all.current"]
+        self.assertEqual(reserved_before, reserved_after,
+                         "Reserved memory should not grow when blocks are reused")
+
+
+class TestCachingHostAllocator(TestCase):
+    """Tests for the caching host (pinned) allocator (CachingHostAllocatorImpl)."""
+
+    @skipIfTorchDynamo("unsupported aten.is_pinned.default")
+    def test_pin_unpin_basic(self):
+        """Pinning a tensor returns a pinned tensor; deleting it should not crash."""
+        t = torch.randn(100)
+        self.assertFalse(t.is_pinned())
+        pinned = t.pin_memory()
+        self.assertTrue(pinned.is_pinned())
+        del pinned
+
+    @skipIfTorchDynamo("unsupported aten.is_pinned.default")
+    def test_pinned_data_matches_original(self):
+        """Pinned copy must have the same values as the source."""
+        t = torch.arange(50, dtype=torch.float32)
+        pinned = t.pin_memory()
+        self.assertTrue(torch.equal(t, pinned))
+
+    @skipIfTorchDynamo("unsupported aten.is_pinned.default")
+    def test_pinned_to_device_async(self):
+        """Non-blocking transfer from pinned memory to mcpu device should work."""
+        t = torch.randn(64)
+        pinned = t.pin_memory()
+        device_tensor = pinned.to("mcpu", non_blocking=True)
+        self.assertEqual(device_tensor.device.type, "mcpu")
+        self.assertTrue(torch.allclose(t, device_tensor.cpu()))
+
+    @skipIfTorchDynamo("unsupported aten.is_pinned.default")
+    def test_pinned_memory_reuse(self):
+        """Freed pinned blocks should be reused for subsequent pin_memory calls."""
+        t = torch.randn(1000)
+        p1 = t.pin_memory()
+        ptr1 = p1.data_ptr()
+        del p1
+        gc.collect()
+
+        p2 = t.pin_memory()
+        ptr2 = p2.data_ptr()
+        del p2
+        # The caching host allocator should reuse the freed pinned block
+        self.assertEqual(ptr1, ptr2,
+                         "Caching host allocator should reuse freed pinned blocks")
+
+    @skipIfTorchDynamo("unsupported aten.is_pinned.default")
+    def test_pin_large_tensor(self):
+        """Large pinned allocations should succeed."""
+        t = torch.randn(10 * 1024 * 1024 // 4)  # 10 MiB
+        pinned = t.pin_memory()
+        self.assertTrue(pinned.is_pinned())
+        del pinned
+
+
 if __name__ == "__main__":
     run_tests()

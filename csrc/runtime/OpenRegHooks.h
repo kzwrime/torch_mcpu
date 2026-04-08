@@ -8,6 +8,7 @@
 
 #include <include/openreg.h>
 
+#include "DeviceCachingAllocator.h"
 #include "OpenRegFunctions.h"
 #include "OpenRegGenerator.h"
 
@@ -17,8 +18,8 @@ struct MCPU_EXPORT McpuHooksInterface : public at::PrivateUse1HooksInterface {
   ~McpuHooksInterface() override = default;
 
   void init() const override {
-    // Initialize Mcpu runtime if needed
-    // This is called when PyTorch first accesses the device
+    // Initialize the caching allocator for all available devices
+    c10::mcpu::init(device_count());
   }
 
   bool hasPrimaryContext(DeviceIndex device_index) const override {
