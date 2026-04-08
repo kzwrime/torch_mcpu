@@ -75,11 +75,16 @@ struct MCPU_EXPORT McpuHooksInterface : public at::PrivateUse1HooksInterface {
   at::Device getDeviceFromPtr(void* data) const override {
     orPointerAttributes attr{};
     auto err = orPointerGetAttributes(&attr, data);
-    if (err == orSuccess && attr.type == orMemoryTypeDevice) {
-      return at::Device(at::DeviceType::PrivateUse1, static_cast<int>(attr.device));
-    } else {
-      TORCH_CHECK(false, "failed to get device from pointer");
+    if (err == orSuccess) {
+      if (attr.type == orMemoryTypeDevice) {
+        return at::Device(at::DeviceType::PrivateUse1, static_cast<int>(attr.device));
+      }
+      if (attr.type == orMemoryTypeHost) {
+        // Pinned host memory is accessible from the mcpu device (CPU emulation).
+        return at::Device(at::DeviceType::PrivateUse1, current_device());
+      }
     }
+    TORCH_CHECK(false, "failed to get device from pointer");
     return at::Device(at::DeviceType::PrivateUse1, current_device());
   }
   // LITERALINCLUDE MCPU HOOK EXAMPLES
