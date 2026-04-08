@@ -11,6 +11,7 @@ __all__ = [
     "manual_seed",
     "manual_seed_all",
     "initial_seed",
+    "_is_in_bad_fork",
 ]
 
 
@@ -63,3 +64,7 @@ def manual_seed_all(seed: int) -> None:
     for idx in range(device_count()):
         default_generator = torch_mcpu._C._get_default_generator(idx)
         default_generator.manual_seed(seed)
+
+
+def _is_in_bad_fork() -> bool:
+    return False
