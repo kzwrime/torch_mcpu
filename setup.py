@@ -130,6 +130,7 @@ def main():
             "lib/*.dylib*",
             "lib/*.dll",
             "lib/*.lib",
+            "include/**/*.h",
         ]
     }
 
