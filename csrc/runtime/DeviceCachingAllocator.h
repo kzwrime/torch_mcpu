@@ -7,14 +7,15 @@
 //  [5]  #include <c10/xpu/XPUStream.h> → OpenRegStream.h
 //  [6]  REMOVED: enablePeerAccess (no peer-access API in openreg)
 //  [7]  REMOVED: createOrIncrefPool / beginAllocateToPool / endAllocateToPool /
-//               releasePool / getPoolUseCount  (PrivatePool / graph-capture removed)
+//               releasePool / getPoolUseCount  (PrivatePool / graph-capture
+//               removed)
 //  [8]  REMOVED: namespace c10::xpu MemPool class (PrivatePool removed)
 #pragma once
 
 #include <c10/core/AllocatorConfig.h>
 #include <c10/core/CachingDeviceAllocator.h>
-#include "OpenRegStream.h"   // [5] provides McpuStream
-#include <include/Macros.h>  // [4] provides MCPU_EXPORT
+#include <include/Macros.h> // [4] provides MCPU_EXPORT
+#include "OpenRegStream.h" // [5] provides McpuStream
 
 namespace c10::mcpu { // [1]
 
@@ -59,9 +60,10 @@ MCPU_EXPORT double getMemoryFraction(DeviceIndex device); // [4]
 MCPU_EXPORT void setMemoryFraction(double fraction, DeviceIndex device); // [4]
 
 // [7] REMOVED: createOrIncrefPool, beginAllocateToPool, endAllocateToPool,
-//              releasePool, getPoolUseCount  — PrivatePool / graph-capture removed
+//              releasePool, getPoolUseCount  — PrivatePool / graph-capture
+//              removed
 
-} // namespace c10::mcpu // [1]
+} // namespace c10::mcpu
 
 // [8] REMOVED: namespace c10::xpu { struct MemPool { ... }; }
 //     MemPool depended on PrivatePool infrastructure which has been removed.

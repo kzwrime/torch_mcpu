@@ -12,14 +12,14 @@
 // [10]  device memory query          → DEVICE_TOTAL_MEM macro (32 GiB default)
 // [11]  REMOVED: ExpandableSegment — openreg has no virtual memory API
 // [12]  REMOVED: PrivatePool / graph-capture infrastructure
+#include "DeviceCachingAllocator.h"
+#include <c10/core/impl/GPUTrace.h>
 #include <c10/util/flat_hash_map.h>
 #include <c10/util/irange.h>
-#include <c10/core/impl/GPUTrace.h>
-#include "DeviceCachingAllocator.h"
+#include <include/openreg.h>
 #include "OpenRegEvent.h"
 #include "OpenRegFunctions.h"
 #include "OpenRegStream.h"
-#include <include/openreg.h>
 
 #include <cstring>
 #include <deque>
@@ -51,15 +51,14 @@ typedef bool (*Comparison)(const Block*, const Block*);
 bool BlockComparatorSize(const Block* a, const Block* b);
 bool BlockComparatorAddress(const Block* a, const Block* b);
 
-// [MCPU-12-REMOVED] struct PrivatePool forward declaration (graph-capture removed)
+// [MCPU-12-REMOVED] struct PrivatePool forward declaration (graph-capture
+// removed)
 
 struct BlockPool {
   // [MCPU-12] Removed PrivatePool* parameter from constructor
   // [MCPU-11] Removed unmapped set (was used by ExpandableSegment)
   // [MCPU-12] Removed owner_PrivatePool field (was used by graph capture)
-  BlockPool(bool small)
-      : blocks(BlockComparatorSize),
-        is_small(small) {}
+  BlockPool(bool small) : blocks(BlockComparatorSize), is_small(small) {}
 
   std::set<Block*, Comparison> blocks;
   const bool is_small;
@@ -80,7 +79,8 @@ struct Block {
   Block* prev{nullptr}; // prev block if split from a larger allocation
   Block* next{nullptr}; // next block if split from a larger allocation
   int event_count{0}; // number of outstanding events
-  // [MCPU-11-REMOVED] ExpandableSegment* expandable_segment — ExpandableSegment removed
+  // [MCPU-11-REMOVED] ExpandableSegment* expandable_segment — ExpandableSegment
+  // removed
 
   Block(
       DeviceIndex device,
@@ -145,7 +145,8 @@ bool BlockComparatorAddress(const Block* a, const Block* b) {
 }
 
 // [MCPU-11-REMOVED] struct SegmentRange — only used by ExpandableSegment
-// [MCPU-11-REMOVED] struct ExpandableSegment — openreg has no virtual memory API
+// [MCPU-11-REMOVED] struct ExpandableSegment — openreg has no virtual memory
+// API
 //   (XPU equivalent: sycl::ext::oneapi::experimental::reserve_virtual_mem /
 //    physical_mem / map / unmap)
 struct AllocParams {
@@ -195,7 +196,8 @@ class DeviceCachingAllocator {
   BlockPool large_blocks; // unallocated cached blocks larger than 1 MB
   BlockPool small_blocks; // unallocated cached blocks 1 MB or smaller
   ska::flat_hash_set<Block*> active_blocks; // allocated or in use by a stream
-  // [MCPU-2/5] McpuEvent replaces sycl::event; renamed mcpu_events → mcpu_events
+  // [MCPU-2/5] McpuEvent replaces sycl::event; renamed mcpu_events →
+  // mcpu_events
   ska::flat_hash_map<McpuStream, std::deque<std::pair<McpuEvent, Block*>>>
       mcpu_events;
   DeviceIndex device_index;
@@ -268,7 +270,8 @@ class DeviceCachingAllocator {
         auto& e = it->second.front();
         auto& event = e.first;
         auto* block = e.second;
-        if (!event.query()) { // [7] McpuEvent::query() replaces sycl event status
+        if (!event.query()) { // [7] McpuEvent::query() replaces sycl event
+                              // status
           break;
         }
         block->event_count--;
@@ -322,7 +325,8 @@ class DeviceCachingAllocator {
   bool get_free_block(AllocParams& p) {
     BlockPool& pool = *p.pool;
     auto it = pool.blocks.lower_bound(&p.search_key);
-    if (it == pool.blocks.end() || (*it)->stream != p.stream()) { // [1] p.stream()
+    if (it == pool.blocks.end() ||
+        (*it)->stream != p.stream()) { // [1] p.stream()
       return false;
     }
     p.block = *it;
@@ -349,7 +353,8 @@ class DeviceCachingAllocator {
     if (!ptr) {
       return false;
     }
-    p.block = new Block(p.device(), p.stream(), size, p.pool, ptr); // [1] p.stream()
+    p.block =
+        new Block(p.device(), p.stream(), size, p.pool, ptr); // [1] p.stream()
     for_each_selected_stat_type(p.stat_types, [&](size_t stat_type) {
       stats.reserved_bytes[stat_type].increase(size);
     });
@@ -416,7 +421,8 @@ class DeviceCachingAllocator {
     if (mempool_id.first == 0 && mempool_id.second == 0) {
       synchronize_and_free_events();
       // See Note [Safe to Free Blocks on BlockPool]
-      MCPU_CHECK(orDeviceSynchronize()); // [1] orDeviceSynchronize replaces c10::xpu::syncStreamsOnDevice
+      MCPU_CHECK(orDeviceSynchronize()); // [1] orDeviceSynchronize replaces
+                                         // c10::xpu::syncStreamsOnDevice
       release_blocks(large_blocks);
       release_blocks(small_blocks);
     }
@@ -448,7 +454,8 @@ class DeviceCachingAllocator {
     auto size = params.size();
     auto device = params.device();
     BlockPool* pool = params.pool;
-    orStream_t stream = params.stream(); // [1] params.stream() replaces params.queue()
+    orStream_t stream =
+        params.stream(); // [1] params.stream() replaces params.queue()
 
     TORCH_INTERNAL_ASSERT(
         params.block != nullptr && params.block->ptr != nullptr);
@@ -459,7 +466,8 @@ class DeviceCachingAllocator {
       remaining = block;
 
       block = new Block(device, stream, size, pool, block->ptr); // [1]
-      // [MCPU-11] Removed: block->expandable_segment = remaining->expandable_segment
+      // [MCPU-11] Removed: block->expandable_segment =
+      // remaining->expandable_segment
       block->prev = remaining->prev;
       if (block->prev) {
         block->prev->next = block;
@@ -515,7 +523,8 @@ class DeviceCachingAllocator {
         small_blocks(/* small */ true),
         device_index(device_index) {}
 
-  // [MCPU-1] sycl::queue& → McpuStream; [MCPU-12] removed captures_underway check
+  // [MCPU-1] sycl::queue& → McpuStream; [MCPU-12] removed captures_underway
+  // check
   Block* malloc(DeviceIndex device, size_t orig_size, McpuStream stream) {
     std::scoped_lock<std::recursive_mutex> lock(mutex);
     process_events(); // [MCPU-12] removed captures_underway.empty() guard
@@ -608,7 +617,8 @@ class DeviceCachingAllocator {
 
   void recordStream(Block* block, McpuStream stream) {
     std::scoped_lock<std::recursive_mutex> lock(mutex);
-    if (stream.stream() == block->stream) { // [1] stream.stream() replaces stream.queue()
+    if (stream.stream() ==
+        block->stream) { // [1] stream.stream() replaces stream.queue()
       return;
     }
     block->stream_uses.insert(stream);
@@ -673,9 +683,10 @@ class DeviceCachingAllocator {
 
   // [MCPU-12-REMOVED] createOrIncrefPool — PrivatePool removed
   // [MCPU-12-REMOVED] getPoolUseCount    — PrivatePool removed
-  // [MCPU-12-REMOVED] beginAllocateToPool — PrivatePool/captures_underway removed
-  // [MCPU-12-REMOVED] endAllocateToPool   — PrivatePool/captures_underway removed
-  // [MCPU-12-REMOVED] releasePool         — PrivatePool removed
+  // [MCPU-12-REMOVED] beginAllocateToPool — PrivatePool/captures_underway
+  // removed [MCPU-12-REMOVED] endAllocateToPool   —
+  // PrivatePool/captures_underway removed [MCPU-12-REMOVED] releasePool —
+  // PrivatePool removed
 };
 
 static void local_raw_delete(void* ptr);
@@ -740,7 +751,8 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
         "Allocator not initialized for device ",
         static_cast<int16_t>(device),
         ": did you call init?");
-    Block* block = device_allocators[device]->malloc(device, size, stream); // [1]
+    Block* block =
+        device_allocators[device]->malloc(device, size, stream); // [1]
     add_allocated_block(block);
     *devPtr = block->ptr;
     const c10::impl::PyInterpreter* interp = c10::impl::GPUTrace::get_trace();
@@ -760,7 +772,8 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
     const c10::impl::PyInterpreter* interp = c10::impl::GPUTrace::get_trace();
     if (C10_UNLIKELY(interp)) {
       (*interp)->trace_gpu_memory_deallocation(
-          c10::DeviceType::PrivateUse1, reinterpret_cast<uintptr_t>(block->ptr));
+          c10::DeviceType::PrivateUse1,
+          reinterpret_cast<uintptr_t>(block->ptr));
     }
   }
 
@@ -780,7 +793,8 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
 
     Block* block = get_allocated_block(ptr.get());
     TORCH_CHECK(block, "No allocated block can be found.");
-    McpuStream mcpu_stream{stream}; // [1] c10::McpuStream → McpuStream (in c10::mcpu ns)
+    McpuStream mcpu_stream{
+        stream}; // [1] c10::McpuStream → McpuStream (in c10::mcpu ns)
     device_allocators[block->device]->recordStream(block, mcpu_stream);
   }
 
@@ -790,7 +804,8 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
     if (size != 0) {
       this->malloc(&r, device, size, getCurrentMcpuStream(device));
     }
-    return {r, r, &local_raw_delete, Device(c10::DeviceType::PrivateUse1, device)};
+    return {
+        r, r, &local_raw_delete, Device(c10::DeviceType::PrivateUse1, device)};
   }
 
   DeleterFnPtr raw_deleter() const override {
@@ -855,8 +870,8 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
   }
 
   // [MCPU-12-REMOVED] createOrIncrefPool — PrivatePool removed
-  // [MCPU-12-REMOVED] beginAllocateToPool — PrivatePool/captures_underway removed
-  // [MCPU-12-REMOVED] endAllocateToPool   — PrivatePool removed
+  // [MCPU-12-REMOVED] beginAllocateToPool — PrivatePool/captures_underway
+  // removed [MCPU-12-REMOVED] endAllocateToPool   — PrivatePool removed
   // [MCPU-12-REMOVED] releasePool         — PrivatePool removed
   // [MCPU-12-REMOVED] getPoolUseCount     — PrivatePool removed
 };
@@ -867,7 +882,8 @@ void local_raw_delete(void* ptr) {
   native_allocator.free(ptr);
 }
 
-// [MCPU-10] REGISTER_ALLOCATOR macro replaces manual NativeAllocatorStaticInitializer
+// [MCPU-10] REGISTER_ALLOCATOR macro replaces manual
+// NativeAllocatorStaticInitializer
 std::atomic<McpuDeviceAllocator*> allocator;
 
 struct NativeAllocatorStaticInitializer {
@@ -915,4 +931,5 @@ void setMemoryFraction(double fraction, DeviceIndex device) {
 
 } // namespace c10::mcpu
 
-// [MCPU-12-REMOVED] namespace c10::xpu MemPool implementation — PrivatePool removed
+// [MCPU-12-REMOVED] namespace c10::xpu MemPool implementation — PrivatePool
+// removed

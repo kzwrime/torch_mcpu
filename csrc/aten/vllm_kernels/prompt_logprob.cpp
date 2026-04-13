@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// C++ kernel for vllm/v1/worker/gpu/sample/prompt_logprob.py::_prompt_logprobs_token_ids_kernel
+// C++ kernel for
+// vllm/v1/worker/gpu/sample/prompt_logprob.py::_prompt_logprobs_token_ids_kernel
 //
 // For each request batch_idx and each query position i:
 //   prompt_logprobs_token_ids[query_start + i] =
@@ -11,13 +12,14 @@
 namespace {
 
 void vllm_prompt_logprobs_token_ids_impl(
-    at::Tensor& prompt_logprobs_token_ids,  // [total_query_len], int64  (output)
-    const at::Tensor& query_start_loc,      // [num_reqs+1], int32
-    const at::Tensor& idx_mapping,          // [num_reqs], int32
-    const at::Tensor& num_computed_tokens,  // [max_num_reqs], int32
-    const at::Tensor& all_token_ids) {      // [max_num_reqs, max_seq_len], int32
+    at::Tensor& prompt_logprobs_token_ids, // [total_query_len], int64  (output)
+    const at::Tensor& query_start_loc, // [num_reqs+1], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32
+    const at::Tensor& num_computed_tokens, // [max_num_reqs], int32
+    const at::Tensor& all_token_ids) { // [max_num_reqs, max_seq_len], int32
 
-  VLLM_MCPU_CHECK_DTYPE(prompt_logprobs_token_ids, at::kLong, "prompt_logprobs_token_ids");
+  VLLM_MCPU_CHECK_DTYPE(
+      prompt_logprobs_token_ids, at::kLong, "prompt_logprobs_token_ids");
   VLLM_MCPU_CHECK_DTYPE(query_start_loc, at::kInt, "query_start_loc");
   VLLM_MCPU_CHECK_DTYPE(idx_mapping, at::kInt, "idx_mapping");
   VLLM_MCPU_CHECK_DTYPE(num_computed_tokens, at::kInt, "num_computed_tokens");
@@ -46,7 +48,7 @@ void vllm_prompt_logprobs_token_ids_impl(
   }
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(
@@ -60,5 +62,6 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
 }
 
 TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
-  m.impl("vllm_prompt_logprobs_token_ids", &vllm_prompt_logprobs_token_ids_impl);
+  m.impl(
+      "vllm_prompt_logprobs_token_ids", &vllm_prompt_logprobs_token_ids_impl);
 }

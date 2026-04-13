@@ -30,8 +30,8 @@ static void vllm_bias_kernel_typed(
     const int32_t* n_stop_ptr,
     const int32_t* stop_ptr,
     int64_t stop_stride) {
-
-  const scalar_t neg_inf = static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
+  const scalar_t neg_inf =
+      static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
 
   for (int64_t tok = 0; tok < num_tokens; tok++) {
     int32_t req = idx_ptr[tok];
@@ -46,13 +46,17 @@ static void vllm_bias_kernel_typed(
       int32_t n_save = (n_allowed <= 512) ? n_allowed : 512;
       for (int32_t k = 0; k < n_save; k++) {
         int32_t id = allowed_row[k];
-        if (id < 0) id = 0;
-        if (id >= (int32_t)vocab_size) id = (int32_t)vocab_size - 1;
+        if (id < 0)
+          id = 0;
+        if (id >= (int32_t)vocab_size)
+          id = (int32_t)vocab_size - 1;
         saved_ids[k] = id;
         saved[k] = row[id];
       }
-      for (int64_t i = 0; i < vocab_size; i++) row[i] = neg_inf;
-      for (int32_t k = 0; k < n_save; k++) row[saved_ids[k]] = saved[k];
+      for (int64_t i = 0; i < vocab_size; i++)
+        row[i] = neg_inf;
+      for (int32_t k = 0; k < n_save; k++)
+        row[saved_ids[k]] = saved[k];
     }
 
     // 2. Logit bias
@@ -62,11 +66,13 @@ static void vllm_bias_kernel_typed(
       const float* bval_row = bias_ptr + (int64_t)req * bias_ids_stride;
       for (int32_t k = 0; k < n_bias; k++) {
         int32_t id = bid_row[k];
-        if (id < 0 || id >= (int32_t)vocab_size) continue;
+        if (id < 0 || id >= (int32_t)vocab_size)
+          continue;
         if constexpr (std::is_same_v<scalar_t, float>) {
           row[id] += bval_row[k];
         } else {
-          row[id] = static_cast<scalar_t>(static_cast<float>(row[id]) + bval_row[k]);
+          row[id] =
+              static_cast<scalar_t>(static_cast<float>(row[id]) + bval_row[k]);
         }
       }
     }
@@ -80,7 +86,8 @@ static void vllm_bias_kernel_typed(
         const int32_t* stop_row = stop_ptr + (int64_t)req * stop_stride;
         for (int32_t k = 0; k < n_stop; k++) {
           int32_t id = stop_row[k];
-          if (id < 0 || id >= (int32_t)vocab_size) continue;
+          if (id < 0 || id >= (int32_t)vocab_size)
+            continue;
           row[id] = neg_inf;
         }
       }
@@ -89,18 +96,18 @@ static void vllm_bias_kernel_typed(
 }
 
 void vllm_bias_kernel_impl(
-    at::Tensor& logits,                       // [num_tokens, vocab_size]
+    at::Tensor& logits, // [num_tokens, vocab_size]
     int64_t vocab_size,
-    const at::Tensor& expanded_idx_mapping,   // [num_tokens], int32
-    const at::Tensor& num_allowed_token_ids,  // [max_num_reqs], int32
-    const at::Tensor& allowed_token_ids,      // [max_num_reqs, max_allowed], int32
-    const at::Tensor& num_logit_bias,         // [max_num_reqs], int32
-    const at::Tensor& bias_token_ids,         // [max_num_reqs, max_bias], int32
-    const at::Tensor& bias,                   // [max_num_reqs, max_bias], float32
-    const at::Tensor& pos,                    // [num_tokens], int32
-    const at::Tensor& min_lens,               // [max_num_reqs], int32
-    const at::Tensor& num_stop_token_ids,     // [max_num_reqs], int32
-    const at::Tensor& stop_token_ids) {       // [max_num_reqs, max_stop], int32
+    const at::Tensor& expanded_idx_mapping, // [num_tokens], int32
+    const at::Tensor& num_allowed_token_ids, // [max_num_reqs], int32
+    const at::Tensor& allowed_token_ids, // [max_num_reqs, max_allowed], int32
+    const at::Tensor& num_logit_bias, // [max_num_reqs], int32
+    const at::Tensor& bias_token_ids, // [max_num_reqs, max_bias], int32
+    const at::Tensor& bias, // [max_num_reqs, max_bias], float32
+    const at::Tensor& pos, // [num_tokens], int32
+    const at::Tensor& min_lens, // [max_num_reqs], int32
+    const at::Tensor& num_stop_token_ids, // [max_num_reqs], int32
+    const at::Tensor& stop_token_ids) { // [max_num_reqs, max_stop], int32
 
   VLLM_MCPU_CHECK_DIM(logits, 2, "logits");
   VLLM_MCPU_CHECK_FLOAT(logits, "logits");
@@ -128,14 +135,27 @@ void vllm_bias_kernel_impl(
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_bias_kernel", {
     vllm_bias_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(), num_tokens, logits_stride, vocab_size,
-        idx_ptr, n_allowed_ptr, allowed_ptr, allowed_stride,
-        n_bias_ptr, bias_ids_ptr, bias_ids_stride, bias_ptr,
-        pos_ptr, min_lens_ptr, n_stop_ptr, stop_ptr, stop_stride);
+        logits.data_ptr<scalar_t>(),
+        num_tokens,
+        logits_stride,
+        vocab_size,
+        idx_ptr,
+        n_allowed_ptr,
+        allowed_ptr,
+        allowed_stride,
+        n_bias_ptr,
+        bias_ids_ptr,
+        bias_ids_stride,
+        bias_ptr,
+        pos_ptr,
+        min_lens_ptr,
+        n_stop_ptr,
+        stop_ptr,
+        stop_stride);
   });
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(

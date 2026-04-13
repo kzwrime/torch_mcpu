@@ -16,7 +16,8 @@
 //  torch_bindings include path, so we use explicit declarations instead.)
 namespace c10::mcpu {
 void emptyCache(c10::MempoolId_t mempool_id = {0, 0});
-c10::CachingDeviceAllocator::DeviceStats getDeviceStats(c10::DeviceIndex device);
+c10::CachingDeviceAllocator::DeviceStats getDeviceStats(
+    c10::DeviceIndex device);
 void resetPeakStats(c10::DeviceIndex device);
 void resetAccumulatedStats(c10::DeviceIndex device);
 } // namespace c10::mcpu
@@ -39,9 +40,8 @@ static PyObject* _getDefaultGenerator(PyObject* self, PyObject* arg) {
       THPUtils_typename(arg));
   auto idx = static_cast<int>(THPUtils_unpackLong(arg));
 
-  return THPGenerator_initDefaultGenerator(
-      at::globalContext().defaultGenerator(
-          c10::Device(c10::DeviceType::PrivateUse1, idx)));
+  return THPGenerator_initDefaultGenerator(at::globalContext().defaultGenerator(
+      c10::Device(c10::DeviceType::PrivateUse1, idx)));
 
   END_HANDLE_TH_ERRORS
 }
@@ -110,7 +110,8 @@ static PyObject* _memoryStats(PyObject* self, PyObject* arg) {
     PyDict_SetItemString(dict, key, v);
     Py_DECREF(v);
   };
-  auto insert_stat = [&](const char* prefix, const c10::CachingDeviceAllocator::Stat& s) {
+  auto insert_stat = [&](const char* prefix,
+                         const c10::CachingDeviceAllocator::Stat& s) {
     std::string cur = std::string(prefix) + ".current";
     std::string peak = std::string(prefix) + ".peak";
     std::string alloc = std::string(prefix) + ".allocated";
@@ -131,7 +132,8 @@ static PyObject* _memoryStats(PyObject* self, PyObject* arg) {
 static PyObject* _resetPeakMemoryStats(PyObject* self, PyObject* arg) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(
-      THPUtils_checkLong(arg), "_reset_peak_memory_stats expects a device index");
+      THPUtils_checkLong(arg),
+      "_reset_peak_memory_stats expects a device index");
   auto device = THPUtils_unpackDeviceIndex(arg);
   c10::mcpu::resetPeakStats(device);
   Py_RETURN_NONE;
@@ -176,7 +178,8 @@ static PyObject* _getMcpuViewFromCpuTensor(PyObject* self, PyObject* arg) {
         cpu_tensor.options().device(c10::DeviceType::PrivateUse1)));
   }
 
-  // Ensure the backing memory is pinned (allocated via the mcpu host allocator).
+  // Ensure the backing memory is pinned (allocated via the mcpu host
+  // allocator).
   at::Tensor pinned = cpu_tensor.is_pinned()
       ? cpu_tensor
       : cpu_tensor.contiguous().pin_memory();
@@ -185,7 +188,7 @@ static PyObject* _getMcpuViewFromCpuTensor(PyObject* self, PyObject* arg) {
       pinned.data_ptr(),
       pinned.sizes(),
       pinned.strides(),
-      /*deleter=*/[base = pinned](void*) {},  // keep pinned tensor alive
+      /*deleter=*/[base = pinned](void*) {}, // keep pinned tensor alive
       pinned.options().device(c10::DeviceType::PrivateUse1));
   return THPVariable_Wrap(std::move(result));
   END_HANDLE_TH_ERRORS
@@ -202,9 +205,18 @@ static PyMethodDef methods[] = {
     {"_empty_cache", _emptyCache, METH_NOARGS, nullptr},
     {"_memory_stats", _memoryStats, METH_O, nullptr},
     {"_reset_peak_memory_stats", _resetPeakMemoryStats, METH_O, nullptr},
-    {"_reset_accumulated_memory_stats", _resetAccumulatedMemoryStats, METH_O, nullptr},
-    {"_get_stream_priority_range", _getStreamPriorityRange, METH_NOARGS, nullptr},
-    {"_get_mcpu_view_from_cpu_tensor", _getMcpuViewFromCpuTensor, METH_O, nullptr},
+    {"_reset_accumulated_memory_stats",
+     _resetAccumulatedMemoryStats,
+     METH_O,
+     nullptr},
+    {"_get_stream_priority_range",
+     _getStreamPriorityRange,
+     METH_NOARGS,
+     nullptr},
+    {"_get_mcpu_view_from_cpu_tensor",
+     _getMcpuViewFromCpuTensor,
+     METH_O,
+     nullptr},
     {nullptr, nullptr, 0, nullptr}};
 // LITERALINCLUDE MCPU MODULE METHODS
 /*

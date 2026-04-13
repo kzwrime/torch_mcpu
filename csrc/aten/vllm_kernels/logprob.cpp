@@ -22,7 +22,6 @@ static void vllm_topk_log_softmax_kernel_typed(
     int64_t topk_ids_stride,
     int64_t topk,
     int64_t vocab_size) {
-
   for (int64_t req = 0; req < batch; req++) {
     const scalar_t* row = logits_ptr + req * logits_stride;
     const int64_t* ids_row = ids_ptr + req * topk_ids_stride;
@@ -32,12 +31,14 @@ static void vllm_topk_log_softmax_kernel_typed(
     float max_val = -std::numeric_limits<float>::infinity();
     if constexpr (std::is_same_v<scalar_t, float>) {
       for (int64_t i = 0; i < vocab_size; i++) {
-        if (row[i] > max_val) max_val = row[i];
+        if (row[i] > max_val)
+          max_val = row[i];
       }
     } else {
       for (int64_t i = 0; i < vocab_size; i++) {
         float v = static_cast<float>(row[i]);
-        if (v > max_val) max_val = v;
+        if (v > max_val)
+          max_val = v;
       }
     }
 
@@ -55,8 +56,10 @@ static void vllm_topk_log_softmax_kernel_typed(
 
     for (int64_t k = 0; k < topk; k++) {
       int64_t tid = ids_row[k];
-      if (tid < 0) tid = 0;
-      if (tid >= vocab_size) tid = vocab_size - 1;
+      if (tid < 0)
+        tid = 0;
+      if (tid >= vocab_size)
+        tid = vocab_size - 1;
       if constexpr (std::is_same_v<scalar_t, float>) {
         out_row[k] = row[tid] - lse;
       } else {
@@ -67,12 +70,11 @@ static void vllm_topk_log_softmax_kernel_typed(
 }
 
 void vllm_topk_log_softmax_kernel_impl(
-    at::Tensor& output,            // [batch, topk], float32  (output)
-    const at::Tensor& logits,      // [batch, vocab_size], any float
-    const at::Tensor& topk_ids,    // [batch, topk], int64
+    at::Tensor& output, // [batch, topk], float32  (output)
+    const at::Tensor& logits, // [batch, vocab_size], any float
+    const at::Tensor& topk_ids, // [batch, topk], int64
     int64_t topk,
     int64_t vocab_size) {
-
   VLLM_MCPU_CHECK_DIM(logits, 2, "logits");
   VLLM_MCPU_CHECK_FLOAT(logits, "logits");
   VLLM_MCPU_CHECK_DIM(output, 2, "output");
@@ -88,8 +90,14 @@ void vllm_topk_log_softmax_kernel_impl(
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_topk_log_softmax_kernel", {
     vllm_topk_log_softmax_kernel_typed<scalar_t>(
-        out_ptr, logits.data_ptr<scalar_t>(),
-        batch, logits_stride, ids_ptr, topk_ids_stride, topk, vocab_size);
+        out_ptr,
+        logits.data_ptr<scalar_t>(),
+        batch,
+        logits_stride,
+        ids_ptr,
+        topk_ids_stride,
+        topk,
+        vocab_size);
   });
 }
 
@@ -105,7 +113,6 @@ static void vllm_ranks_kernel_typed(
     int64_t logits_stride,
     const int64_t* ids_ptr,
     int64_t vocab_size) {
-
   for (int64_t req = 0; req < batch; req++) {
     const scalar_t* row = logits_ptr + req * logits_stride;
     int64_t tid = ids_ptr[req];
@@ -113,12 +120,14 @@ static void vllm_ranks_kernel_typed(
     if constexpr (std::is_same_v<scalar_t, float>) {
       float x = row[tid];
       for (int64_t i = 0; i < vocab_size; i++) {
-        if (row[i] >= x) rank++;
+        if (row[i] >= x)
+          rank++;
       }
     } else {
       float x = static_cast<float>(row[tid]);
       for (int64_t i = 0; i < vocab_size; i++) {
-        if (static_cast<float>(row[i]) >= x) rank++;
+        if (static_cast<float>(row[i]) >= x)
+          rank++;
       }
     }
     out_ptr[req] = rank;
@@ -126,11 +135,10 @@ static void vllm_ranks_kernel_typed(
 }
 
 void vllm_ranks_kernel_impl(
-    at::Tensor& output,          // [batch], int64
-    const at::Tensor& logits,    // [batch, vocab_size], any float
+    at::Tensor& output, // [batch], int64
+    const at::Tensor& logits, // [batch, vocab_size], any float
     const at::Tensor& token_ids, // [batch], int64
     int64_t vocab_size) {
-
   VLLM_MCPU_CHECK_DIM(logits, 2, "logits");
   VLLM_MCPU_CHECK_FLOAT(logits, "logits");
   VLLM_MCPU_CHECK_DIM(output, 1, "output");
@@ -145,12 +153,16 @@ void vllm_ranks_kernel_impl(
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_ranks_kernel", {
     vllm_ranks_kernel_typed<scalar_t>(
-        out_ptr, logits.data_ptr<scalar_t>(),
-        batch, logits_stride, ids_ptr, vocab_size);
+        out_ptr,
+        logits.data_ptr<scalar_t>(),
+        batch,
+        logits_stride,
+        ids_ptr,
+        vocab_size);
   });
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// C++ kernel for vllm/v1/worker/gpu/structured_outputs.py::_apply_grammar_bitmask_kernel
+// C++ kernel for
+// vllm/v1/worker/gpu/structured_outputs.py::_apply_grammar_bitmask_kernel
 
 #include "common.h"
 
@@ -15,8 +16,8 @@ static void vllm_apply_grammar_bitmask_typed(
     const int32_t* bitmask_ptr,
     int64_t bitmask_stride,
     int64_t vocab_size) {
-
-  const scalar_t neg_inf = static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
+  const scalar_t neg_inf =
+      static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
   int64_t num_words = (vocab_size + 31) / 32;
 
   for (int64_t mask_idx = 0; mask_idx < num_masks; mask_idx++) {
@@ -29,7 +30,8 @@ static void vllm_apply_grammar_bitmask_typed(
       int64_t base = w * 32;
       int lim = (int)((base + 32 <= vocab_size) ? 32 : vocab_size - base);
       for (int b = 0; b < lim; b++) {
-        if ((packed >> b) & 1u) row_ptr[base + b] = neg_inf;
+        if ((packed >> b) & 1u)
+          row_ptr[base + b] = neg_inf;
       }
     }
   }
@@ -40,7 +42,6 @@ void vllm_apply_grammar_bitmask_impl(
     const at::Tensor& logits_indices,
     const at::Tensor& bitmask,
     int64_t vocab_size) {
-
   VLLM_MCPU_CHECK_DIM(logits, 2, "logits");
   VLLM_MCPU_CHECK_FLOAT(logits, "logits");
   VLLM_MCPU_CHECK_DIM(logits_indices, 1, "logits_indices");
@@ -49,7 +50,8 @@ void vllm_apply_grammar_bitmask_impl(
   VLLM_MCPU_CHECK_DTYPE(bitmask, at::kInt, "bitmask");
 
   int64_t num_masks = logits_indices.size(0);
-  if (num_masks == 0) return;
+  if (num_masks == 0)
+    return;
 
   int64_t logits_stride = logits.stride(0);
   const int32_t* idx_ptr = logits_indices.data_ptr<int32_t>();
@@ -58,12 +60,17 @@ void vllm_apply_grammar_bitmask_impl(
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_apply_grammar_bitmask", {
     vllm_apply_grammar_bitmask_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(), num_masks, logits_stride,
-        idx_ptr, bitmask_ptr, bitmask_stride, vocab_size);
+        logits.data_ptr<scalar_t>(),
+        num_masks,
+        logits_stride,
+        idx_ptr,
+        bitmask_ptr,
+        bitmask_stride,
+        vocab_size);
   });
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(

@@ -18,16 +18,17 @@ namespace {
 // ---------------------------------------------------------------------------
 // prepare_prefill_inputs
 // input_ids[qstart:qend] = all_token_ids[req, ncomp:ncomp+qlen]
-// if ncomp+qlen < plen: next_prefill_tokens[req] = all_token_ids[req, ncomp+qlen]
+// if ncomp+qlen < plen: next_prefill_tokens[req] = all_token_ids[req,
+// ncomp+qlen]
 // ---------------------------------------------------------------------------
 void vllm_prepare_prefill_inputs_impl(
-    at::Tensor& input_ids,                  // [max_num_tokens], int32
-    at::Tensor& next_prefill_tokens,        // [max_num_reqs], int32
-    const at::Tensor& idx_mapping,          // [num_reqs], int32
-    const at::Tensor& query_start_loc,      // [num_reqs+1], int32
-    const at::Tensor& all_token_ids,        // [max_num_reqs, max_seq_len], int32
-    const at::Tensor& prefill_len,          // [max_num_reqs], int32
-    const at::Tensor& num_computed_tokens) {// [max_num_reqs], int32
+    at::Tensor& input_ids, // [max_num_tokens], int32
+    at::Tensor& next_prefill_tokens, // [max_num_reqs], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32
+    const at::Tensor& query_start_loc, // [num_reqs+1], int32
+    const at::Tensor& all_token_ids, // [max_num_reqs, max_seq_len], int32
+    const at::Tensor& prefill_len, // [max_num_reqs], int32
+    const at::Tensor& num_computed_tokens) { // [max_num_reqs], int32
 
   int64_t num_reqs = idx_mapping.size(0);
   int64_t atids_stride = all_token_ids.stride(0);
@@ -44,7 +45,8 @@ void vllm_prepare_prefill_inputs_impl(
     int32_t req = idx_ptr[r];
     int32_t plen = plen_ptr[req];
     int32_t ncomp = ncomp_ptr[req];
-    if (ncomp >= plen) continue;
+    if (ncomp >= plen)
+      continue;
 
     int32_t qstart = qs_ptr[r];
     int32_t qend = qs_ptr[r + 1];
@@ -68,11 +70,11 @@ void vllm_prepare_prefill_inputs_impl(
 // Pads seq_lens[num_reqs:max_num_reqs] = 0
 // ---------------------------------------------------------------------------
 void vllm_prepare_pos_seq_lens_impl(
-    const at::Tensor& idx_mapping,          // [num_reqs], int32
-    const at::Tensor& query_start_loc,      // [num_reqs+1], int32
-    const at::Tensor& num_computed_tokens,  // [max_num_reqs], int32
-    at::Tensor& pos,                        // [max_num_tokens], int64
-    at::Tensor& seq_lens) {                 // [max_num_reqs], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32
+    const at::Tensor& query_start_loc, // [num_reqs+1], int32
+    const at::Tensor& num_computed_tokens, // [max_num_reqs], int32
+    at::Tensor& pos, // [max_num_tokens], int64
+    at::Tensor& seq_lens) { // [max_num_reqs], int32
 
   int64_t num_reqs = idx_mapping.size(0);
   int64_t max_num_reqs = seq_lens.size(0);
@@ -104,16 +106,15 @@ void vllm_prepare_pos_seq_lens_impl(
 // combine_sampled_and_draft_tokens  → logits_indices [num_logits]
 // ---------------------------------------------------------------------------
 at::Tensor vllm_combine_sampled_and_draft_tokens_impl(
-    at::Tensor& input_ids,                  // [max_num_tokens], int32
-    const at::Tensor& idx_mapping,          // [num_reqs], int32
-    const at::Tensor& last_sampled_tokens,  // [max_num_reqs], int32
-    const at::Tensor& query_start_loc,      // [num_reqs+1], int32
-    const at::Tensor& seq_lens,             // [num_reqs], int32
-    const at::Tensor& prefill_len,          // [max_num_reqs], int32
-    const at::Tensor& draft_tokens,         // [max_num_reqs, max_draft], int32
-    const at::Tensor& cu_num_logits,        // [num_reqs+1], int32
+    at::Tensor& input_ids, // [max_num_tokens], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32
+    const at::Tensor& last_sampled_tokens, // [max_num_reqs], int32
+    const at::Tensor& query_start_loc, // [num_reqs+1], int32
+    const at::Tensor& seq_lens, // [num_reqs], int32
+    const at::Tensor& prefill_len, // [max_num_reqs], int32
+    const at::Tensor& draft_tokens, // [max_num_reqs, max_draft], int32
+    const at::Tensor& cu_num_logits, // [num_reqs+1], int32
     int64_t num_logits) {
-
   int64_t num_reqs = idx_mapping.size(0);
 
   int32_t* iids_ptr = input_ids.data_ptr<int32_t>();
@@ -127,7 +128,8 @@ at::Tensor vllm_combine_sampled_and_draft_tokens_impl(
   const int32_t* cunl_ptr = cu_num_logits.data_ptr<int32_t>();
   int64_t draft_stride = draft_tokens.stride(0);
 
-  at::Tensor logits_indices = at::zeros({num_logits},
+  at::Tensor logits_indices = at::zeros(
+      {num_logits},
       at::TensorOptions().dtype(at::kLong).device(input_ids.device()));
   int64_t* li_ptr = logits_indices.data_ptr<int64_t>();
 
@@ -146,7 +148,8 @@ at::Tensor vllm_combine_sampled_and_draft_tokens_impl(
 
     int32_t seq_len = sl_ptr[r];
     int32_t plen = plen_ptr[req];
-    if (seq_len <= plen) continue;  // chunked prefill
+    if (seq_len <= plen)
+      continue; // chunked prefill
 
     iids_ptr[qend - n_logits] = (int32_t)lst_ptr[req];
     if (n_draft > 0) {
@@ -163,11 +166,11 @@ at::Tensor vllm_combine_sampled_and_draft_tokens_impl(
 // get_num_sampled_and_rejected  → (num_sampled, num_rejected)
 // ---------------------------------------------------------------------------
 std::tuple<at::Tensor, at::Tensor> vllm_get_num_sampled_and_rejected_impl(
-    at::Tensor& num_sampled,            // [num_reqs], int32  (in/out)
-    const at::Tensor& seq_lens,         // [num_reqs], int32
-    const at::Tensor& cu_num_logits,    // [num_reqs+1], int32
-    const at::Tensor& idx_mapping,      // [num_reqs], int32
-    const at::Tensor& prefill_len) {    // [max_num_reqs], int32
+    at::Tensor& num_sampled, // [num_reqs], int32  (in/out)
+    const at::Tensor& seq_lens, // [num_reqs], int32
+    const at::Tensor& cu_num_logits, // [num_reqs+1], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32
+    const at::Tensor& prefill_len) { // [max_num_reqs], int32
 
   int64_t num_reqs = idx_mapping.size(0);
   at::Tensor num_rejected = at::empty_like(num_sampled);
@@ -199,16 +202,17 @@ std::tuple<at::Tensor, at::Tensor> vllm_get_num_sampled_and_rejected_impl(
 // post_update
 // ---------------------------------------------------------------------------
 void vllm_post_update_impl(
-    const at::Tensor& idx_mapping,        // [num_reqs], int32
-    at::Tensor& num_computed_tokens,      // [max_num_reqs], int32
-    at::Tensor& last_sampled_tokens,      // [max_num_reqs, 1], int64
-    const std::optional<at::Tensor>& output_bin_counts,  // [max_num_reqs, vocab_size] or nullopt
-    const at::Tensor& sampled_tokens,     // [num_reqs, max_spec+1], int64
-    const at::Tensor& num_sampled,        // [num_reqs], int32
-    const at::Tensor& num_rejected,       // [num_reqs], int32
-    const at::Tensor& query_start_loc,    // [num_reqs+1], int32
-    at::Tensor& all_token_ids,            // [max_num_reqs, max_seq_len], int32
-    at::Tensor& total_len) {              // [max_num_reqs], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32
+    at::Tensor& num_computed_tokens, // [max_num_reqs], int32
+    at::Tensor& last_sampled_tokens, // [max_num_reqs, 1], int64
+    const std::optional<at::Tensor>&
+        output_bin_counts, // [max_num_reqs, vocab_size] or nullopt
+    const at::Tensor& sampled_tokens, // [num_reqs, max_spec+1], int64
+    const at::Tensor& num_sampled, // [num_reqs], int32
+    const at::Tensor& num_rejected, // [num_reqs], int32
+    const at::Tensor& query_start_loc, // [num_reqs+1], int32
+    at::Tensor& all_token_ids, // [max_num_reqs, max_seq_len], int32
+    at::Tensor& total_len) { // [max_num_reqs], int32
 
   int64_t num_reqs = idx_mapping.size(0);
   int64_t atids_stride = all_token_ids.stride(0);
@@ -224,7 +228,8 @@ void vllm_post_update_impl(
   const int32_t* ns_ptr = num_sampled.data_ptr<int32_t>();
   const int32_t* nr_ptr = num_rejected.data_ptr<int32_t>();
   const int32_t* qs_ptr = query_start_loc.data_ptr<int32_t>();
-  int32_t* atids_ptr = all_token_ids.data_ptr<int32_t>();  // all_token_ids is int32
+  int32_t* atids_ptr =
+      all_token_ids.data_ptr<int32_t>(); // all_token_ids is int32
   int32_t* tlen_ptr = total_len.data_ptr<int32_t>();
 
   int32_t* obc_ptr = nullptr;
@@ -233,8 +238,10 @@ void vllm_post_update_impl(
     obc_ptr = output_bin_counts->data_ptr<int32_t>();
     obc_stride = output_bin_counts->stride(0);
   }
-  int64_t obc_vocab = output_bin_counts.has_value() && output_bin_counts->defined()
-      ? output_bin_counts->size(1) : 0;
+  int64_t obc_vocab =
+      output_bin_counts.has_value() && output_bin_counts->defined()
+      ? output_bin_counts->size(1)
+      : 0;
 
   for (int64_t r = 0; r < num_reqs; r++) {
     int32_t req = idx_ptr[r];
@@ -247,7 +254,7 @@ void vllm_post_update_impl(
       tlen_ptr[req] = tlen + n;
       int32_t* dst = atids_ptr + (int64_t)req * atids_stride + tlen;
       for (int32_t i = 0; i < n; i++) {
-        dst[i] = (int32_t)st_row[i];  // cast int64 → int32 for all_token_ids
+        dst[i] = (int32_t)st_row[i]; // cast int64 → int32 for all_token_ids
         if (obc_ptr != nullptr) {
           int32_t tok = (int32_t)st_row[i];
           if (tok >= 0 && tok < (int32_t)obc_vocab) {
@@ -269,8 +276,8 @@ void vllm_post_update_impl(
 // post_update_pool
 // ---------------------------------------------------------------------------
 void vllm_post_update_pool_impl(
-    const at::Tensor& idx_mapping,       // [num_reqs], int32
-    at::Tensor& num_computed_tokens,     // [max_num_reqs], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32
+    at::Tensor& num_computed_tokens, // [max_num_reqs], int32
     const at::Tensor& query_start_loc) { // [num_reqs+1], int32
 
   int64_t num_reqs = idx_mapping.size(0);
@@ -289,16 +296,15 @@ void vllm_post_update_pool_impl(
 // expand_idx_mapping  → (expanded_idx_mapping, expanded_local_pos)
 // ---------------------------------------------------------------------------
 std::tuple<at::Tensor, at::Tensor> vllm_expand_idx_mapping_impl(
-    const at::Tensor& idx_mapping,     // [num_reqs], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32
     int64_t total_num_logits,
-    const at::Tensor& cu_num_logits,   // [num_reqs+1], int32
+    const at::Tensor& cu_num_logits, // [num_reqs+1], int32
     int64_t /*max_expand_len*/) {
-
   int64_t num_reqs = idx_mapping.size(0);
 
-  at::Tensor expanded = at::empty({total_num_logits},
-      idx_mapping.options());
-  at::Tensor local_pos = at::empty({total_num_logits},
+  at::Tensor expanded = at::empty({total_num_logits}, idx_mapping.options());
+  at::Tensor local_pos = at::empty(
+      {total_num_logits},
       at::TensorOptions().dtype(at::kInt).device(idx_mapping.device()));
 
   const int32_t* idx_ptr = idx_mapping.data_ptr<int32_t>();
@@ -319,7 +325,7 @@ std::tuple<at::Tensor, at::Tensor> vllm_expand_idx_mapping_impl(
   return std::make_tuple(expanded, local_pos);
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(
@@ -389,18 +395,15 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
 }
 
 TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
-  m.impl("vllm_prepare_prefill_inputs",
-         &vllm_prepare_prefill_inputs_impl);
-  m.impl("vllm_prepare_pos_seq_lens",
-         &vllm_prepare_pos_seq_lens_impl);
-  m.impl("vllm_combine_sampled_and_draft_tokens",
-         &vllm_combine_sampled_and_draft_tokens_impl);
-  m.impl("vllm_get_num_sampled_and_rejected",
-         &vllm_get_num_sampled_and_rejected_impl);
-  m.impl("vllm_post_update",
-         &vllm_post_update_impl);
-  m.impl("vllm_post_update_pool",
-         &vllm_post_update_pool_impl);
-  m.impl("vllm_expand_idx_mapping",
-         &vllm_expand_idx_mapping_impl);
+  m.impl("vllm_prepare_prefill_inputs", &vllm_prepare_prefill_inputs_impl);
+  m.impl("vllm_prepare_pos_seq_lens", &vllm_prepare_pos_seq_lens_impl);
+  m.impl(
+      "vllm_combine_sampled_and_draft_tokens",
+      &vllm_combine_sampled_and_draft_tokens_impl);
+  m.impl(
+      "vllm_get_num_sampled_and_rejected",
+      &vllm_get_num_sampled_and_rejected_impl);
+  m.impl("vllm_post_update", &vllm_post_update_impl);
+  m.impl("vllm_post_update_pool", &vllm_post_update_pool_impl);
+  m.impl("vllm_expand_idx_mapping", &vllm_expand_idx_mapping_impl);
 }

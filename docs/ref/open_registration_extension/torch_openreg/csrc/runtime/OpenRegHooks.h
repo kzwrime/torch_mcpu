@@ -12,8 +12,9 @@
 #include "OpenRegGenerator.h"
 
 namespace c10::openreg {
-struct OPENREG_EXPORT OpenRegHooksInterface : public at::PrivateUse1HooksInterface {
-  OpenRegHooksInterface() {};
+struct OPENREG_EXPORT OpenRegHooksInterface
+    : public at::PrivateUse1HooksInterface {
+  OpenRegHooksInterface(){};
   ~OpenRegHooksInterface() override = default;
 
   void init() const override {
@@ -52,7 +53,8 @@ struct OPENREG_EXPORT OpenRegHooksInterface : public at::PrivateUse1HooksInterfa
   }
 
   DeviceIndex maybeExchangeDevice(DeviceIndex device) const override {
-    // Only exchange if the requested device is valid; otherwise, no-op and return current
+    // Only exchange if the requested device is valid; otherwise, no-op and
+    // return current
     auto count = device_count();
     if (device < 0 || device >= count) {
       return getCurrentDevice();
@@ -75,14 +77,16 @@ struct OPENREG_EXPORT OpenRegHooksInterface : public at::PrivateUse1HooksInterfa
     orPointerAttributes attr{};
     auto err = orPointerGetAttributes(&attr, data);
     if (err == orSuccess && attr.type == orMemoryTypeDevice) {
-      return at::Device(at::DeviceType::PrivateUse1, static_cast<int>(attr.device));
+      return at::Device(
+          at::DeviceType::PrivateUse1, static_cast<int>(attr.device));
     } else {
       TORCH_CHECK(false, "failed to get device from pointer");
     }
     return at::Device(at::DeviceType::PrivateUse1, current_device());
   }
   // LITERALINCLUDE START: OPENREG HOOK EXAMPLES
-  const at::Generator& getDefaultGenerator(DeviceIndex device_index) const override {
+  const at::Generator& getDefaultGenerator(
+      DeviceIndex device_index) const override {
     return getDefaultOpenRegGenerator(device_index);
   }
   // LITERALINCLUDE END: OPENREG HOOK EXAMPLES

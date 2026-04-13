@@ -9,7 +9,7 @@ namespace vllm_mcpu {
 
 bool CHECK_INPUTS = true;
 
-}  // namespace vllm_mcpu
+} // namespace vllm_mcpu
 
 // Expose setter to Python: torch.ops.mcpu.set_check_inputs(True/False)
 namespace {
@@ -22,7 +22,7 @@ bool get_check_inputs_impl() {
   return vllm_mcpu::CHECK_INPUTS;
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def("set_check_inputs(bool enabled) -> ()");

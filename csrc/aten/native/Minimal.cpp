@@ -173,10 +173,7 @@ void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
   const auto& op_name = op.schema().operator_name();
   if (cpu_fallback_blocklist.count(op_name)) {
     TORCH_CHECK(
-        false,
-        "Operator '",
-        op_name,
-        "' is not implemented for device mcpu.");
+        false, "Operator '", op_name, "' is not implemented for device mcpu.");
   } else {
     // Call our custom CPU fallback implementation instead of PyTorch's
     at::native::mcpu::custom::cpu_fallback(op, stack);

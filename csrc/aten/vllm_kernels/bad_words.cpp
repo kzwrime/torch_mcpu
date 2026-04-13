@@ -27,13 +27,14 @@ static void vllm_bad_words_kernel_typed(
     const int32_t* tlen_ptr,
     const int32_t* input_ids_ptr,
     const int32_t* local_pos_ptr) {
-
-  const scalar_t neg_inf = static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
+  const scalar_t neg_inf =
+      static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
 
   for (int64_t tok = 0; tok < num_tokens; tok++) {
     int32_t req = idx_ptr[tok];
     int32_t n_bw = n_bw_ptr[req];
-    if (n_bw == 0) continue;
+    if (n_bw == 0)
+      continue;
 
     int32_t pos = local_pos_ptr[tok];
     int64_t cur_req_first = tok - pos;
@@ -44,7 +45,8 @@ static void vllm_bad_words_kernel_typed(
 
     const int32_t* off_row = bw_off_ptr + (int64_t)req * bw_off_stride;
     const int32_t* bw_row = bw_ids_ptr + (int64_t)req * bw_ids_stride;
-    const int32_t* output_base = atids_ptr + (int64_t)req * token_ids_stride + plen;
+    const int32_t* output_base =
+        atids_ptr + (int64_t)req * token_ids_stride + plen;
     scalar_t* row = logits_ptr + tok * logits_stride;
 
     for (int32_t bw = 0; bw < n_bw; bw++) {
@@ -52,7 +54,8 @@ static void vllm_bad_words_kernel_typed(
       int32_t end = off_row[bw + 1];
       int32_t prefix_len = end - start - 1;
 
-      if (prefix_len > effective_len) continue;
+      if (prefix_len > effective_len)
+        continue;
 
       int32_t last_token = bw_row[end - 1];
 
@@ -67,7 +70,8 @@ static void vllm_bad_words_kernel_typed(
         } else {
           actual = output_base[actual_pos];
         }
-        if (expected != actual) match = false;
+        if (expected != actual)
+          match = false;
       }
 
       if (match && last_token >= 0 && last_token < (int32_t)vocab_size) {
@@ -78,22 +82,31 @@ static void vllm_bad_words_kernel_typed(
 }
 
 void vllm_bad_words_kernel_impl(
-    at::Tensor& logits,                     // [num_tokens, vocab_size]
+    at::Tensor& logits, // [num_tokens, vocab_size]
     const at::Tensor& expanded_idx_mapping, // [num_tokens], int32
-    const at::Tensor& bad_word_token_ids,   // [max_num_reqs, max_bw_toks], int32
-    const at::Tensor& bad_word_offsets,     // [max_num_reqs, max_bad_words+1], int32
-    const at::Tensor& num_bad_words,        // [max_num_reqs], int32
-    const at::Tensor& all_token_ids,        // [max_num_reqs, max_seq_len], int32
-    const at::Tensor& prompt_len,           // [max_num_reqs], int32
-    const at::Tensor& total_len,            // [max_num_reqs], int32
-    const at::Tensor& input_ids,            // [num_tokens], int32  (draft tokens)
+    const at::Tensor& bad_word_token_ids, // [max_num_reqs, max_bw_toks], int32
+    const at::Tensor&
+        bad_word_offsets, // [max_num_reqs, max_bad_words+1], int32
+    const at::Tensor& num_bad_words, // [max_num_reqs], int32
+    const at::Tensor& all_token_ids, // [max_num_reqs, max_seq_len], int32
+    const at::Tensor& prompt_len, // [max_num_reqs], int32
+    const at::Tensor& total_len, // [max_num_reqs], int32
+    const at::Tensor& input_ids, // [num_tokens], int32  (draft tokens)
     const at::Tensor& expanded_local_pos) { // [num_tokens], int32
 
-  VLLM_MCPU_CHECK(logits.dim() == 2, "logits must be 2D, got ", logits.dim(), "D");
-  VLLM_MCPU_CHECK(logits.scalar_type() == at::kFloat || logits.scalar_type() == at::kBFloat16 || logits.scalar_type() == at::kHalf,
+  VLLM_MCPU_CHECK(
+      logits.dim() == 2, "logits must be 2D, got ", logits.dim(), "D");
+  VLLM_MCPU_CHECK(
+      logits.scalar_type() == at::kFloat ||
+          logits.scalar_type() == at::kBFloat16 ||
+          logits.scalar_type() == at::kHalf,
       "logits must be float32, float16, or bfloat16");
-  VLLM_MCPU_CHECK(expanded_idx_mapping.scalar_type() == at::kInt, "expanded_idx_mapping must be int32");
-  VLLM_MCPU_CHECK(expanded_local_pos.scalar_type() == at::kInt, "expanded_local_pos must be int32");
+  VLLM_MCPU_CHECK(
+      expanded_idx_mapping.scalar_type() == at::kInt,
+      "expanded_idx_mapping must be int32");
+  VLLM_MCPU_CHECK(
+      expanded_local_pos.scalar_type() == at::kInt,
+      "expanded_local_pos must be int32");
 
   int64_t num_tokens = logits.size(0);
   int64_t logits_stride = logits.stride(0);
@@ -114,14 +127,26 @@ void vllm_bad_words_kernel_impl(
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_bad_words_kernel", {
     vllm_bad_words_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(), num_tokens, logits_stride, vocab_size,
-        idx_ptr, bw_ids_ptr, bw_off_ptr, bw_ids_stride, bw_off_stride,
-        n_bw_ptr, atids_ptr, token_ids_stride,
-        plen_ptr, tlen_ptr, input_ids_ptr, local_pos_ptr);
+        logits.data_ptr<scalar_t>(),
+        num_tokens,
+        logits_stride,
+        vocab_size,
+        idx_ptr,
+        bw_ids_ptr,
+        bw_off_ptr,
+        bw_ids_stride,
+        bw_off_stride,
+        n_bw_ptr,
+        atids_ptr,
+        token_ids_stride,
+        plen_ptr,
+        tlen_ptr,
+        input_ids_ptr,
+        local_pos_ptr);
   });
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(

@@ -122,12 +122,13 @@ TEST_F(MemoryTest, MemcpyAsyncHostToDevice) {
 
   // Async copies should complete once the stream is synchronized.
   EXPECT_EQ(
-      orMemcpyAsync(dev_ptr, host_src, sizeof(host_src), orMemcpyHostToDevice, stream),
+      orMemcpyAsync(
+          dev_ptr, host_src, sizeof(host_src), orMemcpyHostToDevice, stream),
       orSuccess);
   EXPECT_EQ(orStreamSynchronize(stream), orSuccess);
-  EXPECT_EQ(orMemcpy(
-                host_dst, dev_ptr, sizeof(host_src), orMemcpyDeviceToHost),
-            orSuccess);
+  EXPECT_EQ(
+      orMemcpy(host_dst, dev_ptr, sizeof(host_src), orMemcpyDeviceToHost),
+      orSuccess);
   EXPECT_STREQ(host_dst, host_src);
 
   EXPECT_EQ(orFree(dev_ptr), orSuccess);

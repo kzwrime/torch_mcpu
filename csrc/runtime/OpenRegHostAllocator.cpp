@@ -4,7 +4,8 @@
 //  [2]  XPUStream / XPUEvent → McpuStream / McpuEvent
 //  [3]  sycl::aligned_alloc_host → orMallocHost
 //  [4]  sycl::free → orFreeHost
-//  [5]  REGISTER_HOST_ALLOCATOR(at::kXPU, ...) → REGISTER_HOST_ALLOCATOR(at::kPrivateUse1, ...)
+//  [5]  REGISTER_HOST_ALLOCATOR(at::kXPU, ...) →
+//  REGISTER_HOST_ALLOCATOR(at::kPrivateUse1, ...)
 #include "OpenRegHostAllocator.h"
 #include <include/openreg.h>
 
@@ -19,7 +20,8 @@ struct McpuCachingHostAllocatorImpl
     : public at::CachingHostAllocatorImpl<McpuStream, McpuEvent> { // [2]
   /* These following functions are runtime-related. */
   void allocate_host_memory(size_t size, void** ptr) override {
-    MCPU_CHECK(orMallocHost(ptr, size)); // [3] orMallocHost replaces sycl::aligned_alloc_host
+    MCPU_CHECK(orMallocHost(
+        ptr, size)); // [3] orMallocHost replaces sycl::aligned_alloc_host
   }
 
   void free_block(Block* block) override {

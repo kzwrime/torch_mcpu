@@ -14,8 +14,7 @@ at::Tensor wrapper_quantize_per_tensor(
     double scale,
     int64_t zero_point,
     at::ScalarType dtype) {
-  return at::native::mcpu::quantize_per_tensor(
-      self, scale, zero_point, dtype);
+  return at::native::mcpu::quantize_per_tensor(self, scale, zero_point, dtype);
 }
 
 int64_t wrapper__fused_sdp_choice(

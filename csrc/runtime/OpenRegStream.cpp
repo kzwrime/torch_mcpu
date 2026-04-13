@@ -54,7 +54,8 @@ thread_local std::unique_ptr<StreamId[]> current_streams = nullptr;
  *  110 = default stream
  *  111 = external stream
 
- * The range 000 to 101 is reserved for stream pools of different priorities and can be expanded as needed. (Mcpu currently supports two priorities: 0 and 1)
+ * The range 000 to 101 is reserved for stream pools of different priorities and
+ can be expanded as needed. (Mcpu currently supports two priorities: 0 and 1)
  *
  * For external stream, StreamID is a orStream_t pointer. This means that last
  * bit will always be 0. So when constructing StreamId for a native stream we
@@ -128,8 +129,7 @@ void initGlobalStreamState() {
   streams.resize(num_devices);
   priority_counters.resize(num_devices);
   int leastPriority = -1, greatestPriority = -1;
-  MCPU_CHECK(
-      orDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
+  MCPU_CHECK(orDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
   auto range = greatestPriority - leastPriority + 1;
   max_stream_priorities = range >= c10::mcpu::max_compile_time_stream_priorities
       ? c10::mcpu::max_compile_time_stream_priorities
@@ -141,7 +141,6 @@ void initSingleDeviceStream(int priority, DeviceIndex device_index, int i) {
   MCPU_CHECK(orStreamCreateWithPriority(&stream, 0, priority));
   priority_counters[device_index][priority] = 0;
 }
-
 
 // Creates stream pools for the specified device. It should be call only once.
 void initDeviceStreamState(DeviceIndex device_index) {
@@ -204,12 +203,13 @@ orStream_t McpuStream::stream() const {
   StreamIdType st = streamIdType(stream_id);
   size_t si = streamIdIndex(stream_id);
   // Mcpu does not support a default stream natively.
-  // Here, we designate stream 0 from the priority 0 stream pool to serve as the default stream.
-  if(st.isDefault()){
+  // Here, we designate stream 0 from the priority 0 stream pool to serve as the
+  // default stream.
+  if (st.isDefault()) {
     return streams[device_index][0][0];
-  }else if(st.isExt()){
+  } else if (st.isExt()) {
     return reinterpret_cast<orStream_t>(stream_id);
-  }else{
+  } else {
     auto streamType = st.getStreamType();
     TORCH_CHECK(
         streamType >= 0 && streamType <= max_stream_priorities,
@@ -247,8 +247,7 @@ McpuStream getStreamFromPool(const bool isHighPriority, DeviceIndex device) {
 McpuStream getStreamFromExternal(
     orStream_t ext_stream,
     DeviceIndex device_index) {
-  return McpuStreamForId(
-      device_index, reinterpret_cast<int64_t>(ext_stream));
+  return McpuStreamForId(device_index, reinterpret_cast<int64_t>(ext_stream));
 }
 
 McpuStream getDefaultMcpuStream(DeviceIndex device_index) {
@@ -257,8 +256,7 @@ McpuStream getDefaultMcpuStream(DeviceIndex device_index) {
     device_index = current_device();
   }
   check_device(device_index);
-  return McpuStreamForId(
-      device_index, makeStreamId(StreamIdType::DEFAULT, 0));
+  return McpuStreamForId(device_index, makeStreamId(StreamIdType::DEFAULT, 0));
 }
 
 McpuStream getCurrentMcpuStream(DeviceIndex device_index) {

@@ -14,7 +14,7 @@
 
 namespace c10::mcpu {
 struct MCPU_EXPORT McpuHooksInterface : public at::PrivateUse1HooksInterface {
-  McpuHooksInterface() {};
+  McpuHooksInterface(){};
   ~McpuHooksInterface() override = default;
 
   void init() const override {
@@ -53,7 +53,8 @@ struct MCPU_EXPORT McpuHooksInterface : public at::PrivateUse1HooksInterface {
   }
 
   DeviceIndex maybeExchangeDevice(DeviceIndex device) const override {
-    // Only exchange if the requested device is valid; otherwise, no-op and return current
+    // Only exchange if the requested device is valid; otherwise, no-op and
+    // return current
     auto count = device_count();
     if (device < 0 || device >= count) {
       return getCurrentDevice();
@@ -77,10 +78,12 @@ struct MCPU_EXPORT McpuHooksInterface : public at::PrivateUse1HooksInterface {
     auto err = orPointerGetAttributes(&attr, data);
     if (err == orSuccess) {
       if (attr.type == orMemoryTypeDevice) {
-        return at::Device(at::DeviceType::PrivateUse1, static_cast<int>(attr.device));
+        return at::Device(
+            at::DeviceType::PrivateUse1, static_cast<int>(attr.device));
       }
       if (attr.type == orMemoryTypeHost) {
-        // Pinned host memory is accessible from the mcpu device (CPU emulation).
+        // Pinned host memory is accessible from the mcpu device (CPU
+        // emulation).
         return at::Device(at::DeviceType::PrivateUse1, current_device());
       }
     }
@@ -88,7 +91,8 @@ struct MCPU_EXPORT McpuHooksInterface : public at::PrivateUse1HooksInterface {
     return at::Device(at::DeviceType::PrivateUse1, current_device());
   }
   // LITERALINCLUDE MCPU HOOK EXAMPLES
-  const at::Generator& getDefaultGenerator(DeviceIndex device_index) const override {
+  const at::Generator& getDefaultGenerator(
+      DeviceIndex device_index) const override {
     return getDefaultMcpuGenerator(device_index);
   }
   // LITERALINCLUDE MCPU HOOK EXAMPLES

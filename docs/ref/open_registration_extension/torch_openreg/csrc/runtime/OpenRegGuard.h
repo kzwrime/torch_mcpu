@@ -18,7 +18,10 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   OpenRegGuardImpl() = default;
 
   explicit OpenRegGuardImpl(DeviceType t) {
-    TORCH_CHECK(t == static_type, "OpenRegGuardImpl initialized with non-PrivateUse1 DeviceType: ", t);
+    TORCH_CHECK(
+        t == static_type,
+        "OpenRegGuardImpl initialized with non-PrivateUse1 DeviceType: ",
+        t);
   }
 
   // LITERALINCLUDE START: OPENREG ALL DEVICE GUARD IMPL
@@ -33,7 +36,8 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    */
   // LITERALINCLUDE START: OPENREG GUARD DEVICE MANAGEMENT
   Device exchangeDevice(Device d) const override {
-    TORCH_CHECK(d.is_privateuseone(), "Expected a PrivateUse1 device, but got ", d);
+    TORCH_CHECK(
+        d.is_privateuseone(), "Expected a PrivateUse1 device, but got ", d);
 
     auto old_device_index = ExchangeDevice(d.index());
     return Device(static_type, old_device_index);
@@ -60,7 +64,8 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    * Set the current device to c10::Device.
    */
   void setDevice(Device d) const override {
-    TORCH_CHECK(d.is_privateuseone(), "Expected a PrivateUse1 device, but got ", d);
+    TORCH_CHECK(
+        d.is_privateuseone(), "Expected a PrivateUse1 device, but got ", d);
 
     set_device(d.index());
   }
@@ -120,7 +125,8 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   /**
    * Get a stream from the global pool for a given device.
    */
-  Stream getStreamFromGlobalPool(Device d, bool isHighPriority = false) const override {
+  Stream getStreamFromGlobalPool(Device d, bool isHighPriority = false)
+      const override {
     return getStreamFromPool(isHighPriority, d.index());
   }
 
@@ -159,7 +165,8 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   /**
    * Destroys the given event.
    */
-  void destroyEvent(void* event, const DeviceIndex device_index) const noexcept override {
+  void destroyEvent(void* event, const DeviceIndex device_index)
+      const noexcept override {
     if (!event)
       return;
 
@@ -177,13 +184,18 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    * event to continue and marks that version as recorded.
    * */
   // LITERALINCLUDE START: OPENREG GUARD EVENT RECORD
-  void record(void** event, const Stream& stream, const DeviceIndex device_index, const EventFlag flag) const override {
-    TORCH_CHECK(device_index == -1 || device_index == stream.device_index(),
-                "Event device index ",
-                device_index,
-                " does not match recording stream's device index ",
-                stream.device_index(),
-                ".");
+  void record(
+      void** event,
+      const Stream& stream,
+      const DeviceIndex device_index,
+      const EventFlag flag) const override {
+    TORCH_CHECK(
+        device_index == -1 || device_index == stream.device_index(),
+        "Event device index ",
+        device_index,
+        " does not match recording stream's device index ",
+        stream.device_index(),
+        ".");
 
     orEvent_t or_event = static_cast<orEvent_t>(*event);
     OpenRegStream or_stream{stream};
@@ -265,8 +277,11 @@ struct OpenRegGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   /**
    * Fetch the elapsed time between two recorded events.
    */
-  double elapsedTime(void* event1, void* event2, const DeviceIndex device_index) const override {
-    TORCH_CHECK(event1 && event2, "Both events must be recorded before calculating elapsed time.");
+  double elapsedTime(void* event1, void* event2, const DeviceIndex device_index)
+      const override {
+    TORCH_CHECK(
+        event1 && event2,
+        "Both events must be recorded before calculating elapsed time.");
     auto orig_device = current_device();
     set_device(device_index);
 

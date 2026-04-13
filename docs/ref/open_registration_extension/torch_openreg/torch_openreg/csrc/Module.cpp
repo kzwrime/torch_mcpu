@@ -26,9 +26,8 @@ static PyObject* _getDefaultGenerator(PyObject* self, PyObject* arg) {
       THPUtils_typename(arg));
   auto idx = static_cast<int>(THPUtils_unpackLong(arg));
 
-  return THPGenerator_initDefaultGenerator(
-      at::globalContext().defaultGenerator(
-          c10::Device(c10::DeviceType::PrivateUse1, idx)));
+  return THPGenerator_initDefaultGenerator(at::globalContext().defaultGenerator(
+      c10::Device(c10::DeviceType::PrivateUse1, idx)));
 
   END_HANDLE_TH_ERRORS
 }

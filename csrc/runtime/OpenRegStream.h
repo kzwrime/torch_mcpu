@@ -131,15 +131,13 @@ getStreamFromExternal(orStream_t ext_stream, DeviceIndex device_index);
  * Get the default Mcpu stream, for the passed Mcpu device, or for the
  * current device if no device index is passed.
  */
-MCPU_EXPORT McpuStream
-getDefaultMcpuStream(DeviceIndex device_index = -1);
+MCPU_EXPORT McpuStream getDefaultMcpuStream(DeviceIndex device_index = -1);
 
 /*
  * Get the current Mcpu stream, for the passed Mcpu device, or for the
  * current device if no device index is passed.
  */
-MCPU_EXPORT McpuStream
-getCurrentMcpuStream(DeviceIndex device_index = -1);
+MCPU_EXPORT McpuStream getCurrentMcpuStream(DeviceIndex device_index = -1);
 
 /*
  * Set the current stream on the device of the passed in stream to be the passed
@@ -147,9 +145,7 @@ getCurrentMcpuStream(DeviceIndex device_index = -1);
  */
 MCPU_EXPORT void setCurrentMcpuStream(McpuStream stream);
 
-MCPU_EXPORT std::ostream& operator<<(
-    std::ostream& stream,
-    const McpuStream& s);
+MCPU_EXPORT std::ostream& operator<<(std::ostream& stream, const McpuStream& s);
 
 } // namespace c10::mcpu
 

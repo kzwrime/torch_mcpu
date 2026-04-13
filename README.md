@@ -106,15 +106,17 @@ python -m pip install --no-build-isolation -e . # 用于开发
 python -m pip install --no-build-isolation . # 用于安装
 ```
 
-### 提交前自动格式化
-
-仓库使用根目录的 `.clang-format` 作为 C/C++ 代码风格配置。
-
-首次配置本地 Git hook：
+完成安装后，开发者必须在仓库根目录执行一次以下命令安装 Git hook：
 
 ```bash
 ./scripts/install-git-hooks.sh
 ```
+
+未安装 hook 时，提交前不会自动执行本仓库要求的 `clang-format` 检查与修复。
+
+### 提交前自动格式化
+
+仓库使用根目录的 `.clang-format` 作为 C/C++ 代码风格配置。
 
 安装后，每次执行 `git commit` 时，pre-commit hook 会：
 
@@ -123,6 +125,18 @@ python -m pip install --no-build-isolation . # 用于安装
 - 如果某个已暂存文件同时存在未暂存改动，则拒绝提交，避免覆盖工作区中的部分修改。
 
 如果 hook 自动修复了文件，本次提交会先被中断；确认格式化结果后，再次执行 `git commit` 即可。
+
+手动全量格式化可执行：
+
+```bash
+./scripts/format.sh
+```
+
+这个脚本会扫描仓库内的 C/C++ 文件并执行 `clang-format`，默认排除 `third_party/googletest`。如果只想检查不改文件，可执行：
+
+```bash
+./scripts/format.sh --check
+```
 
 ### 使用示例
 

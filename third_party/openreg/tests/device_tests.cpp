@@ -13,7 +13,7 @@ class DeviceTest : public ::testing::Test {
 TEST_F(DeviceTest, GetDeviceCountValid) {
   int count = -1;
   EXPECT_EQ(orGetDeviceCount(&count), orSuccess);
-  EXPECT_EQ(count, 1);  // Single device configuration
+  EXPECT_EQ(count, 1); // Single device configuration
 }
 
 TEST_F(DeviceTest, GetDeviceCountNullptr) {

@@ -4,9 +4,9 @@
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <torch/csrc/inductor/aoti_torch/utils.h>
 
-#include <torch/torch.h>
 #include <ATen/ATen.h>
 #include <torch/extension.h>
+#include <torch/torch.h>
 
 #include <ATen/EmptyTensor.h>
 #include <ATen/TensorIterator.h>

@@ -10,7 +10,6 @@ namespace c10::openreg {
 
 constexpr size_t kAggregate = static_cast<size_t>(StatType::AGGREGATE);
 
-
 DeviceMemoryAllocator::DeviceMemoryAllocator(c10::DeviceIndex device_index)
     : device_index_(device_index) {}
 
@@ -154,7 +153,7 @@ void deleteOpenRegMemory(void* ptr) {
   g_allocator.freeMemory(ptr);
 }
 
-}
+} // namespace
 
 OpenRegDeviceAllocator::OpenRegDeviceAllocator() {
   std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -164,7 +163,6 @@ OpenRegDeviceAllocator::OpenRegDeviceAllocator() {
     device_allocators_[i] = std::make_unique<DeviceMemoryAllocator>(i);
   }
 }
-
 
 at::DataPtr OpenRegDeviceAllocator::allocate(size_t nbytes) {
   int current_device_index = -1;
@@ -233,19 +231,20 @@ void OpenRegDeviceAllocator::freeMemory(void* ptr) {
     auto ret = orFree(ptr);
 
     // Only warn if orFree actually failed (not just "not found")
-    // In OpenReg's case, orFree returns orErrorUnknown if pointer not in registry
-    // which is expected for already-freed memory
+    // In OpenReg's case, orFree returns orErrorUnknown if pointer not in
+    // registry which is expected for already-freed memory
     if (ret != orSuccess && ret != orErrorUnknown) {
       TORCH_WARN(
           "orFree failed for untracked OpenReg memory pointer ",
           ptr,
-          ". Error code: ", ret);
+          ". Error code: ",
+          ret);
     }
   }
 }
 
-c10::CachingDeviceAllocator::DeviceStats OpenRegDeviceAllocator::
-    getDeviceStats(c10::DeviceIndex device) {
+c10::CachingDeviceAllocator::DeviceStats OpenRegDeviceAllocator::getDeviceStats(
+    c10::DeviceIndex device) {
   return device_allocators_[device]->getStats();
 }
 
@@ -266,7 +265,8 @@ void OpenRegDeviceAllocator::recordStream(
     const DataPtr& ptr,
     c10::Stream stream) {
   // OpenReg doesn't track stream usage yet
-  // TODO: When stream support is added, track which streams are using this pointer
+  // TODO: When stream support is added, track which streams are using this
+  // pointer
 }
 // ============ Global Registration ============
 

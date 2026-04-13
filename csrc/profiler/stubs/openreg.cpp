@@ -11,7 +11,6 @@
 #include "runtime/OpenRegFunctions.h"
 #include "runtime/OpenRegStream.h"
 
-
 namespace torch::profiler::impl {
 namespace {
 
@@ -43,10 +42,10 @@ struct McpuMethods : public ProfilerStubs {
 
     // Create Mcpu event
     orEvent_t mcpu_event_ptr{nullptr};
-    TORCH_MCPU_CHECK(orEventCreateWithFlags(&mcpu_event_ptr, orEventEnableTiming));
-    *event = std::shared_ptr<orEvent>(mcpu_event_ptr, [](orEvent_t ptr) {
-      orEventDestroy(ptr);
-    });
+    TORCH_MCPU_CHECK(
+        orEventCreateWithFlags(&mcpu_event_ptr, orEventEnableTiming));
+    *event = std::shared_ptr<orEvent>(
+        mcpu_event_ptr, [](orEvent_t ptr) { orEventDestroy(ptr); });
 
     // Record CPU timestamp if requested
     if (cpu_ns) {

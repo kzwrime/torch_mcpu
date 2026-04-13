@@ -81,7 +81,9 @@ MCPU_EXPORT DeviceIndex maybe_exchange_device(DeviceIndex to_device) {
   return ExchangeDevice(to_device);
 }
 
-MCPU_EXPORT void getStreamPriorityRange(int* least_priority, int* greatest_priority) {
+MCPU_EXPORT void getStreamPriorityRange(
+    int* least_priority,
+    int* greatest_priority) {
   MCPU_CHECK(orDeviceGetStreamPriorityRange(least_priority, greatest_priority));
 }
 

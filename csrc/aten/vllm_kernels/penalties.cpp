@@ -28,14 +28,14 @@ static void vllm_penalties_kernel_typed(
     const int32_t* obc_ptr,
     int64_t obc_stride,
     int64_t max_spec_len) {
-
   for (int64_t tok = 0; tok < num_tokens; tok++) {
     int32_t req = idx_ptr[tok];
     float rep_pen = rep_ptr[req];
     float freq_pen = freq_ptr[req];
     float pres_pen = pres_ptr[req];
 
-    if (rep_pen == 1.0f && freq_pen == 0.0f && pres_pen == 0.0f) continue;
+    if (rep_pen == 1.0f && freq_pen == 0.0f && pres_pen == 0.0f)
+      continue;
 
     scalar_t* row = logits_ptr + tok * logits_stride;
     const int32_t* obc_row = obc_ptr + (int64_t)req * obc_stride;
@@ -50,7 +50,8 @@ static void vllm_penalties_kernel_typed(
       if (pos > 0 && max_spec_len > 0) {
         for (int32_t prev = 0; prev < pos; prev++) {
           int32_t draft_tok = tids_ptr[start_idx + prev + 1];
-          if (draft_tok == (int32_t)v) cnt++;
+          if (draft_tok == (int32_t)v)
+            cnt++;
         }
       }
 
@@ -67,8 +68,10 @@ static void vllm_penalties_kernel_typed(
         int bit = (int)(v % 32);
         bool in_prompt = (pbm_row[word] >> bit) & 1;
         if (in_prompt || in_output) {
-          if (logit > 0.0f) logit = logit / rep_pen;
-          else               logit = logit * rep_pen;
+          if (logit > 0.0f)
+            logit = logit / rep_pen;
+          else
+            logit = logit * rep_pen;
         }
       }
 
@@ -85,18 +88,18 @@ static void vllm_penalties_kernel_typed(
 }
 
 void vllm_penalties_kernel_impl(
-    at::Tensor& logits,                      // [num_tokens, vocab_size]
-    const at::Tensor& expanded_idx_mapping,  // [num_tokens], int32
-    const at::Tensor& token_ids,             // [num_tokens], int32
-    const at::Tensor& expanded_local_pos,    // [num_tokens], int32
-    const at::Tensor& repetition_penalty,    // [max_num_reqs], float32
-    const at::Tensor& frequency_penalty,     // [max_num_reqs], float32
-    const at::Tensor& presence_penalty,      // [max_num_reqs], float32
-    const at::Tensor& prompt_bin_mask,       // [max_num_reqs, cdiv(vocab_size,32)], int32
-    const at::Tensor& output_bin_counts,     // [max_num_reqs, vocab_size], int32
+    at::Tensor& logits, // [num_tokens, vocab_size]
+    const at::Tensor& expanded_idx_mapping, // [num_tokens], int32
+    const at::Tensor& token_ids, // [num_tokens], int32
+    const at::Tensor& expanded_local_pos, // [num_tokens], int32
+    const at::Tensor& repetition_penalty, // [max_num_reqs], float32
+    const at::Tensor& frequency_penalty, // [max_num_reqs], float32
+    const at::Tensor& presence_penalty, // [max_num_reqs], float32
+    const at::Tensor&
+        prompt_bin_mask, // [max_num_reqs, cdiv(vocab_size,32)], int32
+    const at::Tensor& output_bin_counts, // [max_num_reqs, vocab_size], int32
     int64_t vocab_size,
     int64_t max_spec_len) {
-
   VLLM_MCPU_CHECK_DIM(logits, 2, "logits");
   VLLM_MCPU_CHECK_FLOAT(logits, "logits");
   VLLM_MCPU_CHECK_DTYPE(expanded_idx_mapping, at::kInt, "expanded_idx_mapping");
@@ -122,10 +125,21 @@ void vllm_penalties_kernel_impl(
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_penalties_kernel", {
     vllm_penalties_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(), num_tokens, logits_stride, vocab_size,
-        idx_ptr, tids_ptr, lpos_ptr,
-        rep_ptr, freq_ptr, pres_ptr,
-        pbm_ptr, pbm_stride, obc_ptr, obc_stride, max_spec_len);
+        logits.data_ptr<scalar_t>(),
+        num_tokens,
+        logits_stride,
+        vocab_size,
+        idx_ptr,
+        tids_ptr,
+        lpos_ptr,
+        rep_ptr,
+        freq_ptr,
+        pres_ptr,
+        pbm_ptr,
+        pbm_stride,
+        obc_ptr,
+        obc_stride,
+        max_spec_len);
   });
 }
 
@@ -133,12 +147,13 @@ void vllm_penalties_kernel_impl(
 // _bincount_kernel — no logits, no float dispatch needed
 // ---------------------------------------------------------------------------
 void vllm_bincount_kernel_impl(
-    const at::Tensor& expanded_idx_mapping,  // [num_reqs], int32
-    const at::Tensor& all_token_ids,         // [max_num_reqs, max_seq_len], int32
-    const at::Tensor& prompt_len,            // [max_num_reqs], int32
-    const at::Tensor& prefill_len,           // [max_num_reqs], int32
-    at::Tensor& prompt_bin_mask,             // [max_num_reqs, packed_cols], int32 (output)
-    at::Tensor& output_bin_counts) {         // [max_num_reqs, vocab_size], int32  (output)
+    const at::Tensor& expanded_idx_mapping, // [num_reqs], int32
+    const at::Tensor& all_token_ids, // [max_num_reqs, max_seq_len], int32
+    const at::Tensor& prompt_len, // [max_num_reqs], int32
+    const at::Tensor& prefill_len, // [max_num_reqs], int32
+    at::Tensor& prompt_bin_mask, // [max_num_reqs, packed_cols], int32 (output)
+    at::Tensor&
+        output_bin_counts) { // [max_num_reqs, vocab_size], int32  (output)
 
   VLLM_MCPU_CHECK_DTYPE(expanded_idx_mapping, at::kInt, "expanded_idx_mapping");
   VLLM_MCPU_CHECK_DTYPE(all_token_ids, at::kInt, "all_token_ids");
@@ -173,17 +188,19 @@ void vllm_bincount_kernel_impl(
       int32_t tid = tids[pos];
       int64_t word = tid / 32;
       int bit = tid % 32;
-      if (word >= 0 && word < packed_cols) pbm_row[word] |= (1 << bit);
+      if (word >= 0 && word < packed_cols)
+        pbm_row[word] |= (1 << bit);
     }
 
     for (int32_t pos = plen; pos < flen; pos++) {
       int32_t tid = tids[pos];
-      if (tid >= 0 && tid < (int32_t)vocab_size) obc_row[tid]++;
+      if (tid >= 0 && tid < (int32_t)vocab_size)
+        obc_row[tid]++;
     }
   }
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(

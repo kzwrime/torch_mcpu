@@ -17,13 +17,14 @@ static void vllm_min_p_kernel_typed(
     const int32_t* idx_ptr,
     const float* min_p_ptr,
     int64_t vocab_size) {
-
-  const scalar_t neg_inf = static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
+  const scalar_t neg_inf =
+      static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
 
   for (int64_t tok = 0; tok < num_tokens; tok++) {
     int32_t req_idx = idx_ptr[tok];
     float min_p_val = min_p_ptr[req_idx];
-    if (min_p_val == 0.0f) continue;
+    if (min_p_val == 0.0f)
+      continue;
 
     scalar_t* row = logits_ptr + tok * logits_stride;
 
@@ -31,42 +32,50 @@ static void vllm_min_p_kernel_typed(
     float max_val = -std::numeric_limits<float>::infinity();
     if constexpr (std::is_same_v<scalar_t, float>) {
       for (int64_t i = 0; i < vocab_size; i++) {
-        if (row[i] > max_val) max_val = row[i];
+        if (row[i] > max_val)
+          max_val = row[i];
       }
     } else {
       for (int64_t i = 0; i < vocab_size; i++) {
         float v = static_cast<float>(row[i]);
-        if (v > max_val) max_val = v;
+        if (v > max_val)
+          max_val = v;
       }
     }
 
     float threshold = max_val + std::log(min_p_val);
     if constexpr (std::is_same_v<scalar_t, float>) {
       for (int64_t i = 0; i < vocab_size; i++) {
-        if (row[i] < threshold) row[i] = neg_inf;
+        if (row[i] < threshold)
+          row[i] = neg_inf;
       }
     } else {
       for (int64_t i = 0; i < vocab_size; i++) {
-        if (static_cast<float>(row[i]) < threshold) row[i] = neg_inf;
+        if (static_cast<float>(row[i]) < threshold)
+          row[i] = neg_inf;
       }
     }
   }
 }
 
 void vllm_min_p_kernel_impl(
-    at::Tensor& logits,                      // [num_tokens, vocab_size]
-    const at::Tensor& expanded_idx_mapping,  // [num_tokens], int32
-    const at::Tensor& min_p,                 // [max_num_reqs], float32
+    at::Tensor& logits, // [num_tokens, vocab_size]
+    const at::Tensor& expanded_idx_mapping, // [num_tokens], int32
+    const at::Tensor& min_p, // [max_num_reqs], float32
     int64_t vocab_size) {
-
   VLLM_MCPU_CHECK_DIM(logits, 2, "logits");
   VLLM_MCPU_CHECK_FLOAT(logits, "logits");
   VLLM_MCPU_CHECK_DIM(expanded_idx_mapping, 1, "expanded_idx_mapping");
   VLLM_MCPU_CHECK_DTYPE(expanded_idx_mapping, at::kInt, "expanded_idx_mapping");
   VLLM_MCPU_CHECK_DIM(min_p, 1, "min_p");
   VLLM_MCPU_CHECK_DTYPE(min_p, at::kFloat, "min_p");
-  VLLM_MCPU_CHECK(vocab_size > 0 && vocab_size <= logits.size(1),
-      "vocab_size ", vocab_size, " out of range [1, ", logits.size(1), "]");
+  VLLM_MCPU_CHECK(
+      vocab_size > 0 && vocab_size <= logits.size(1),
+      "vocab_size ",
+      vocab_size,
+      " out of range [1, ",
+      logits.size(1),
+      "]");
 
   int64_t num_tokens = logits.size(0);
   int64_t logits_stride = logits.stride(0);
@@ -75,12 +84,16 @@ void vllm_min_p_kernel_impl(
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_min_p_kernel", {
     vllm_min_p_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(), num_tokens, logits_stride,
-        idx_ptr, min_p_ptr, vocab_size);
+        logits.data_ptr<scalar_t>(),
+        num_tokens,
+        logits_stride,
+        idx_ptr,
+        min_p_ptr,
+        vocab_size);
   });
 }
 
-}  // namespace
+} // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(

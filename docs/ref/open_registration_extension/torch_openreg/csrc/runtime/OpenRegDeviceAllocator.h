@@ -41,7 +41,6 @@ class DeviceMemoryAllocator {
   std::recursive_mutex mutex_;
 };
 
-
 class OpenRegDeviceAllocator final : public c10::DeviceAllocator {
  public:
   OpenRegDeviceAllocator();
@@ -49,7 +48,6 @@ class OpenRegDeviceAllocator final : public c10::DeviceAllocator {
   at::DataPtr allocate(size_t nbytes) override;
   at::DeleterFnPtr raw_deleter() const override;
   void copy_data(void* dest, const void* src, std::size_t count) const final;
-
 
   bool initialized() override;
   void emptyCache(MempoolId_t mempool_id = {0, 0}) override;
@@ -59,11 +57,9 @@ class OpenRegDeviceAllocator final : public c10::DeviceAllocator {
   void resetAccumulatedStats(c10::DeviceIndex device) override;
   void resetPeakStats(c10::DeviceIndex device) override;
 
-
   void freeMemory(void* ptr);
 
  private:
-
   // Per-device allocators
   std::vector<std::unique_ptr<DeviceMemoryAllocator>> device_allocators_;
 
@@ -72,7 +68,4 @@ class OpenRegDeviceAllocator final : public c10::DeviceAllocator {
   ska::flat_hash_map<void*, c10::DeviceIndex> allocated_blocks_;
 };
 
-
-
-
-}
+} // namespace c10::openreg
