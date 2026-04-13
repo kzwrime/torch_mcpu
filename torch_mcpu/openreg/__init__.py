@@ -181,9 +181,15 @@ def current_device():
 
 
 # LITERALINCLUDE START: PYTHON SET DEVICE FUNCTION
-def set_device(device) -> None:
-    if device >= 0:
-        torch_mcpu._C._set_device(device)
+def set_device(device: torch.device | int) -> None:
+    if isinstance(device, torch.device):
+        if device.type != "mcpu":
+            raise ValueError("Expected a torch.device with type 'mcpu', but got %s." % device)  # noqa
+        device = device.index
+    assert isinstance(device, int)
+    if device < 0:
+        raise ValueError("Expected a non-negative integer device index, but got %d." % device)  # noqa
+    torch_mcpu._C._set_device(device)
 
 # LITERALINCLUDE END: PYTHON SET DEVICE FUNCTION
 
