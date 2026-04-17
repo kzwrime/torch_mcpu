@@ -162,7 +162,29 @@ def get_mcpu_view_from_cpu_tensor(cpu_tensor: "torch.Tensor") -> "torch.Tensor":
     Returns:
         An mcpu tensor backed by the same (or a pinned copy of the) memory.
     """
-    return torch_mcpu._C._get_mcpu_view_from_cpu_tensor(cpu_tensor)
+    if not isinstance(cpu_tensor, torch.Tensor):
+        raise TypeError("Expected cpu_tensor to be a torch.Tensor")
+    if cpu_tensor.device.type != "cpu":
+        raise ValueError("Expected cpu_tensor to be on CPU")
+    return torch.ops.mcpu.get_mcpu_view_from_cpu_tensor(cpu_tensor)
+
+
+def get_cpu_view_from_mcpu_tensor(mcpu_tensor: "torch.Tensor") -> "torch.Tensor":
+    """Return a CPU tensor that is a view of *mcpu_tensor*'s memory.
+
+    Unlike the CPU->mcpu direction, this path does not require pinned memory.
+
+    Args:
+        mcpu_tensor: An mcpu tensor.
+
+    Returns:
+        A CPU tensor backed by the same memory.
+    """
+    if not isinstance(mcpu_tensor, torch.Tensor):
+        raise TypeError("Expected mcpu_tensor to be a torch.Tensor")
+    if mcpu_tensor.device.type != "mcpu":
+        raise ValueError("Expected mcpu_tensor to be on mcpu")
+    return torch.ops.mcpu.get_cpu_view_from_mcpu_tensor(mcpu_tensor)
 
 
 def reset_accumulated_memory_stats(device=None) -> None:
@@ -227,6 +249,7 @@ __all__ = [
     "is_initialized",
     "empty_cache",
     "get_mcpu_view_from_cpu_tensor",
+    "get_cpu_view_from_mcpu_tensor",
     "memory_stats",
     "reset_peak_memory_stats",
     "reset_accumulated_memory_stats",

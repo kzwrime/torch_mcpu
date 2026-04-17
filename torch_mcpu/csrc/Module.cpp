@@ -159,41 +159,6 @@ static PyObject* _getStreamPriorityRange(PyObject* self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
-// Create an mcpu tensor that is a view of a CPU tensor's memory.
-// For pinned input: shares the same memory (bidirectional visibility).
-// For non-pinned input: pins a contiguous copy, then views that pinned buffer.
-// Since mcpu is a CPU-emulated backend all "device" memory is at normal CPU
-// addresses, so no device-pointer translation (like cudaHostGetDevicePointer)
-// is needed.
-static PyObject* _getMcpuViewFromCpuTensor(PyObject* self, PyObject* arg) {
-  HANDLE_TH_ERRORS
-  TORCH_CHECK(THPVariable_Check(arg), "Expected a tensor argument");
-
-  const at::Tensor& cpu_tensor = THPVariable_Unpack(arg);
-  TORCH_CHECK(cpu_tensor.device().is_cpu(), "Input tensor must be on CPU");
-
-  if (cpu_tensor.numel() == 0) {
-    return THPVariable_Wrap(at::empty(
-        cpu_tensor.sizes(),
-        cpu_tensor.options().device(c10::DeviceType::PrivateUse1)));
-  }
-
-  // Ensure the backing memory is pinned (allocated via the mcpu host
-  // allocator).
-  at::Tensor pinned = cpu_tensor.is_pinned()
-      ? cpu_tensor
-      : cpu_tensor.contiguous().pin_memory();
-
-  at::Tensor result = at::from_blob(
-      pinned.data_ptr(),
-      pinned.sizes(),
-      pinned.strides(),
-      /*deleter=*/[base = pinned](void*) {}, // keep pinned tensor alive
-      pinned.options().device(c10::DeviceType::PrivateUse1));
-  return THPVariable_Wrap(std::move(result));
-  END_HANDLE_TH_ERRORS
-}
-
 // LITERALINCLUDE MCPU MODULE METHODS
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
@@ -212,10 +177,6 @@ static PyMethodDef methods[] = {
     {"_get_stream_priority_range",
      _getStreamPriorityRange,
      METH_NOARGS,
-     nullptr},
-    {"_get_mcpu_view_from_cpu_tensor",
-     _getMcpuViewFromCpuTensor,
-     METH_O,
      nullptr},
     {nullptr, nullptr, 0, nullptr}};
 // LITERALINCLUDE MCPU MODULE METHODS
