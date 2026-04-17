@@ -17,22 +17,63 @@
 #include <c10/util/flat_hash_map.h>
 #include <c10/util/irange.h>
 #include <include/openreg.h>
+#include <sys/sysinfo.h>
 #include "OpenRegEvent.h"
 #include "OpenRegFunctions.h"
 #include "OpenRegStream.h"
 
+#include <algorithm>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <set>
 #include <vector>
 
-// [MCPU-10] No device memory query API in openreg. DEVICE_TOTAL_MEM is a
-// compile-time constant for the simulated total device memory. Free memory is
-// estimated as: DEVICE_TOTAL_MEM - stats.reserved_bytes[AGGREGATE].current
-// Override at compile time with -DDEVICE_TOTAL_MEM=<bytes>.
+// [MCPU-10] openreg has no device memory query API. We support two memory
+// accounting modes for the mcpu device:
+//
+//   1. DEVICE_TOTAL_MEM compile-time constant.
+//      - total memory is a fixed compile-time constant.
+//      - free memory is estimated from allocator reserved bytes, so the result
+//        reflects allocator-visible remaining capacity rather than exact
+//        device-wide reclaimable memory.
+//
+//   2. Linux runtime memory query.
+//      - total memory comes from sysinfo(2).
+//      - free memory prefers /proc/meminfo:MemAvailable, and falls back to
+//        sysinfo.freeram if MemAvailable is unavailable.
+//      - here "free" should be understood as "available memory estimate",
+//        not strictly "physically idle / unallocated pages".
+//        In particular, MemAvailable includes memory that is not currently
+//        free but is expected to be reclaimable by the kernel (for example,
+//        part of page cache and some reclaimable kernel memory).
+//
+// When reporting:
+//   used = total - free
+// note that "used" is not always the true amount of memory currently occupied
+// by applications or the kernel.
+//   - If free is derived from MemAvailable, then used is closer to
+//     "memory not readily available without reclaim" than to exact physical
+//     occupancy.
+//   - As a result, used may be smaller than the actual in-use footprint by
+//     roughly the amount of memory the kernel still considers reclaimable.
+//   - On Linux systems with large page cache or reclaimable slab, the gap can
+//     be noticeable and may range from a small amount to multiple GB,
+//     depending on workload and memory pressure.
+//
+// Override at compile time with:
+//   -DDEVICE_MEMORY_INFO_SOURCE=DEVICE_MEMORY_INFO_SOURCE_CONSTANT
+//   -DDEVICE_MEMORY_INFO_SOURCE=DEVICE_MEMORY_INFO_SOURCE_LINUX
 #ifndef DEVICE_TOTAL_MEM
 #define DEVICE_TOTAL_MEM (32ULL * 1024 * 1024 * 1024) // 32 GiB default
+#endif
+
+#define DEVICE_MEMORY_INFO_SOURCE_CONSTANT 1
+#define DEVICE_MEMORY_INFO_SOURCE_LINUX 2
+
+#ifndef DEVICE_MEMORY_INFO_SOURCE
+#define DEVICE_MEMORY_INFO_SOURCE DEVICE_MEMORY_INFO_SOURCE_LINUX
 #endif
 
 namespace c10::mcpu { // [1]
@@ -45,6 +86,59 @@ constexpr size_t kDeviceAlignment = 512;
 
 namespace {
 using stream_set = ska::flat_hash_set<McpuStream>; // [2]
+
+struct DeviceMemoryInfo {
+  size_t free;
+  size_t total;
+};
+
+size_t read_mem_available_bytes() {
+  std::ifstream meminfo("/proc/meminfo");
+  if (!meminfo.is_open()) {
+    return 0;
+  }
+
+  std::string key;
+  size_t value_kb = 0;
+  std::string unit;
+  while (meminfo >> key >> value_kb >> unit) {
+    if (key == "MemAvailable:") {
+      return value_kb * 1024;
+    }
+  }
+  return 0;
+}
+
+DeviceMemoryInfo query_linux_memory_info() {
+  struct sysinfo info;
+  if (sysinfo(&info) != 0) {
+    return {DEVICE_TOTAL_MEM, DEVICE_TOTAL_MEM};
+  }
+
+  const auto unit = static_cast<size_t>(info.mem_unit);
+  const size_t total = static_cast<size_t>(info.totalram) * unit;
+  size_t free = read_mem_available_bytes();
+  if (free == 0) {
+    free = static_cast<size_t>(info.freeram) * unit;
+  }
+  if (total == 0) {
+    return {DEVICE_TOTAL_MEM, DEVICE_TOTAL_MEM};
+  }
+  return {std::min(free, total), total};
+}
+
+DeviceMemoryInfo query_device_memory_info(const DeviceStats& stats) {
+#if DEVICE_MEMORY_INFO_SOURCE == DEVICE_MEMORY_INFO_SOURCE_CONSTANT
+  const size_t total = DEVICE_TOTAL_MEM;
+  const size_t reserved =
+      stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].current;
+  return {total > reserved ? total - reserved : 0, total};
+#elif DEVICE_MEMORY_INFO_SOURCE == DEVICE_MEMORY_INFO_SOURCE_LINUX
+  return query_linux_memory_info();
+#else
+#error "Unsupported DEVICE_MEMORY_INFO_SOURCE value"
+#endif
+}
 
 struct Block;
 typedef bool (*Comparison)(const Block*, const Block*);
@@ -542,11 +636,10 @@ class DeviceCachingAllocator {
           (release_cached_blocks({0, 0}) && alloc_block(params, true));
     }
     if (!block_found) {
-      // [MCPU-9] DEVICE_TOTAL_MEM replaces sycl device memory query API
-      const size_t device_total = DEVICE_TOTAL_MEM;
-      const size_t device_free = device_total -
-          stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)]
-              .current;
+      // [MCPU-9] mcpu device memory info comes from the configured query mode.
+      const auto memory_info = query_device_memory_info(stats);
+      const size_t device_total = memory_info.total;
+      const size_t device_free = memory_info.free;
       std::string allowed_info;
       if (set_fraction) {
         allowed_info = format_size(allowed_memory_maximum) + " allowed; ";
@@ -659,25 +752,27 @@ class DeviceCachingAllocator {
     }
   }
 
-  // [MCPU-9] DEVICE_TOTAL_MEM replaces sycl device memory query API
   std::pair<size_t, size_t> getMemoryInfo() {
-    const size_t total = DEVICE_TOTAL_MEM;
-    const size_t free = total -
-        stats.reserved_bytes[static_cast<size_t>(StatType::AGGREGATE)].current;
-    return {free, total};
+    const auto memory_info = query_device_memory_info(stats);
+    return {memory_info.free, memory_info.total};
   }
 
   double getMemoryFraction() {
     if (!set_fraction) {
       return 1.0;
     }
+    const auto memory_info = query_device_memory_info(stats);
+    if (memory_info.total == 0) {
+      return 1.0;
+    }
     return static_cast<double>(allowed_memory_maximum) /
-        static_cast<double>(DEVICE_TOTAL_MEM);
+        static_cast<double>(memory_info.total);
   }
 
   void setMemoryFraction(double fraction) {
+    const auto memory_info = query_device_memory_info(stats);
     allowed_memory_maximum =
-        static_cast<size_t>(fraction * static_cast<double>(DEVICE_TOTAL_MEM));
+        static_cast<size_t>(fraction * static_cast<double>(memory_info.total));
     set_fraction = true;
   }
 
