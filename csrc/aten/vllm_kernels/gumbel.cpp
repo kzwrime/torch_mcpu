@@ -4,10 +4,39 @@
 //   _temperature_kernel   — divide logits by per-request temperature
 //   _gumbel_sample_kernel — Gumbel-max sampling (returns argmax)
 
-#include <random>
+#include <ATen/Parallel.h>
+#include <vector>
 #include "common.h"
 
 namespace {
+
+inline uint64_t splitmix64(uint64_t x) {
+  x += 0x9E3779B97F4A7C15ull;
+  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+  x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+  return x ^ (x >> 31);
+}
+
+inline uint64_t mix3_u64(uint64_t a, uint64_t b, uint64_t c) {
+  uint64_t x = a;
+  x ^= splitmix64(b + 0x9E3779B97F4A7C15ull);
+  x ^= splitmix64(c + 0xD1B54A32D192ED03ull);
+  return splitmix64(x);
+}
+
+inline double u01_from_u64(uint64_t r) {
+  uint64_t x = (r >> 11) + 1ull;
+  if (x >= (1ull << 53)) {
+    x = (1ull << 53) - 1;
+  }
+  return static_cast<double>(x) * 0x1.0p-53;
+}
+
+inline double gumbel_from_counter(uint64_t seed, uint64_t pos, uint64_t idx) {
+  const uint64_t r = mix3_u64(seed, pos, idx);
+  const double u = u01_from_u64(r);
+  return -std::log(-std::log(u));
+}
 
 // ---------------------------------------------------------------------------
 // _temperature_kernel
@@ -87,7 +116,7 @@ static void vllm_gumbel_sample_typed(
     const int64_t* pos_ptr,
     int64_t vocab_size,
     bool apply_temperature) {
-  const double tiny = std::numeric_limits<double>::min();
+  constexpr int64_t kGumbelChunkSize = 4096;
 
   for (int64_t tok = 0; tok < num_tokens; tok++) {
     int32_t req = idx_ptr[tok];
@@ -124,28 +153,49 @@ static void vllm_gumbel_sample_typed(
     int64_t best_idx = 0;
 
     if (stochastic) {
-      int64_t req_seed = seed_ptr[req];
-      int64_t token_pos = pos_ptr[tok];
-      uint64_t combined =
-          (uint64_t)((req_seed ^ token_pos) & (int64_t)0x7FFFFFFFFFFFFFFF);
-      std::mt19937_64 rng(combined);
-      std::uniform_real_distribution<double> dist(0.0, 1.0);
+      const uint64_t req_seed = static_cast<uint64_t>(seed_ptr[req]);
+      const uint64_t token_pos = static_cast<uint64_t>(pos_ptr[tok]);
+      const int64_t num_chunks =
+          (vocab_size + kGumbelChunkSize - 1) / kGumbelChunkSize;
+      std::vector<double> chunk_best_vals(
+          num_chunks, -std::numeric_limits<double>::infinity());
+      std::vector<int64_t> chunk_best_idx(num_chunks, 0);
 
-      for (int64_t i = 0; i < vocab_size; i++) {
-        double u = dist(rng);
-        if (u < tiny)
-          u = tiny;
-        double gumbel = -std::log(-std::log(u));
-        double logit_f;
-        if constexpr (std::is_same_v<scalar_t, float>) {
-          logit_f = (double)row[i];
-        } else {
-          logit_f = (double)static_cast<float>(row[i]);
-        }
-        double val = logit_f + gumbel;
+      at::parallel_for(
+          0, num_chunks, 1, [&](int64_t begin_chunk, int64_t end_chunk) {
+            for (int64_t chunk = begin_chunk; chunk < end_chunk; chunk++) {
+              const int64_t begin = chunk * kGumbelChunkSize;
+              const int64_t end =
+                  std::min(begin + kGumbelChunkSize, vocab_size);
+              double local_best_val = -std::numeric_limits<double>::infinity();
+              int64_t local_best_idx = begin;
+
+              for (int64_t i = begin; i < end; i++) {
+                const double gumbel = gumbel_from_counter(
+                    req_seed, token_pos, static_cast<uint64_t>(i));
+                double logit_f;
+                if constexpr (std::is_same_v<scalar_t, float>) {
+                  logit_f = static_cast<double>(row[i]);
+                } else {
+                  logit_f = static_cast<double>(static_cast<float>(row[i]));
+                }
+                const double val = logit_f + gumbel;
+                if (val > local_best_val) {
+                  local_best_val = val;
+                  local_best_idx = i;
+                }
+              }
+
+              chunk_best_vals[chunk] = local_best_val;
+              chunk_best_idx[chunk] = local_best_idx;
+            }
+          });
+
+      for (int64_t chunk = 0; chunk < num_chunks; chunk++) {
+        const double val = chunk_best_vals[chunk];
         if (val > best_val) {
           best_val = val;
-          best_idx = i;
+          best_idx = chunk_best_idx[chunk];
         }
       }
     } else {
