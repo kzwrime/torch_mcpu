@@ -3,7 +3,7 @@
 // C++ kernels for vllm/v1/worker/gpu/input_batch.py Triton kernels:
 //   prepare_prefill_inputs
 //   prepare_pos_seq_lens
-//   combine_sampled_and_draft_tokens    (returns logits_indices Tensor)
+//   combine_sampled_and_draft_tokens
 //   get_num_sampled_and_rejected        (returns (num_sampled, num_rejected))
 //   post_update
 //   post_update_pool
@@ -12,6 +12,7 @@
 #include <ATen/ATen.h>
 #include <torch/library.h>
 #include <cstdint>
+#include "common.h"
 
 namespace {
 
@@ -103,9 +104,10 @@ void vllm_prepare_pos_seq_lens_impl(
 }
 
 // ---------------------------------------------------------------------------
-// combine_sampled_and_draft_tokens  → logits_indices [num_logits]
+// combine_sampled_and_draft_tokens  -> logits_indices [num_logits] is filled
+// in-place
 // ---------------------------------------------------------------------------
-at::Tensor vllm_combine_sampled_and_draft_tokens_impl(
+void vllm_combine_sampled_and_draft_tokens_impl(
     at::Tensor& input_ids, // [max_num_tokens], int32
     const at::Tensor& idx_mapping, // [num_reqs], int32
     const at::Tensor& last_sampled_tokens, // [max_num_reqs], int32
@@ -114,8 +116,21 @@ at::Tensor vllm_combine_sampled_and_draft_tokens_impl(
     const at::Tensor& prefill_len, // [max_num_reqs], int32
     const at::Tensor& draft_tokens, // [max_num_reqs, max_draft], int32
     const at::Tensor& cu_num_logits, // [num_reqs+1], int32
-    int64_t num_logits) {
+    int64_t num_logits,
+    at::Tensor& logits_indices) {
   int64_t num_reqs = idx_mapping.size(0);
+
+  VLLM_MCPU_CHECK(
+      logits_indices.numel() == num_logits,
+      "logits_indices must have num_logits elements, got ",
+      logits_indices.numel(),
+      ", expected ",
+      num_logits);
+  VLLM_MCPU_CHECK_DIM(logits_indices, 1, "logits_indices");
+  VLLM_MCPU_CHECK(
+      logits_indices.scalar_type() == at::kLong,
+      "logits_indices must be int64, got ",
+      logits_indices.scalar_type());
 
   int32_t* iids_ptr = input_ids.data_ptr<int32_t>();
   const int32_t* idx_ptr = idx_mapping.data_ptr<int32_t>();
@@ -128,9 +143,6 @@ at::Tensor vllm_combine_sampled_and_draft_tokens_impl(
   const int32_t* cunl_ptr = cu_num_logits.data_ptr<int32_t>();
   int64_t draft_stride = draft_tokens.stride(0);
 
-  at::Tensor logits_indices = at::zeros(
-      {num_logits},
-      at::TensorOptions().dtype(at::kLong).device(input_ids.device()));
   int64_t* li_ptr = logits_indices.data_ptr<int64_t>();
 
   for (int64_t r = 0; r < num_reqs; r++) {
@@ -159,21 +171,28 @@ at::Tensor vllm_combine_sampled_and_draft_tokens_impl(
       }
     }
   }
-  return logits_indices;
 }
 
 // ---------------------------------------------------------------------------
 // get_num_sampled_and_rejected  → (num_sampled, num_rejected)
 // ---------------------------------------------------------------------------
-std::tuple<at::Tensor, at::Tensor> vllm_get_num_sampled_and_rejected_impl(
+void vllm_get_num_sampled_and_rejected_impl(
     at::Tensor& num_sampled, // [num_reqs], int32  (in/out)
+    at::Tensor& num_rejected, // [num_reqs], int32 (out)
     const at::Tensor& seq_lens, // [num_reqs], int32
     const at::Tensor& cu_num_logits, // [num_reqs+1], int32
     const at::Tensor& idx_mapping, // [num_reqs], int32
     const at::Tensor& prefill_len) { // [max_num_reqs], int32
 
   int64_t num_reqs = idx_mapping.size(0);
-  at::Tensor num_rejected = at::empty_like(num_sampled);
+  VLLM_MCPU_CHECK_DIM(num_rejected, 1, "num_rejected");
+  VLLM_MCPU_CHECK_DTYPE(num_rejected, at::kInt, "num_rejected");
+  VLLM_MCPU_CHECK(
+      num_rejected.size(0) == num_sampled.size(0),
+      "num_rejected must have ",
+      num_sampled.size(0),
+      " elements, got ",
+      num_rejected.size(0));
 
   int32_t* ns_ptr = num_sampled.data_ptr<int32_t>();
   int32_t* nr_ptr = num_rejected.data_ptr<int32_t>();
@@ -195,7 +214,6 @@ std::tuple<at::Tensor, at::Tensor> vllm_get_num_sampled_and_rejected_impl(
       nr_ptr[r] = n_logits - ns_ptr[r];
     }
   }
-  return std::make_tuple(num_sampled, num_rejected);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,22 +313,35 @@ void vllm_post_update_pool_impl(
 // ---------------------------------------------------------------------------
 // expand_idx_mapping  → (expanded_idx_mapping, expanded_local_pos)
 // ---------------------------------------------------------------------------
-std::tuple<at::Tensor, at::Tensor> vllm_expand_idx_mapping_impl(
+void vllm_expand_idx_mapping_impl(
     const at::Tensor& idx_mapping, // [num_reqs], int32
+    at::Tensor& expanded_idx_mapping, // [total_num_logits], int32
+    at::Tensor& expanded_local_pos, // [total_num_logits], int32
     int64_t total_num_logits,
     const at::Tensor& cu_num_logits, // [num_reqs+1], int32
     int64_t /*max_expand_len*/) {
   int64_t num_reqs = idx_mapping.size(0);
-
-  at::Tensor expanded = at::empty({total_num_logits}, idx_mapping.options());
-  at::Tensor local_pos = at::empty(
-      {total_num_logits},
-      at::TensorOptions().dtype(at::kInt).device(idx_mapping.device()));
+  VLLM_MCPU_CHECK_DIM(expanded_idx_mapping, 1, "expanded_idx_mapping");
+  VLLM_MCPU_CHECK_DTYPE(expanded_idx_mapping, at::kInt, "expanded_idx_mapping");
+  VLLM_MCPU_CHECK_DIM(expanded_local_pos, 1, "expanded_local_pos");
+  VLLM_MCPU_CHECK_DTYPE(expanded_local_pos, at::kInt, "expanded_local_pos");
+  VLLM_MCPU_CHECK(
+      expanded_idx_mapping.size(0) == total_num_logits,
+      "expanded_idx_mapping must have ",
+      total_num_logits,
+      " elements, got ",
+      expanded_idx_mapping.size(0));
+  VLLM_MCPU_CHECK(
+      expanded_local_pos.size(0) == total_num_logits,
+      "expanded_local_pos must have ",
+      total_num_logits,
+      " elements, got ",
+      expanded_local_pos.size(0));
 
   const int32_t* idx_ptr = idx_mapping.data_ptr<int32_t>();
   const int32_t* cunl_ptr = cu_num_logits.data_ptr<int32_t>();
-  int32_t* exp_ptr = expanded.data_ptr<int32_t>();
-  int32_t* lp_ptr = local_pos.data_ptr<int32_t>();
+  int32_t* exp_ptr = expanded_idx_mapping.data_ptr<int32_t>();
+  int32_t* lp_ptr = expanded_local_pos.data_ptr<int32_t>();
 
   for (int64_t r = 0; r < num_reqs; r++) {
     int32_t start = cunl_ptr[r];
@@ -322,7 +353,6 @@ std::tuple<at::Tensor, at::Tensor> vllm_expand_idx_mapping_impl(
       lp_ptr[start + i] = i;
     }
   }
-  return std::make_tuple(expanded, local_pos);
 }
 
 } // namespace
@@ -356,16 +386,18 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "Tensor prefill_len, "
       "Tensor draft_tokens, "
       "Tensor cu_num_logits, "
-      "int num_logits"
-      ") -> Tensor");
+      "int num_logits, "
+      "Tensor(a!) logits_indices"
+      ") -> ()");
   m.def(
       "vllm_get_num_sampled_and_rejected("
       "Tensor(a!) num_sampled, "
+      "Tensor(b!) num_rejected, "
       "Tensor seq_lens, "
       "Tensor cu_num_logits, "
       "Tensor idx_mapping, "
       "Tensor prefill_len"
-      ") -> (Tensor, Tensor)");
+      ") -> ()");
   m.def(
       "vllm_post_update("
       "Tensor idx_mapping, "
@@ -388,10 +420,12 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(
       "vllm_expand_idx_mapping("
       "Tensor idx_mapping, "
+      "Tensor(a!) expanded_idx_mapping, "
+      "Tensor(b!) expanded_local_pos, "
       "int total_num_logits, "
       "Tensor cu_num_logits, "
       "int max_expand_len"
-      ") -> (Tensor, Tensor)");
+      ") -> ()");
 }
 
 TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {

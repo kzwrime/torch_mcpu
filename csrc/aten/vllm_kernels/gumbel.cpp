@@ -217,8 +217,9 @@ static void vllm_gumbel_sample_typed(
   }
 }
 
-at::Tensor vllm_gumbel_sample_impl(
+void vllm_gumbel_sample_impl(
     at::Tensor& logits, // [num_tokens, vocab_size]
+    at::Tensor& sampled_out, // [num_tokens], int64
     const at::Tensor& expanded_idx_mapping, // [num_tokens], int32
     const at::Tensor& temperature, // [max_num_reqs], float32
     const at::Tensor& seed, // [max_num_reqs], int64
@@ -236,8 +237,16 @@ at::Tensor vllm_gumbel_sample_impl(
   VLLM_MCPU_CHECK_DTYPE(seed, at::kLong, "seed");
   VLLM_MCPU_CHECK_DIM(pos, 1, "pos");
   VLLM_MCPU_CHECK_DTYPE(pos, at::kLong, "pos");
+  VLLM_MCPU_CHECK_DIM(sampled_out, 1, "sampled_out");
+  VLLM_MCPU_CHECK_DTYPE(sampled_out, at::kLong, "sampled_out");
 
   int64_t num_tokens = logits.size(0);
+  VLLM_MCPU_CHECK(
+      sampled_out.size(0) == num_tokens,
+      "sampled_out must have ",
+      num_tokens,
+      " elements, got ",
+      sampled_out.size(0));
   int64_t logits_stride = logits.stride(0);
   const int32_t* idx_ptr = expanded_idx_mapping.data_ptr<int32_t>();
   const float* temp_ptr = temperature.data_ptr<float>();
@@ -251,10 +260,7 @@ at::Tensor vllm_gumbel_sample_impl(
     proc_stride = processed_logits_out->stride(0);
   }
 
-  at::Tensor result = at::zeros(
-      {num_tokens},
-      at::TensorOptions().dtype(at::kLong).device(logits.device()));
-  int64_t* result_ptr = result.data_ptr<int64_t>();
+  int64_t* result_ptr = sampled_out.data_ptr<int64_t>();
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_gumbel_sample", {
     vllm_gumbel_sample_typed<scalar_t>(
@@ -271,7 +277,6 @@ at::Tensor vllm_gumbel_sample_impl(
         vocab_size,
         apply_temperature);
   });
-  return result;
 }
 
 } // namespace
@@ -287,6 +292,7 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(
       "vllm_gumbel_sample("
       "Tensor(a!) logits, "
+      "Tensor(b!) sampled_out, "
       "Tensor expanded_idx_mapping, "
       "Tensor temperature, "
       "Tensor seed, "
@@ -294,7 +300,7 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "int vocab_size, "
       "Tensor? processed_logits_out, "
       "bool apply_temperature"
-      ") -> Tensor");
+      ") -> ()");
 }
 
 TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
