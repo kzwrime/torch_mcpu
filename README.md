@@ -54,6 +54,7 @@ torch_mcpu 中有 4 个 DSO，它们之间的依赖关系如下：
 - `csrc/`: 核心设备实现，包括运算符注册、运行时等。
   - `csrc/amp/`: AMP（自动混合精度）
   - `csrc/aten/`: 运算符注册
+    - `csrc/aten/ops/`: 显式实现的 `aten` 算子，每个算子单独文件内实现并注册。
     - `csrc/aten/native/`: OpenReg 设备的特定运算符实现。
       - `csrc/aten/native/OpenRegMinimal.cpp`: 最小的运算符实现集（完成后允许创建 Tensor 及相关操作）。
       - `csrc/aten/native/OpenRegExtra.cpp`: 其他类型运算符的实现。
@@ -166,6 +167,10 @@ print(f"Device of z: {z.device}")
 ## 文档
 
 请参阅[此文档](https://docs.pytorch.org/docs/main/accelerator/index.html)，了解将新加速器集成到 PyTorch 的一系列文档，这些文档将与 `OpenReg` 代码库保持同步。
+
+显式实现 `aten` 算子的仓库内说明见：
+
+- [docs/how_to_impl_aten_ops.md](/shared/vllm-xcpu-dev-kit-0.19/torch_mcpu/docs/how_to_impl_aten_ops.md)
 
 ## 未来计划
 

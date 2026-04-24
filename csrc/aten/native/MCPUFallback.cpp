@@ -12,6 +12,7 @@
 #include <ATen/core/ivalue.h>
 #include <ATen/core/stack.h>
 
+#include <iostream>
 #include <sstream>
 #include <vector>
 
@@ -106,6 +107,7 @@ void cpu_fallback(
     torch::jit::Stack* stack,
     bool error_on_views,
     c10::DispatchKey cpu_dispatch_key) {
+  std::cerr << "[mcpu fallback] " << op.schema().operator_name() << std::endl;
   TORCH_CHECK(
       c10::BackendComponent::CPUBit ==
           c10::toBackendComponent(cpu_dispatch_key),

@@ -196,6 +196,119 @@ class TestFallback(TestCase):
         z = x[y, y]
         self.assertEqual(z_cpu, z)
 
+    def test_explicit_forward_ops_do_not_fallback(self):
+        x = torch.tensor([[1, 2, 3], [4, 5, 6]], device="mcpu", dtype=torch.float32)
+        idx = torch.tensor([1, 0], device="mcpu", dtype=torch.long)
+
+        arange_res = torch.arange(1, 7, 2, device="mcpu", dtype=torch.int64)
+        self.assertEqual(arange_res, torch.tensor([1, 3, 5], dtype=torch.int64))
+        self.assertEqual(arange_res.device.type, "mcpu")
+
+        cumsum_res = torch.cumsum(x, dim=1)
+        self.assertEqual(
+            cumsum_res,
+            torch.tensor([[1, 3, 6], [4, 9, 15]], dtype=torch.float32),
+        )
+        self.assertEqual(cumsum_res.device.type, "mcpu")
+
+        filled = torch.empty(2, 3, device="mcpu", dtype=torch.float32)
+        filled.fill_(7)
+        self.assertEqual(filled, torch.full((2, 3), 7, dtype=torch.float32))
+        self.assertEqual(filled.device.type, "mcpu")
+
+        indexed = x[idx, idx]
+        self.assertEqual(indexed, torch.tensor([5, 1], dtype=torch.float32))
+        self.assertEqual(indexed.device.type, "mcpu")
+
+        bad_out = torch.empty(1, device="mcpu", dtype=torch.float32)
+        with self.assertRaisesRegex(RuntimeError, "aten::cumsum.out"):
+            torch.cumsum(x, dim=1, out=bad_out)
+
+        bad_index_out = torch.empty(1, device="mcpu", dtype=torch.float32)
+        with self.assertRaisesRegex(RuntimeError, "aten::index.Tensor_out"):
+            torch.ops.aten.index.Tensor_out(x, [idx, idx], out=bad_index_out)
+
+    def test_explicit_forward_ops_batch_2(self):
+        x = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="mcpu")
+        y = torch.tensor([[10.0, 20.0], [30.0, 40.0]], device="mcpu")
+
+        add_out = torch.empty_like(x)
+        torch.add(x, y, out=add_out)
+        self.assertEqual(add_out, torch.tensor([[11.0, 22.0], [33.0, 44.0]]))
+
+        div_out = torch.empty_like(x)
+        torch.div(y, x, out=div_out)
+        self.assertEqual(div_out, torch.tensor([[10.0, 10.0], [10.0, 10.0]]))
+
+        mul_out = torch.empty_like(x)
+        torch.mul(x, y, out=mul_out)
+        self.assertEqual(mul_out, torch.tensor([[10.0, 40.0], [90.0, 160.0]]))
+
+        sub_res = torch.sub(y, x)
+        self.assertEqual(sub_res, torch.tensor([[9.0, 18.0], [27.0, 36.0]]))
+
+        cos_out = torch.empty_like(x)
+        torch.cos(x, out=cos_out)
+        self.assertEqual(cos_out.cpu(), torch.cos(x.cpu()))
+
+        sin_out = torch.empty_like(x)
+        torch.sin(x, out=sin_out)
+        self.assertEqual(sin_out.cpu(), torch.sin(x.cpu()))
+
+        reciprocal_out = torch.empty_like(x)
+        torch.reciprocal(x, out=reciprocal_out)
+        self.assertEqual(reciprocal_out.cpu(), torch.reciprocal(x.cpu()))
+
+        scalar_pow_out = torch.empty_like(x)
+        torch.pow(2.0, x, out=scalar_pow_out)
+        self.assertEqual(scalar_pow_out.cpu(), torch.pow(2.0, x.cpu()))
+
+        cat_out = torch.empty(4, 2, device="mcpu")
+        torch.cat([x, y], dim=0, out=cat_out)
+        self.assertEqual(cat_out, torch.cat([x.cpu(), y.cpu()], dim=0))
+
+        vals = torch.empty(2, 1, device="mcpu")
+        inds = torch.empty(2, 1, device="mcpu", dtype=torch.long)
+        torch.topk(x, 1, dim=1, largest=True, sorted=True, out=(vals, inds))
+        ref_vals, ref_inds = torch.topk(x.cpu(), 1, dim=1, largest=True, sorted=True)
+        self.assertEqual(vals, ref_vals)
+        self.assertEqual(inds, ref_inds)
+
+        target = torch.zeros(3, 3, device="mcpu")
+        row = torch.tensor([0, 2], device="mcpu", dtype=torch.long)
+        col = torch.tensor([1, 0], device="mcpu", dtype=torch.long)
+        vals = torch.tensor([5.0, 7.0], device="mcpu")
+        torch.ops.aten._index_put_impl_(target, [row, col], vals, False, False)
+        self.assertEqual(
+            target,
+            torch.tensor([[0.0, 5.0, 0.0], [0.0, 0.0, 0.0], [7.0, 0.0, 0.0]]),
+        )
+
+        target.zero_()
+        self.assertEqual(target, torch.zeros(3, 3))
+
+    def test_explicit_forward_ops_batch_3(self):
+        x = torch.tensor([[0.0, 2.0], [3.0, 0.0]], device="mcpu")
+        mask = torch.tensor([[True, False], [False, True]], device="mcpu")
+
+        x.masked_fill_(mask, 9.0)
+        self.assertEqual(x, torch.tensor([[9.0, 2.0], [3.0, 9.0]]))
+
+        ne_out = torch.empty_like(x, dtype=torch.bool)
+        torch.ne(x, 9.0, out=ne_out)
+        self.assertEqual(ne_out.cpu(), torch.ne(x.cpu(), 9.0))
+
+        nz = torch.nonzero(x)
+        self.assertEqual(nz.cpu(), torch.nonzero(x.cpu()))
+
+        sum_out = torch.empty(2, device="mcpu")
+        torch.sum(x, dim=[1], out=sum_out)
+        self.assertEqual(sum_out.cpu(), torch.sum(x.cpu(), dim=[1]))
+
+        bad_sum_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::sum.IntList_out"):
+            torch.sum(x, dim=[1], out=bad_sum_out)
+
     def test_tensorlist_type_fallback(self):
         """Test tensor list type fallback to CPU"""
         # create tensors located in custom device

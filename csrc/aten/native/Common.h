@@ -56,7 +56,7 @@ class MemoryGuard {
       if (item.isTensor()) {
         unprotect_if_needed(item.toTensor());
       } else if (item.isTensorList()) {
-        for (const at::Tensor& tensor : item.toTensorListRef()) {
+        for (const at::Tensor& tensor : item.toTensorList()) {
           unprotect_if_needed(tensor);
         }
       } else if (item.isList()) {
@@ -64,9 +64,9 @@ class MemoryGuard {
           find_and_unprotect_tensors(element);
         }
       } else if (item.isGenericDict()) {
-        for (const auto& [key, value] : item.toGenericDict()) {
-          find_and_unprotect_tensors(key);
-          find_and_unprotect_tensors(value);
+        for (const auto& entry : item.toGenericDict()) {
+          find_and_unprotect_tensors(entry.key());
+          find_and_unprotect_tensors(entry.value());
         }
       }
     }
