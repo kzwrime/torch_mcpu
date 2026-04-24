@@ -1,7 +1,6 @@
 import sys
 
 import torch
-from torch.utils.dlpack import DLDeviceType
 
 
 if sys.platform == "win32":
@@ -19,6 +18,7 @@ from torch._inductor.codegen.common import (
 )
 
 import torch_mcpu._C  # type: ignore[misc]
+import torch_mcpu.dlpack
 import torch_mcpu.distributed
 import torch_mcpu.openreg
 
@@ -38,62 +38,7 @@ try:
 except ImportError:
     pass
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
-
-if not hasattr(torch.Tensor, "_mcpu_original_dlpack"):
-    torch.Tensor._mcpu_original_dlpack = torch.Tensor.__dlpack__
-    torch.Tensor._mcpu_original_dlpack_device = torch.Tensor.__dlpack_device__
-
-_ORIGINAL_TENSOR_DLPACK = torch.Tensor._mcpu_original_dlpack
-_ORIGINAL_TENSOR_DLPACK_DEVICE = torch.Tensor._mcpu_original_dlpack_device
-
-
-def _mcpu_tensor_dlpack_device(self):
-    if self.device.type == "mcpu":
-        idx = self.device.index if self.device.index is not None else 0
-        return (DLDeviceType.kDLExtDev, idx)
-    return _ORIGINAL_TENSOR_DLPACK_DEVICE(self)
-
-
-def _mcpu_tensor_dlpack(
-    self,
-    *,
-    stream=-1,
-    max_version=None,
-    dl_device=None,
-    copy=None,
-):
-    if self.device.type != "mcpu":
-        return _ORIGINAL_TENSOR_DLPACK(
-            self,
-            stream=stream,
-            max_version=max_version,
-            dl_device=dl_device,
-            copy=copy,
-        )
-
-    # mcpu tensors are CPU-backed, so exporting a CPU capsule can reuse the
-    # shared storage directly instead of materializing a copy.
-    if dl_device is not None and dl_device[0] == DLDeviceType.kDLCPU:
-        cpu_view = torch.mcpu.get_cpu_view_from_mcpu_tensor(self)
-        return _ORIGINAL_TENSOR_DLPACK(
-            cpu_view,
-            stream=stream,
-            max_version=max_version,
-            dl_device=dl_device,
-            copy=copy,
-        )
-
-    return _ORIGINAL_TENSOR_DLPACK(
-        self,
-        stream=stream,
-        max_version=max_version,
-        dl_device=dl_device,
-        copy=copy,
-    )
-
-
-torch.Tensor.__dlpack__ = _mcpu_tensor_dlpack
-torch.Tensor.__dlpack_device__ = _mcpu_tensor_dlpack_device
+torch_mcpu.dlpack.patch_mcpu_dlpack()
 
 
 def _setup_mcpu_inductor():

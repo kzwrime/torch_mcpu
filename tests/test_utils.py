@@ -32,6 +32,8 @@ class TestDLPack(TestCase):
     def test_dlpack_tensor_protocol_roundtrip(self):
         """Test __dlpack__ / __dlpack_device__ protocol for mcpu tensors."""
         x = torch.randn(2, 3, device="mcpu")
+        self.assertEqual(torch.Tensor.__dlpack_device__.__module__, "torch")
+        self.assertEqual(torch.Tensor.__dlpack__.__module__, "torch")
 
         self.assertEqual(
             x.__dlpack_device__(),
