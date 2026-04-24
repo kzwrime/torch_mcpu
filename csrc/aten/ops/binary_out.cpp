@@ -4,6 +4,7 @@
 #include <ATen/ops/div.h>
 #include <ATen/ops/mul.h>
 #include <ATen/ops/pow.h>
+#include <ATen/ops/remainder.h>
 #include <ATen/ops/sub.h>
 #include <torch/library.h>
 
@@ -65,6 +66,24 @@ at::Tensor& mul_out(
   return out;
 }
 
+at::Tensor& remainder_Tensor_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  auto meta_self = ops::to_meta_tensor(self);
+  auto meta_other = ops::to_meta_tensor(other);
+  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
+  at::remainder_out(meta_out, meta_self, meta_other);
+  ops::check_out_sizes("aten::remainder.Tensor_out", out, meta_out);
+
+  at::native::mcpu::MemoryGuard guard(self, other, out);
+  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+  auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+  at::remainder_out(cpu_out, cpu_self, cpu_other);
+  return out;
+}
+
 at::Tensor sub_Tensor(
     const at::Tensor& self,
     const at::Tensor& other,
@@ -107,6 +126,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("mul.out", &mul_out);
   m.impl("sub.Tensor", &sub_Tensor);
   m.impl("pow.Scalar_out", &pow_Scalar_out);
+  m.impl("remainder.Tensor_out", &remainder_Tensor_out);
 }
 
 } // namespace at::mcpu

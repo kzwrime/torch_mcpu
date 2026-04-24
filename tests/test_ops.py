@@ -229,23 +229,30 @@ class TestFallback(TestCase):
             torch.ops.aten.index.Tensor_out(x, [idx, idx], out=bad_index_out)
 
     def test_explicit_forward_ops_batch_2(self):
-        x = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="mcpu")
-        y = torch.tensor([[10.0, 20.0], [30.0, 40.0]], device="mcpu")
+        x = torch.tensor([[4.0, 6.0], [7.0, 5.0]], device="mcpu")
+        y = torch.tensor([[10.0, 20.0], [31.0, 41.0]], device="mcpu")
 
         add_out = torch.empty_like(x)
         torch.add(x, y, out=add_out)
-        self.assertEqual(add_out, torch.tensor([[11.0, 22.0], [33.0, 44.0]]))
+        self.assertEqual(add_out, torch.tensor([[14.0, 26.0], [38.0, 46.0]]))
 
         div_out = torch.empty_like(x)
         torch.div(y, x, out=div_out)
-        self.assertEqual(div_out, torch.tensor([[10.0, 10.0], [10.0, 10.0]]))
+        self.assertEqual(div_out, torch.tensor([[2.5, 20.0 / 6.0], [31.0 / 7.0, 8.2]]))
 
         mul_out = torch.empty_like(x)
         torch.mul(x, y, out=mul_out)
-        self.assertEqual(mul_out, torch.tensor([[10.0, 40.0], [90.0, 160.0]]))
+        self.assertEqual(mul_out, torch.tensor([[40.0, 120.0], [217.0, 205.0]]))
+
+        remainder_out = torch.empty_like(y)
+        torch.remainder(y, x, out=remainder_out)
+        self.assertEqual(
+            remainder_out,
+            torch.tensor([[2.0, 2.0], [3.0, 1.0]]),
+        )
 
         sub_res = torch.sub(y, x)
-        self.assertEqual(sub_res, torch.tensor([[9.0, 18.0], [27.0, 36.0]]))
+        self.assertEqual(sub_res, torch.tensor([[6.0, 14.0], [24.0, 36.0]]))
 
         cos_out = torch.empty_like(x)
         torch.cos(x, out=cos_out)
@@ -345,6 +352,22 @@ class TestFallback(TestCase):
         bad_scatter_out = torch.empty(1, device="mcpu")
         with self.assertRaisesRegex(RuntimeError, "aten::scatter_add.out"):
             torch.scatter_add(scatter_self, 1, scatter_index, scatter_src, out=bad_scatter_out)
+
+    def test_explicit_gather_out(self):
+        x = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="mcpu")
+        index = torch.tensor([[2, 1], [0, 2]], device="mcpu", dtype=torch.long)
+        out = torch.empty(2, 2, device="mcpu")
+
+        torch.gather(x, 1, index, out=out)
+        self.assertEqual(
+            out.cpu(),
+            torch.gather(x.cpu(), 1, index.cpu()),
+        )
+        self.assertEqual(out.device.type, "mcpu")
+
+        bad_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::gather.out"):
+            torch.gather(x, 1, index, out=bad_out)
 
     def test_tensorlist_type_fallback(self):
         """Test tensor list type fallback to CPU"""
