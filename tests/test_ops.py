@@ -309,6 +309,43 @@ class TestFallback(TestCase):
         with self.assertRaisesRegex(RuntimeError, "aten::sum.IntList_out"):
             torch.sum(x, dim=[1], out=bad_sum_out)
 
+    def test_explicit_forward_ops_batch_4(self):
+        x = torch.tensor([[1.0, 3.0, 2.0], [4.0, 0.0, 5.0]], device="mcpu")
+
+        max_values = torch.empty(2, 1, device="mcpu")
+        max_indices = torch.empty(2, 1, device="mcpu", dtype=torch.long)
+        torch.max(x, dim=1, keepdim=True, out=(max_values, max_indices))
+        ref_values, ref_indices = torch.max(x.cpu(), dim=1, keepdim=True)
+        self.assertEqual(max_values, ref_values)
+        self.assertEqual(max_indices, ref_indices)
+
+        mean_res = torch.empty(2, 1, device="mcpu")
+        torch.mean(x, dim=[1], keepdim=True, out=mean_res)
+        self.assertEqual(mean_res.cpu(), torch.mean(x.cpu(), dim=[1], keepdim=True))
+
+        scatter_self = torch.tensor([[1.0, 2.0], [3.0, 4.0]], device="mcpu")
+        scatter_index = torch.tensor([[0, 1], [1, 0]], device="mcpu", dtype=torch.long)
+        scatter_src = torch.tensor([[10.0, 20.0], [30.0, 40.0]], device="mcpu")
+        scatter_out = torch.empty_like(scatter_self)
+        torch.scatter_add(scatter_self, 1, scatter_index, scatter_src, out=scatter_out)
+        self.assertEqual(
+            scatter_out.cpu(),
+            torch.scatter_add(scatter_self.cpu(), 1, scatter_index.cpu(), scatter_src.cpu()),
+        )
+
+        bad_max_values = torch.empty(1, device="mcpu")
+        bad_max_indices = torch.empty(1, device="mcpu", dtype=torch.long)
+        with self.assertRaisesRegex(RuntimeError, "aten::max.dim_max"):
+            torch.max(x, dim=1, keepdim=True, out=(bad_max_values, bad_max_indices))
+
+        bad_mean_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::mean.out"):
+            torch.mean(x, dim=[1], keepdim=True, out=bad_mean_out)
+
+        bad_scatter_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::scatter_add.out"):
+            torch.scatter_add(scatter_self, 1, scatter_index, scatter_src, out=bad_scatter_out)
+
     def test_tensorlist_type_fallback(self):
         """Test tensor list type fallback to CPU"""
         # create tensors located in custom device
