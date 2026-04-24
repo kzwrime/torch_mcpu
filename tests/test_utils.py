@@ -3,7 +3,9 @@
 import unittest
 
 import torch
+import torch_mcpu  # noqa: F401
 from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.utils.dlpack import DLDeviceType
 
 
 class TestDLPack(TestCase):
@@ -26,6 +28,39 @@ class TestDLPack(TestCase):
 
         self.assertEqual(x.device, y.device)
         self.assertEqual(x, y)
+
+    def test_dlpack_tensor_protocol_roundtrip(self):
+        """Test __dlpack__ / __dlpack_device__ protocol for mcpu tensors."""
+        x = torch.randn(2, 3, device="mcpu")
+
+        self.assertEqual(
+            x.__dlpack_device__(),
+            (DLDeviceType.kDLExtDev, x.device.index or 0),
+        )
+
+        y = torch.from_dlpack(x)
+
+        self.assertEqual(y.device, x.device)
+        self.assertEqual(y, x)
+
+        y.add_(1)
+        self.assertEqual(y, x)
+
+    def test_dlpack_cpu_export_shares_storage(self):
+        """Test exporting an mcpu tensor as a CPU DLPack capsule without copies."""
+        x = torch.arange(6, dtype=torch.float32, device="mcpu").reshape(2, 3)
+        cpu_view = torch.mcpu.get_cpu_view_from_mcpu_tensor(x)
+
+        capsule = x.__dlpack__(dl_device=(DLDeviceType.kDLCPU, 0))
+        y = torch.from_dlpack(capsule)
+
+        self.assertEqual(y.device.type, "cpu")
+        self.assertEqual(y.data_ptr(), cpu_view.data_ptr())
+        self.assertEqual(y, cpu_view)
+
+        y.add_(10)
+        self.assertEqual(y, cpu_view)
+        self.assertEqual(y, x.cpu())
 
     def test_dlpack_different_shapes(self):
         """Test DLPack with different tensor shapes"""
