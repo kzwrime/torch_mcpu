@@ -18,6 +18,7 @@ from torch._inductor.codegen.common import (
 )
 
 import torch_mcpu._C  # type: ignore[misc]
+import torch_mcpu.distributed
 import torch_mcpu.openreg
 
 from torch_mcpu.inductor.extension_codegen_backend import (
@@ -48,6 +49,7 @@ def _setup_mcpu_inductor():
     cpp_utils.DEVICE_TO_ATEN["mcpu"] = "at::kPrivateUse1"
 
 _setup_mcpu_inductor()
+torch_mcpu.distributed.patch_mcpu_distributed()
 
 # LITERALINCLUDE START: AUTOLOAD
 def _autoload():
