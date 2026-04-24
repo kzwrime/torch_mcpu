@@ -1,6 +1,32 @@
 #include "Extra.h"
 
+#include "runtime/OpenRegException.h"
+#include "runtime/OpenRegStream.h"
+
+#include <algorithm>
+#include <chrono>
+#include <thread>
+
 namespace at::native::mcpu {
+
+namespace {
+
+void check_stream_test_tensor(const at::Tensor& tensor) {
+  TORCH_CHECK(tensor.device().type() == c10::DeviceType::PrivateUse1);
+  TORCH_CHECK(
+      tensor.scalar_type() == at::kLong,
+      "stream test ops only support int64 tensors");
+  TORCH_CHECK(
+      tensor.is_contiguous(), "stream test ops require contiguous input");
+  TORCH_CHECK(tensor.numel() > 0, "stream test ops require non-empty input");
+}
+
+void sleep_for_ms(int64_t sleep_ms) {
+  TORCH_CHECK(sleep_ms >= 0, "sleep_ms must be non-negative");
+  std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+}
+
+} // namespace
 
 at::Tensor quantize_per_tensor(
     const at::Tensor& self,
@@ -205,6 +231,46 @@ at::Tensor& abs_out(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor custom_abs(at::Tensor x) {
   return at::abs(x);
+}
+
+at::Tensor& stream_sleep_fill_(at::Tensor& x, int64_t value, int64_t sleep_ms) {
+  check_stream_test_tensor(x);
+  auto stream = c10::mcpu::getCurrentMcpuStream(x.device().index());
+
+  MCPU_CHECK(openreg::addTaskToStream(stream, [x, value, sleep_ms]() mutable {
+    sleep_for_ms(sleep_ms);
+    MemoryGuard guard(x);
+    auto* data = x.data_ptr<int64_t>();
+    std::fill_n(data, x.numel(), value);
+  }));
+
+  return x;
+}
+
+at::Tensor& stream_sleep_copy_(
+    at::Tensor& dst,
+    const at::Tensor& src,
+    int64_t sleep_ms) {
+  check_stream_test_tensor(dst);
+  check_stream_test_tensor(src);
+  TORCH_CHECK(
+      dst.sizes() == src.sizes(),
+      "stream_sleep_copy_ expects src/dst with identical shapes");
+
+  auto stream = c10::mcpu::getCurrentMcpuStream(dst.device().index());
+  MCPU_CHECK(openreg::addTaskToStream(stream, [dst, src, sleep_ms]() mutable {
+    sleep_for_ms(sleep_ms);
+    MemoryGuard guard(dst, src);
+    std::copy_n(src.data_ptr<int64_t>(), src.numel(), dst.data_ptr<int64_t>());
+  }));
+
+  return dst;
+}
+
+int64_t first_element_int(const at::Tensor& x) {
+  check_stream_test_tensor(x);
+  MemoryGuard guard(x);
+  return x.data_ptr<int64_t>()[0];
 }
 
 } // namespace at::native::mcpu

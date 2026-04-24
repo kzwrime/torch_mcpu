@@ -65,5 +65,11 @@ at::Tensor custom_autograd_fn_aliasing(at::Tensor x);
 at::Tensor& abs_out(const at::Tensor& self, at::Tensor& out);
 void abs_kernel(at::TensorIteratorBase& iter);
 at::Tensor custom_abs(at::Tensor x);
+at::Tensor& stream_sleep_fill_(at::Tensor& x, int64_t value, int64_t sleep_ms);
+at::Tensor& stream_sleep_copy_(
+    at::Tensor& dst,
+    const at::Tensor& src,
+    int64_t sleep_ms);
+int64_t first_element_int(const at::Tensor& x);
 
 } // namespace at::native::mcpu

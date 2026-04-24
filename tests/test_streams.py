@@ -5,6 +5,9 @@ from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, T
 
 
 class TestStream(TestCase):
+    def _stream_test_tensor(self, value=0, size=8):
+        return torch.full((size,), value, dtype=torch.int64, device="mcpu")
+
     @skipIfTorchDynamo()
     def test_stream_create(self):
         """Test stream creation with different methods"""
@@ -84,6 +87,42 @@ class TestStream(TestCase):
         stream_1 = torch.Stream(device="mcpu:0")
         stream_2 = torch.Stream(device="mcpu:0")
         stream_2.wait_stream(stream_1)
+
+    @skipIfTorchDynamo()
+    def test_stream_async_native_op(self):
+        stream = torch.Stream(device="mcpu:0")
+        tensor = self._stream_test_tensor(value=0)
+
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(tensor, 7, 200)
+
+        self.assertFalse(stream.query())
+        self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 0)
+
+        stream.synchronize()
+        self.assertTrue(stream.query())
+        self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 7)
+
+    @skipIfTorchDynamo()
+    def test_stream_wait_stream_orders_native_ops(self):
+        producer = torch.Stream(device="mcpu:0")
+        consumer = torch.Stream(device="mcpu:0")
+        src = self._stream_test_tensor(value=0)
+        dst = self._stream_test_tensor(value=-1)
+
+        with producer:
+            torch.ops.mcpu.stream_sleep_fill_(src, 11, 200)
+
+        with consumer:
+            consumer.wait_stream(producer)
+            torch.ops.mcpu.stream_sleep_copy_(dst, src, 0)
+
+        self.assertEqual(torch.ops.mcpu.first_element_int(dst), 0)
+
+        consumer.synchronize()
+
+        self.assertEqual(torch.ops.mcpu.first_element_int(dst), 11)
+        self.assertEqual(torch.ops.mcpu.first_element_int(src), 11)
 
     @skipIfTorchDynamo()
     def test_stream_wait_event(self):

@@ -146,12 +146,20 @@ REGISTER_PRIVATEUSE1_DISPATCH(
 // LITERALINCLUDE START: CUSTOM OPERATOR SCHEMA
 TORCH_LIBRARY(mcpu, m) {
   m.def("custom_abs(Tensor input)-> Tensor");
+  m.def(
+      "stream_sleep_fill_(Tensor(a!) input, int value, int sleep_ms) -> Tensor(a!)");
+  m.def(
+      "stream_sleep_copy_(Tensor(a!) dst, Tensor src, int sleep_ms) -> Tensor(a!)");
+  m.def("first_element_int(Tensor input) -> int");
 }
 // LITERALINCLUDE END: CUSTOM OPERATOR SCHEMA
 
 // LITERALINCLUDE START: CUSTOM OPERATOR DEFAULT
 TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
   m.impl("custom_abs", &wrapper_custom_abs);
+  m.impl("stream_sleep_fill_", &at::native::mcpu::stream_sleep_fill_);
+  m.impl("stream_sleep_copy_", &at::native::mcpu::stream_sleep_copy_);
+  m.impl("first_element_int", &at::native::mcpu::first_element_int);
 }
 // LITERALINCLUDE END: CUSTOM OPERATOR DEFAULT
 
