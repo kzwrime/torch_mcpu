@@ -30,13 +30,6 @@ from torch_mcpu.inductor.extension_codegen_backend import (
 
 torch.utils.rename_privateuse1_backend("mcpu")
 torch._register_device_module("mcpu", torch_mcpu.openreg)
-
-# Patch vllm's torch_triton_utils with mcpu C++ implementations when available.
-try:
-    from vllm.utils.mcpu_triton_utils import patch_torch_triton_utils
-    patch_torch_triton_utils()
-except ImportError:
-    pass
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 torch_mcpu.dlpack.patch_mcpu_dlpack()
 
