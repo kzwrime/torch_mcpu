@@ -1,3 +1,4 @@
+import sys
 from functools import wraps
 
 import torch
@@ -30,6 +31,19 @@ def _mcpu_wrap_async_work(work, *tensors):
     return work
 
 
+def _patch_imported_function_aliases(name, *original_functions, replacement):
+    for mod in list(sys.modules.values()):
+        try:
+            current = getattr(mod, name, None)
+        except Exception:
+            continue
+        if any(current is fn for fn in original_functions):
+            try:
+                setattr(mod, name, replacement)
+            except Exception:
+                continue
+
+
 def patch_mcpu_distributed():
     try:
         import torch.distributed as dist
@@ -40,6 +54,10 @@ def patch_mcpu_distributed():
     if getattr(dist_c10d, "_mcpu_collectives_patched", False):
         return
 
+    original_dist_all_reduce = dist.all_reduce
+    original_dist_all_gather = dist.all_gather
+    original_dist_all_gather_into_tensor = dist.all_gather_into_tensor
+    original_dist_gather = dist.gather
     original_all_reduce = dist_c10d.all_reduce
     original_all_gather = dist_c10d.all_gather
     original_all_gather_into_tensor = dist_c10d.all_gather_into_tensor
@@ -172,4 +190,28 @@ def patch_mcpu_distributed():
     dist.all_gather = _mcpu_all_gather
     dist.all_gather_into_tensor = _mcpu_all_gather_into_tensor
     dist.gather = _mcpu_gather
+    _patch_imported_function_aliases(
+        "all_reduce",
+        original_dist_all_reduce,
+        original_all_reduce,
+        replacement=_mcpu_all_reduce,
+    )
+    _patch_imported_function_aliases(
+        "all_gather",
+        original_dist_all_gather,
+        original_all_gather,
+        replacement=_mcpu_all_gather,
+    )
+    _patch_imported_function_aliases(
+        "all_gather_into_tensor",
+        original_dist_all_gather_into_tensor,
+        original_all_gather_into_tensor,
+        replacement=_mcpu_all_gather_into_tensor,
+    )
+    _patch_imported_function_aliases(
+        "gather",
+        original_dist_gather,
+        original_gather,
+        replacement=_mcpu_gather,
+    )
     dist_c10d._mcpu_collectives_patched = True
