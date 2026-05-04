@@ -248,6 +248,40 @@ void vllm_compute_slot_mappings_impl(
   }
 }
 
+void compute_slot_mapping_kernel_impl(
+    const at::Tensor& query_start_loc, // [num_reqs + 1], int32
+    const at::Tensor& positions, // [num_tokens], int64
+    const at::Tensor& block_table, // [max_num_reqs, max_num_blocks], int32
+    at::Tensor& slot_mapping, // [max_num_tokens], int64
+    int64_t block_size) {
+  const int32_t req_num = query_start_loc.size(0) - 1;
+  const int64_t block_table_stride = block_table.stride(0);
+
+  const int32_t* __restrict__ qsl_ptr = query_start_loc.data_ptr<int32_t>();
+  const int64_t* __restrict__ pos_ptr = positions.data_ptr<int64_t>();
+  const int32_t* __restrict__ block_table_ptr = block_table.data_ptr<int32_t>();
+  int64_t* __restrict__ slot_ptr = slot_mapping.data_ptr<int64_t>();
+
+#pragma omp parallel for
+  for (int32_t req_idx = 0; req_idx < req_num; ++req_idx) {
+    int32_t start = qsl_ptr[req_idx];
+    int32_t end = qsl_ptr[req_idx + 1];
+    int32_t token_num = end - start;
+
+    const int64_t* __restrict__ curr_position_ptr = pos_ptr + start;
+    int64_t* __restrict__ curr_slot_mapping_ptr = slot_ptr + start;
+    const int32_t* __restrict__ curr_block_table_ptr =
+        block_table_ptr + req_idx * block_table_stride;
+
+    for (int32_t token_idx = 0; token_idx < token_num; ++token_idx) {
+      int64_t position = curr_position_ptr[token_idx];
+      int64_t block_number = curr_block_table_ptr[position / block_size];
+      curr_slot_mapping_ptr[token_idx] =
+          block_number * block_size + position % block_size;
+    }
+  }
+}
+
 } // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
@@ -272,9 +306,18 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "int cp_interleave, "
       "int pad_id"
       ") -> ()");
+  m.def(
+      "compute_slot_mapping_kernel_impl("
+      "Tensor query_start_loc, "
+      "Tensor positions, "
+      "Tensor block_table, "
+      "Tensor(a3!) slot_mapping, "
+      "SymInt block_size"
+      ") -> ()");
 }
 
 TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
   m.impl("vllm_gather_block_tables", &vllm_gather_block_tables_impl);
   m.impl("vllm_compute_slot_mappings", &vllm_compute_slot_mappings_impl);
+  m.impl("compute_slot_mapping_kernel_impl", &compute_slot_mapping_kernel_impl);
 }
