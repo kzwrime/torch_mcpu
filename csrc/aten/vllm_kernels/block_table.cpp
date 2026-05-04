@@ -8,6 +8,7 @@
 #include <ATen/core/List.h>
 #include <torch/library.h>
 #include <cstdint>
+#include <cstring>
 #include "common.h"
 
 namespace {
@@ -282,6 +283,40 @@ void compute_slot_mapping_kernel_impl(
   }
 }
 
+void zero_kv_blocks_kernel_impl(
+    const at::Tensor& seg_addrs, // [n_segs], uint64 byte addresses
+    const at::Tensor& block_ids, // [n_blocks], int64
+    int64_t n_blocks,
+    int64_t n_segs,
+    int64_t page_size_el) {
+  VLLM_MCPU_CHECK_DTYPE(seg_addrs, at::kUInt64, "seg_addrs");
+  VLLM_MCPU_CHECK_DTYPE(block_ids, at::kLong, "block_ids");
+  VLLM_MCPU_CHECK_DIM(seg_addrs, 1, "seg_addrs");
+  VLLM_MCPU_CHECK_DIM(block_ids, 1, "block_ids");
+  VLLM_MCPU_CHECK(seg_addrs.is_contiguous(), "seg_addrs must be contiguous");
+  VLLM_MCPU_CHECK(block_ids.is_contiguous(), "block_ids must be contiguous");
+  VLLM_MCPU_CHECK(n_blocks >= 0, "n_blocks must be non-negative");
+  VLLM_MCPU_CHECK(n_segs >= 0, "n_segs must be non-negative");
+  VLLM_MCPU_CHECK(page_size_el > 0, "page_size_el must be positive");
+  VLLM_MCPU_CHECK(seg_addrs.size(0) >= n_segs, "seg_addrs must cover n_segs");
+  VLLM_MCPU_CHECK(
+      block_ids.size(0) >= n_blocks, "block_ids must cover n_blocks");
+
+  const uint64_t* __restrict__ seg_addrs_ptr = seg_addrs.data_ptr<uint64_t>();
+  const int64_t* __restrict__ block_ids_ptr = block_ids.data_ptr<int64_t>();
+
+#pragma omp parallel for collapse(2)
+  for (int64_t block_index = 0; block_index < n_blocks; ++block_index) {
+    for (int64_t seg_index = 0; seg_index < n_segs; ++seg_index) {
+      const int64_t block_id = block_ids_ptr[block_index];
+      int32_t* __restrict__ ptr =
+          reinterpret_cast<int32_t*>(seg_addrs_ptr[seg_index]);
+      std::memset(
+          ptr + block_id * page_size_el, 0, page_size_el * sizeof(int32_t));
+    }
+  }
+}
+
 } // namespace
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
@@ -314,10 +349,19 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "Tensor(a3!) slot_mapping, "
       "SymInt block_size"
       ") -> ()");
+  m.def(
+      "zero_kv_blocks_kernel_impl("
+      "Tensor seg_addrs, "
+      "Tensor block_ids, "
+      "SymInt n_blocks, "
+      "SymInt n_segs, "
+      "SymInt page_size_el"
+      ") -> ()");
 }
 
 TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
   m.impl("vllm_gather_block_tables", &vllm_gather_block_tables_impl);
   m.impl("vllm_compute_slot_mappings", &vllm_compute_slot_mappings_impl);
   m.impl("compute_slot_mapping_kernel_impl", &compute_slot_mapping_kernel_impl);
+  m.impl("zero_kv_blocks_kernel_impl", &zero_kv_blocks_kernel_impl);
 }
