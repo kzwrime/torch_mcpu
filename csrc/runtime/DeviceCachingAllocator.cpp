@@ -66,23 +66,20 @@
 //   -DDEVICE_MEMORY_INFO_SOURCE=DEVICE_MEMORY_INFO_SOURCE_CONSTANT
 //   -DDEVICE_MEMORY_INFO_SOURCE=DEVICE_MEMORY_INFO_SOURCE_LINUX
 #ifndef DEVICE_TOTAL_MEM
-#define DEVICE_TOTAL_MEM (32ULL * 1024 * 1024 * 1024) // 32 GiB default
+#define DEVICE_TOTAL_MEM (64ULL * 1024 * 1024 * 1024) // 32 GiB default
 #endif
 
 #define DEVICE_MEMORY_INFO_SOURCE_CONSTANT 1
 #define DEVICE_MEMORY_INFO_SOURCE_LINUX 2
 
 #ifndef DEVICE_MEMORY_INFO_SOURCE
-#define DEVICE_MEMORY_INFO_SOURCE DEVICE_MEMORY_INFO_SOURCE_LINUX
+#define DEVICE_MEMORY_INFO_SOURCE DEVICE_MEMORY_INFO_SOURCE_CONSTANT
 #endif
 
 namespace c10::mcpu { // [1]
 
 using namespace c10::CachingAllocator;
 using namespace c10::CachingDeviceAllocator;
-
-// newly allocated memory with 512-byte alignment.
-constexpr size_t kDeviceAlignment = 512;
 
 namespace {
 using stream_set = ska::flat_hash_set<McpuStream>; // [2]

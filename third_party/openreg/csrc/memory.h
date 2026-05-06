@@ -6,7 +6,7 @@
 
 namespace openreg {
 
-constexpr size_t kAlignment = 32;
+constexpr size_t kAlignment = 256;
 
 int alloc(void** mem, size_t alignment, size_t size) {
 #ifdef _WIN32
