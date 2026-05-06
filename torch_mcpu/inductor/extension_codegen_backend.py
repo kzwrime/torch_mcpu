@@ -116,6 +116,21 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+    def codegen_int_array_var(
+        self,
+        int_array,
+        writeline,
+        known_statically=False,
+        graph=None,
+    ):
+        if not known_statically:
+            return self._codegen_int_array_var_impl(
+                int_array, writeline, known_statically
+            )
+        return super().codegen_int_array_var(
+            int_array, writeline, known_statically, graph
+        )
+
     @staticmethod
     def create(is_subgraph, subgraph_name, parent_wrapper, partition_signatures=None):
         # The base-class create() hard-codes CppWrapperCpu(); override it

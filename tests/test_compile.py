@@ -8,10 +8,12 @@ to generate and execute fused C++ kernels for mcpu tensors.
 
 import os
 import unittest
+from itertools import count
 
 import torch
 import torch._dynamo
 import torch._inductor.config as inductor_config
+from torch.utils._ordered_set import OrderedSet
 from torch._inductor.codegen import cpp_utils
 from torch._inductor.codegen.common import (
     get_scheduling_for_device,
@@ -66,6 +68,42 @@ class TestMcpuInductorRegistration(unittest.TestCase):
             get_wrapper_codegen_for_device("mcpu", cpp_wrapper=True),
             McpuCppWrapperCodegen,
         )
+
+    @staticmethod
+    def _make_cpp_codegen_for_int_array_tests():
+        codegen = object.__new__(McpuCppWrapperCodegen)
+        codegen.int_array_id = count()
+        codegen.declared_int_array_vars = OrderedSet()
+        codegen.codegen_int_array_var_cache = {}
+        return codegen
+
+    def test_cpp_wrapper_does_not_cache_dynamic_int_arrays(self):
+        codegen = self._make_cpp_codegen_for_int_array_tests()
+        lines = []
+
+        first = codegen.codegen_int_array_var(
+            "{s0, 2L, 128L}", lines.append, known_statically=False
+        )
+        second = codegen.codegen_int_array_var(
+            "{s0, 2L, 128L}", lines.append, known_statically=False
+        )
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(len(lines), 2)
+
+    def test_cpp_wrapper_still_caches_static_int_arrays(self):
+        codegen = self._make_cpp_codegen_for_int_array_tests()
+        lines = []
+
+        first = codegen.codegen_int_array_var(
+            "{1L, 2L, 128L}", lines.append, known_statically=True
+        )
+        second = codegen.codegen_int_array_var(
+            "{1L, 2L, 128L}", lines.append, known_statically=True
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(lines), 1)
 
 
 class TestMcpuCompile(unittest.TestCase):
