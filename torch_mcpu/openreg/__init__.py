@@ -125,6 +125,19 @@ def stream(stream: Optional[Stream]) -> StreamContext:
     """
     return StreamContext(stream)
 
+
+def current_stream(device=None) -> torch.Stream:
+    return torch.accelerator.current_stream(device)
+
+
+def set_stream(stream: Optional[Stream]) -> None:
+    torch.accelerator.set_stream(stream)
+
+
+def synchronize(device=None) -> None:
+    torch.accelerator.synchronize(device)
+
+
 def is_available():
     return True
 
@@ -138,13 +151,33 @@ def memory_stats(device=None) -> dict:
     """Return a dict of memory allocator statistics for the given device."""
     if device is None:
         device = current_device()
+    else:
+        device = torch.accelerator._get_device_index(device, optional=True)
     return torch_mcpu._C._memory_stats(device)
+
+
+def memory_allocated(device=None) -> int:
+    return memory_stats(device).get("allocated_bytes.all.current", 0)
+
+
+def memory_reserved(device=None) -> int:
+    return memory_stats(device).get("reserved_bytes.all.current", 0)
+
+
+def max_memory_allocated(device=None) -> int:
+    return memory_stats(device).get("allocated_bytes.all.peak", 0)
+
+
+def max_memory_reserved(device=None) -> int:
+    return memory_stats(device).get("reserved_bytes.all.peak", 0)
 
 
 def reset_peak_memory_stats(device=None) -> None:
     """Reset peak memory usage statistics for the given device."""
     if device is None:
         device = current_device()
+    else:
+        device = torch.accelerator._get_device_index(device, optional=True)
     torch_mcpu._C._reset_peak_memory_stats(device)
 
 
@@ -191,7 +224,16 @@ def reset_accumulated_memory_stats(device=None) -> None:
     """Reset accumulated memory usage statistics for the given device."""
     if device is None:
         device = current_device()
+    else:
+        device = torch.accelerator._get_device_index(device, optional=True)
     torch_mcpu._C._reset_accumulated_memory_stats(device)
+
+
+def get_memory_info(device=None) -> tuple[int, int]:
+    return torch.accelerator.get_memory_info(device)
+
+
+mem_get_info = get_memory_info
 
 
 def device_count() -> int:
@@ -240,6 +282,9 @@ __all__ = [
     "Stream",
     "StreamContext",
     "stream",
+    "current_stream",
+    "set_stream",
+    "synchronize",
     "device_count",
     "current_device",
     "set_device",
@@ -248,9 +293,15 @@ __all__ = [
     "init",
     "is_initialized",
     "empty_cache",
+    "get_memory_info",
+    "mem_get_info",
     "get_mcpu_view_from_cpu_tensor",
     "get_cpu_view_from_mcpu_tensor",
     "memory_stats",
+    "memory_allocated",
+    "memory_reserved",
+    "max_memory_allocated",
+    "max_memory_reserved",
     "reset_peak_memory_stats",
     "reset_accumulated_memory_stats",
     "random",

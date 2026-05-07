@@ -9,42 +9,17 @@ if sys.platform == "win32":
     _load_dll_libraries()
     del _load_dll_libraries
 
-import torch._inductor.config as inductor_config
-from torch._inductor.codegen import cpp_utils
-from torch._inductor.codegen.common import (
-    get_scheduling_for_device,
-    get_wrapper_codegen_for_device,
-    register_backend_for_device,
-)
-
 import torch_mcpu._C  # type: ignore[misc]
 import torch_mcpu.dlpack
 import torch_mcpu.distributed
 import torch_mcpu.openreg
-
-from torch_mcpu.inductor.extension_codegen_backend import (
-    McpuCppWrapperCodegen,
-    McpuScheduling,
-    McpuWrapperCodegen,
-)
+from torch_mcpu.compile import setup_mcpu_compile
 
 torch.utils.rename_privateuse1_backend("mcpu")
 torch._register_device_module("mcpu", torch_mcpu.openreg)
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 torch_mcpu.dlpack.patch_mcpu_dlpack()
-
-
-def _setup_mcpu_inductor():
-    """Register mcpu with torch.inductor (idempotent)."""
-    register_backend_for_device(
-        "mcpu",
-        McpuScheduling,
-        McpuWrapperCodegen,
-        McpuCppWrapperCodegen,
-    )
-    cpp_utils.DEVICE_TO_ATEN["mcpu"] = "at::kPrivateUse1"
-
-_setup_mcpu_inductor()
+setup_mcpu_compile()
 torch_mcpu.distributed.patch_mcpu_distributed()
 
 # LITERALINCLUDE START: AUTOLOAD

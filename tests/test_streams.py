@@ -1,6 +1,7 @@
 # Owner(s): ["module: PrivateUse1"]
 
 import torch
+import torch_mcpu  # noqa: F401
 from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
 
 
@@ -104,6 +105,38 @@ class TestStream(TestCase):
         self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 7)
 
     @skipIfTorchDynamo()
+    def test_device_synchronize_waits_for_stream_native_op(self):
+        stream = torch.Stream(device="mcpu:0")
+        tensor = self._stream_test_tensor(value=0)
+
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(tensor, 13, 500)
+
+        self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 0)
+
+        torch.mcpu.synchronize()
+
+        self.assertTrue(stream.query())
+        self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 13)
+
+    @skipIfTorchDynamo()
+    def test_dynamo_device_interface_synchronize_waits_for_stream_native_op(self):
+        from torch._dynamo.device_interface import get_interface_for_device
+
+        stream = torch.Stream(device="mcpu:0")
+        tensor = self._stream_test_tensor(value=0)
+
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(tensor, 17, 500)
+
+        self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 0)
+
+        get_interface_for_device("mcpu").synchronize(torch.device("mcpu:0"))
+
+        self.assertTrue(stream.query())
+        self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 17)
+
+    @skipIfTorchDynamo()
     def test_stream_wait_stream_orders_native_ops(self):
         producer = torch.Stream(device="mcpu:0")
         consumer = torch.Stream(device="mcpu:0")
@@ -117,7 +150,7 @@ class TestStream(TestCase):
             consumer.wait_stream(producer)
             torch.ops.mcpu.stream_sleep_copy_(dst, src, 0)
 
-        self.assertEqual(torch.ops.mcpu.first_element_int(dst), 0)
+        self.assertEqual(torch.ops.mcpu.first_element_int(dst), -1)
 
         consumer.synchronize()
 

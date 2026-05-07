@@ -181,16 +181,15 @@ class McpuScheduling(BaseScheduling):
         self._scheduling.flush()
 
     def benchmark_fused_nodes(self, nodes):
-        # mcpu cannot run actual triton/cuda benchmarks.  Return a dummy
-        # (time=0.0, path="") so the caller (speedup_by_combo_kernel) treats
-        # the unfused baseline as infinitely slow, always favouring fusion.
-        return 0.0, ""
+        # mcpu does not implement Inductor combo-kernel codegen. If benchmarked,
+        # report fusion as unavailable instead of letting the scheduler create a
+        # ForeachKernelSchedulerNode that only SIMD/CUDA backends can lower.
+        return float("inf"), ""
 
     def benchmark_combo_kernel(self, node_list):
-        # mcpu cannot run actual benchmarks.  Return (ms=0.0, ms_clone=0.0, paths=[])
-        # so that ms2 - ms2_clone = 0.0 < 0.3, triggering the small_kernel bypass
-        # in speedup_by_combo_kernel and always allowing combo-kernel fusion.
-        return 0.0, 0.0, []
+        # See benchmark_fused_nodes: combo kernels are not a supported mcpu
+        # lowering path today.
+        return float("inf"), 0.0, []
 
 
 register_device_op_overrides("mcpu", McpuDeviceOpOverrides())

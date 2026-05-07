@@ -522,6 +522,9 @@ class TestCachingDeviceAllocator(TestCase):
 
     def setUp(self):
         gc.collect()
+        x = torch.empty(1, device="mcpu")
+        del x
+        gc.collect()
         torch.mcpu.empty_cache()
         torch.mcpu.reset_accumulated_memory_stats(0)
         torch.mcpu.reset_peak_memory_stats(0)
@@ -561,6 +564,19 @@ class TestCachingDeviceAllocator(TestCase):
         stats2 = torch.mcpu.memory_stats(0)
         alloc2 = stats2["allocated_bytes.all.current"]
         self.assertLess(alloc2, alloc1)
+
+    def test_memory_allocated_tracks_live_tensors(self):
+        """memory_allocated() should expose allocated_bytes current."""
+        alloc0 = torch.mcpu.memory_allocated(0)
+
+        x = torch.empty(512, dtype=torch.float32, device="mcpu")  # 2 KiB
+        alloc1 = torch.mcpu.memory_allocated(torch.device("mcpu:0"))
+        self.assertGreater(alloc1, alloc0)
+
+        del x
+        gc.collect()
+        torch.mcpu.empty_cache()
+        self.assertEqual(torch.mcpu.memory_allocated("mcpu:0"), alloc0)
 
     def test_caching_reuses_freed_blocks(self):
         """A freed block should be reused for the next allocation of similar size."""
