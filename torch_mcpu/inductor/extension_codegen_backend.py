@@ -123,12 +123,8 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
         known_statically=False,
         graph=None,
     ):
-        if not known_statically:
-            return self._codegen_int_array_var_impl(
-                int_array, writeline, known_statically
-            )
-        return super().codegen_int_array_var(
-            int_array, writeline, known_statically, graph
+        return self._codegen_int_array_var_impl(
+            int_array, writeline, known_statically
         )
 
     @staticmethod

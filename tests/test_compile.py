@@ -91,7 +91,7 @@ class TestMcpuInductorRegistration(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(len(lines), 2)
 
-    def test_cpp_wrapper_still_caches_static_int_arrays(self):
+    def test_cpp_wrapper_does_not_cache_static_int_arrays(self):
         codegen = self._make_cpp_codegen_for_int_array_tests()
         lines = []
 
@@ -102,8 +102,8 @@ class TestMcpuInductorRegistration(unittest.TestCase):
             "{1L, 2L, 128L}", lines.append, known_statically=True
         )
 
-        self.assertEqual(first, second)
-        self.assertEqual(len(lines), 1)
+        self.assertNotEqual(first, second)
+        self.assertEqual(len(lines), 2)
 
 
 class TestMcpuCompile(unittest.TestCase):
