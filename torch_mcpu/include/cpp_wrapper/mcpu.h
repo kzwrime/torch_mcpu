@@ -29,6 +29,7 @@
 #include <ATen/ops/resize_native.h>
 #include <ATen/ops/set_cpu_dispatch.h>
 #include <ATen/ops/set_native.h>
+#include <ATen/ops/view_compositeexplicitautograd_dispatch.h>
 #include <ATen/ops/view_native.h>
 
 #include <torch/csrc/autograd/custom_function.h>
@@ -52,6 +53,15 @@ inline at::Tensor get_cpu_view_from_mcpu_tensor(const at::Tensor& mcpu_tensor) {
 }
 
 // clang-format off
+inline AOTITorchError aoti_torch_mcpu_view_dtype(AtenTensorHandle self, int32_t dtype, AtenTensorHandle* ret0) {
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        auto tmp_result = at::compositeexplicitautograd::view(
+            resolve_tensor_dispatch_flags(self), static_cast<c10::ScalarType>(dtype)
+        );
+        *ret0 = new_tensor_handle(std::move(tmp_result));
+    });
+}
+
 inline AOTITorchError aoti_torch_mcpu_mm_out(AtenTensorHandle out, AtenTensorHandle self, AtenTensorHandle mat2) {
     at::Tensor* t_out = tensor_handle_to_tensor_pointer(out);
     at::Tensor* t_self = tensor_handle_to_tensor_pointer(self);
