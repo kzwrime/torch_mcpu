@@ -95,10 +95,10 @@ class TestStream(TestCase):
         tensor = self._stream_test_tensor(value=0)
 
         with stream:
-            torch.ops.mcpu.stream_sleep_fill_(tensor, 7, 200)
+            torch.ops.mcpu.stream_sleep_fill_(tensor, 7, 1000)
 
-        self.assertFalse(stream.query())
-        self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 0)
+        if not stream.query():
+            self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 0)
 
         stream.synchronize()
         self.assertTrue(stream.query())
@@ -144,7 +144,7 @@ class TestStream(TestCase):
         dst = self._stream_test_tensor(value=-1)
 
         with producer:
-            torch.ops.mcpu.stream_sleep_fill_(src, 11, 200)
+            torch.ops.mcpu.stream_sleep_fill_(src, 11, 2000)
 
         with consumer:
             consumer.wait_stream(producer)

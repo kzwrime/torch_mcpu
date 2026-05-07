@@ -4,6 +4,7 @@ import gc
 import sys
 import unittest
 
+import pytest
 import torch
 from torch.testing._internal.common_utils import (
     NoTest,
@@ -19,7 +20,7 @@ if not TEST_ACCELERATOR:
     print("No available accelerator detected, skipping tests", file=sys.stderr)
     TestCase = NoTest  # noqa: F811
     # Skip because failing when run on cuda build with no GPU, see #150059 for example
-    sys.exit()
+    pytest.skip("No available accelerator detected", allow_module_level=True)
 
 
 class TestAccelerator(TestCase):
