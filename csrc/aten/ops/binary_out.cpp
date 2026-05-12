@@ -1,5 +1,6 @@
 #include "Common.h"
 
+#include <ATen/ExpandUtils.h>
 #include <ATen/ops/add.h>
 #include <ATen/ops/div.h>
 #include <ATen/ops/mul.h>
@@ -11,16 +12,31 @@
 namespace at::mcpu {
 namespace {
 
+at::Tensor empty_binary_mcpu(const at::Tensor& self, const at::Tensor& other) {
+  auto out_sizes = at::infer_size(self.sizes(), other.sizes());
+  return at::empty(
+      out_sizes, self.options().dtype(at::result_type(self, other)));
+}
+
+at::Tensor empty_like_mcpu_result(
+    const at::Tensor& self,
+    const at::Scalar& other) {
+  return at::empty(
+      self.sizes(), self.options().dtype(at::result_type(self, other)));
+}
+
 at::Tensor& add_out(
     const at::Tensor& self,
     const at::Tensor& other,
     const at::Scalar& alpha,
     at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_other = ops::to_meta_tensor(other);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::add_out(meta_out, meta_self, meta_other, alpha);
-  ops::check_out_sizes("aten::add.out", out, meta_out);
+  auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
+  TORCH_CHECK(
+      out.sizes().equals(expected_sizes),
+      "aten::add.out: expected out.sizes() == ",
+      expected_sizes,
+      ", but got ",
+      out.sizes());
 
   at::native::mcpu::MemoryGuard guard(self, other, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
@@ -30,15 +46,51 @@ at::Tensor& add_out(
   return out;
 }
 
+at::Tensor add_Tensor(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha) {
+  auto out = empty_binary_mcpu(self, other);
+  add_out(self, other, alpha, out);
+  return out;
+}
+
+at::Tensor& add_Tensor_(
+    at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha) {
+  add_out(self, other, alpha, self);
+  return self;
+}
+
+at::Tensor add_Scalar(
+    const at::Tensor& self,
+    const at::Scalar& other,
+    const at::Scalar& alpha) {
+  auto out = empty_like_mcpu_result(self, other);
+  at::native::mcpu::MemoryGuard guard(self, out);
+  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+  at::add_out(cpu_out, cpu_self, other, alpha);
+  return out;
+}
+
+at::Tensor& add_Scalar_(
+    at::Tensor& self,
+    const at::Scalar& other,
+    const at::Scalar& alpha) {
+  at::native::mcpu::MemoryGuard guard(self);
+  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+  at::add_out(cpu_self, cpu_self, other, alpha);
+  return self;
+}
+
 at::Tensor& div_out(
     const at::Tensor& self,
     const at::Tensor& other,
     at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_other = ops::to_meta_tensor(other);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::div_out(meta_out, meta_self, meta_other);
-  ops::check_out_sizes("aten::div.out", out, meta_out);
+  auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
+  ops::check_out_sizes("aten::div.out", out, expected_sizes);
 
   at::native::mcpu::MemoryGuard guard(self, other, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
@@ -52,11 +104,8 @@ at::Tensor& mul_out(
     const at::Tensor& self,
     const at::Tensor& other,
     at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_other = ops::to_meta_tensor(other);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::mul_out(meta_out, meta_self, meta_other);
-  ops::check_out_sizes("aten::mul.out", out, meta_out);
+  auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
+  ops::check_out_sizes("aten::mul.out", out, expected_sizes);
 
   at::native::mcpu::MemoryGuard guard(self, other, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
@@ -70,11 +119,8 @@ at::Tensor& remainder_Tensor_out(
     const at::Tensor& self,
     const at::Tensor& other,
     at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_other = ops::to_meta_tensor(other);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::remainder_out(meta_out, meta_self, meta_other);
-  ops::check_out_sizes("aten::remainder.Tensor_out", out, meta_out);
+  auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
+  ops::check_out_sizes("aten::remainder.Tensor_out", out, expected_sizes);
 
   at::native::mcpu::MemoryGuard guard(self, other, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
@@ -88,12 +134,7 @@ at::Tensor sub_Tensor(
     const at::Tensor& self,
     const at::Tensor& other,
     const at::Scalar& alpha) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_other = ops::to_meta_tensor(other);
-  auto meta_out = at::empty({0}, self.options().device(c10::DeviceType::Meta));
-  at::sub_out(meta_out, meta_self, meta_other, alpha);
-
-  auto out = ops::empty_mcpu_from_meta(meta_out, self.options());
+  auto out = empty_binary_mcpu(self, other);
   at::native::mcpu::MemoryGuard guard(self, other, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
   auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
@@ -102,14 +143,62 @@ at::Tensor sub_Tensor(
   return out;
 }
 
+at::Tensor& sub_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha,
+    at::Tensor& out) {
+  auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
+  TORCH_CHECK(
+      out.sizes().equals(expected_sizes),
+      "aten::sub.out: expected out.sizes() == ",
+      expected_sizes,
+      ", but got ",
+      out.sizes());
+
+  at::native::mcpu::MemoryGuard guard(self, other, out);
+  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+  auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+  at::sub_out(cpu_out, cpu_self, cpu_other, alpha);
+  return out;
+}
+
+at::Tensor& sub_Tensor_(
+    at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha) {
+  sub_out(self, other, alpha, self);
+  return self;
+}
+
+at::Tensor sub_Scalar(
+    const at::Tensor& self,
+    const at::Scalar& other,
+    const at::Scalar& alpha) {
+  auto out = empty_like_mcpu_result(self, other);
+  at::native::mcpu::MemoryGuard guard(self, out);
+  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+  at::sub_out(cpu_out, cpu_self, other, alpha);
+  return out;
+}
+
+at::Tensor& sub_Scalar_(
+    at::Tensor& self,
+    const at::Scalar& other,
+    const at::Scalar& alpha) {
+  at::native::mcpu::MemoryGuard guard(self);
+  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+  at::sub_out(cpu_self, cpu_self, other, alpha);
+  return self;
+}
+
 at::Tensor& pow_Scalar_out(
     const at::Scalar& self,
     const at::Tensor& exponent,
     at::Tensor& out) {
-  auto meta_exponent = ops::to_meta_tensor(exponent);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::pow_out(meta_out, self, meta_exponent);
-  ops::check_out_sizes("aten::pow.Scalar_out", out, meta_out);
+  ops::check_out_sizes("aten::pow.Scalar_out", out, exponent.sizes());
 
   at::native::mcpu::MemoryGuard guard(exponent, out);
   auto cpu_exponent = ops::get_cpu_tensor_view_if_needed(exponent);
@@ -121,10 +210,18 @@ at::Tensor& pow_Scalar_out(
 } // namespace
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+  m.impl("add.Tensor", &add_Tensor);
   m.impl("add.out", &add_out);
+  m.impl("add_.Tensor", &add_Tensor_);
+  m.impl("add.Scalar", &add_Scalar);
+  m.impl("add_.Scalar", &add_Scalar_);
   m.impl("div.out", &div_out);
   m.impl("mul.out", &mul_out);
   m.impl("sub.Tensor", &sub_Tensor);
+  m.impl("sub.out", &sub_out);
+  m.impl("sub_.Tensor", &sub_Tensor_);
+  m.impl("sub.Scalar", &sub_Scalar);
+  m.impl("sub_.Scalar", &sub_Scalar_);
   m.impl("pow.Scalar_out", &pow_Scalar_out);
   m.impl("remainder.Tensor_out", &remainder_Tensor_out);
 }

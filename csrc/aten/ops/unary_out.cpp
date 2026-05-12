@@ -16,10 +16,7 @@ namespace at::mcpu {
 namespace {
 
 at::Tensor& cos_out(const at::Tensor& self, at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::cos_out(meta_out, meta_self);
-  ops::check_out_sizes("aten::cos.out", out, meta_out);
+  ops::check_out_sizes("aten::cos.out", out, self.sizes());
 
   at::native::mcpu::MemoryGuard guard(self, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
@@ -29,10 +26,7 @@ at::Tensor& cos_out(const at::Tensor& self, at::Tensor& out) {
 }
 
 at::Tensor& sin_out(const at::Tensor& self, at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::sin_out(meta_out, meta_self);
-  ops::check_out_sizes("aten::sin.out", out, meta_out);
+  ops::check_out_sizes("aten::sin.out", out, self.sizes());
 
   at::native::mcpu::MemoryGuard guard(self, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
@@ -42,10 +36,7 @@ at::Tensor& sin_out(const at::Tensor& self, at::Tensor& out) {
 }
 
 at::Tensor& reciprocal_out(const at::Tensor& self, at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::reciprocal_out(meta_out, meta_self);
-  ops::check_out_sizes("aten::reciprocal.out", out, meta_out);
+  ops::check_out_sizes("aten::reciprocal.out", out, self.sizes());
 
   at::native::mcpu::MemoryGuard guard(self, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
@@ -76,10 +67,7 @@ at::Tensor& ne_Scalar_out(
     const at::Tensor& self,
     const at::Scalar& other,
     at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::ne_out(meta_out, meta_self, other);
-  ops::check_out_sizes("aten::ne.Scalar_out", out, meta_out);
+  ops::check_out_sizes("aten::ne.Scalar_out", out, self.sizes());
 
   at::native::mcpu::MemoryGuard guard(self, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
@@ -107,10 +95,8 @@ at::Tensor& sum_IntList_out(
     bool keepdim,
     std::optional<at::ScalarType> dtype,
     at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::sum_out(meta_out, meta_self, dim, keepdim, dtype);
-  ops::check_out_sizes("aten::sum.IntList_out", out, meta_out);
+  auto expected_sizes = ops::reduction_sizes(self.sizes(), dim, keepdim);
+  ops::check_out_sizes("aten::sum.IntList_out", out, expected_sizes);
 
   at::native::mcpu::MemoryGuard guard(self, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);

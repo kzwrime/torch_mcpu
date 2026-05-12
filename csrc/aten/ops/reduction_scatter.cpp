@@ -38,10 +38,8 @@ at::Tensor& mean_out(
     bool keepdim,
     std::optional<at::ScalarType> dtype,
     at::Tensor& out) {
-  auto meta_self = ops::to_meta_tensor(self);
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::mean_out(meta_out, meta_self, dim, keepdim, dtype);
-  ops::check_out_sizes("aten::mean.out", out, meta_out);
+  auto expected_sizes = ops::reduction_sizes(self.sizes(), dim, keepdim);
+  ops::check_out_sizes("aten::mean.out", out, expected_sizes);
 
   at::native::mcpu::MemoryGuard guard(self, out);
   auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);

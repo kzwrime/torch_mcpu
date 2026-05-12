@@ -6,6 +6,15 @@
 namespace at::mcpu {
 namespace {
 
+at::Tensor empty_mcpu_like_cpu_result(
+    const at::Tensor& cpu_result,
+    const at::TensorOptions& options) {
+  return at::empty_strided(
+      cpu_result.sizes(),
+      cpu_result.strides(),
+      options.device(c10::DeviceType::PrivateUse1));
+}
+
 at::Tensor arange(
     const at::Scalar& end,
     std::optional<at::ScalarType> dtype,
@@ -14,13 +23,11 @@ at::Tensor arange(
     std::optional<bool> pin_memory) {
   ops::check_factory_options(layout, device, pin_memory);
   auto options = ops::build_mcpu_options(dtype, layout, device);
-  auto meta_out = at::empty({0}, options.device(c10::DeviceType::Meta));
-  at::arange_out(meta_out, end);
-
-  auto out = ops::empty_mcpu_from_meta(meta_out, options);
+  auto cpu_result = at::arange(end, options.device(c10::DeviceType::CPU));
+  auto out = empty_mcpu_like_cpu_result(cpu_result, options);
   at::native::mcpu::MemoryGuard guard(out);
   auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::arange_out(cpu_out, end);
+  cpu_out.copy_(cpu_result);
   return out;
 }
 
@@ -33,13 +40,12 @@ at::Tensor arange_start(
     std::optional<bool> pin_memory) {
   ops::check_factory_options(layout, device, pin_memory);
   auto options = ops::build_mcpu_options(dtype, layout, device);
-  auto meta_out = at::empty({0}, options.device(c10::DeviceType::Meta));
-  at::arange_out(meta_out, start, end, 1);
-
-  auto out = ops::empty_mcpu_from_meta(meta_out, options);
+  auto cpu_result =
+      at::arange(start, end, 1, options.device(c10::DeviceType::CPU));
+  auto out = empty_mcpu_like_cpu_result(cpu_result, options);
   at::native::mcpu::MemoryGuard guard(out);
   auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::arange_out(cpu_out, start, end, 1);
+  cpu_out.copy_(cpu_result);
   return out;
 }
 
@@ -53,24 +59,22 @@ at::Tensor arange_start_step(
     std::optional<bool> pin_memory) {
   ops::check_factory_options(layout, device, pin_memory);
   auto options = ops::build_mcpu_options(dtype, layout, device);
-  auto meta_out = at::empty({0}, options.device(c10::DeviceType::Meta));
-  at::arange_out(meta_out, start, end, step);
-
-  auto out = ops::empty_mcpu_from_meta(meta_out, options);
+  auto cpu_result =
+      at::arange(start, end, step, options.device(c10::DeviceType::CPU));
+  auto out = empty_mcpu_like_cpu_result(cpu_result, options);
   at::native::mcpu::MemoryGuard guard(out);
   auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::arange_out(cpu_out, start, end, step);
+  cpu_out.copy_(cpu_result);
   return out;
 }
 
 at::Tensor& arange_out(const at::Scalar& end, at::Tensor& out) {
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::arange_out(meta_out, end);
-  ops::check_out_sizes("aten::arange.out", out, meta_out);
+  auto cpu_result = at::arange(end, out.options().device(c10::DeviceType::CPU));
+  ops::check_out_sizes("aten::arange.out", out, cpu_result.sizes());
 
   at::native::mcpu::MemoryGuard guard(out);
   auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::arange_out(cpu_out, end);
+  cpu_out.copy_(cpu_result);
   return out;
 }
 
@@ -79,13 +83,13 @@ at::Tensor& arange_start_out(
     const at::Scalar& end,
     const at::Scalar& step,
     at::Tensor& out) {
-  auto meta_out = at::empty({0}, out.options().device(c10::DeviceType::Meta));
-  at::arange_out(meta_out, start, end, step);
-  ops::check_out_sizes("aten::arange.start_out", out, meta_out);
+  auto cpu_result =
+      at::arange(start, end, step, out.options().device(c10::DeviceType::CPU));
+  ops::check_out_sizes("aten::arange.start_out", out, cpu_result.sizes());
 
   at::native::mcpu::MemoryGuard guard(out);
   auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::arange_out(cpu_out, start, end, step);
+  cpu_out.copy_(cpu_result);
   return out;
 }
 

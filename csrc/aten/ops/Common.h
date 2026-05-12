@@ -3,6 +3,7 @@
 #include "../native/Common.h"
 
 #include <ATen/ATen.h>
+#include <ATen/WrapDimUtils.h>
 
 namespace at::mcpu::ops {
 
@@ -110,6 +111,19 @@ inline void check_out_sizes(
 
 inline void check_out_sizes(
     const char* op_name,
+    const at::Tensor& out,
+    at::IntArrayRef expected_sizes) {
+  TORCH_CHECK(
+      out.sizes().equals(expected_sizes),
+      op_name,
+      ": expected out.sizes() == ",
+      expected_sizes,
+      ", but got ",
+      out.sizes());
+}
+
+inline void check_out_sizes(
+    const char* op_name,
     const char* out_name,
     const at::Tensor& out,
     const at::Tensor& meta_out) {
@@ -122,6 +136,41 @@ inline void check_out_sizes(
       meta_out.sizes(),
       ", but got ",
       out.sizes());
+}
+
+inline std::vector<int64_t> reduction_sizes(
+    at::IntArrayRef input_sizes,
+    at::OptionalIntArrayRef dim,
+    bool keepdim) {
+  const auto ndim = static_cast<int64_t>(input_sizes.size());
+  std::vector<bool> reduce_dims(ndim, false);
+
+  if (dim.has_value() && !dim.value().empty()) {
+    for (const auto raw_dim : dim.value()) {
+      auto wrapped_dim = at::maybe_wrap_dim(raw_dim, ndim);
+      TORCH_CHECK(
+          !reduce_dims[wrapped_dim],
+          "dim ",
+          raw_dim,
+          " appears multiple times in the list of dims");
+      reduce_dims[wrapped_dim] = true;
+    }
+  } else {
+    std::fill(reduce_dims.begin(), reduce_dims.end(), true);
+  }
+
+  std::vector<int64_t> result;
+  result.reserve(input_sizes.size());
+  for (int64_t i = 0; i < ndim; ++i) {
+    if (reduce_dims[i]) {
+      if (keepdim) {
+        result.push_back(1);
+      }
+    } else {
+      result.push_back(input_sizes[i]);
+    }
+  }
+  return result;
 }
 
 inline c10::List<std::optional<at::Tensor>> to_cpu_indices(

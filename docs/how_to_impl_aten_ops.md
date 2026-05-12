@@ -104,6 +104,59 @@ rg -n "index.Tensor|index.Tensor_out|cumsum.out|arange.start_out|fill_.Scalar" \
 4. 把输入/输出映射成 CPU view
 5. 调 CPU `out` 接口
 
+### 4.2.1 elementwise binary 算子的例外
+
+典型如 `add`、`sub`。
+
+不要为了推导 shape 在 `mcpu` kernel 内调用 `at::add_out(meta_out, ...)`
+或 `at::sub_out(meta_out, ...)`。当前 PyTorch 里这类 elementwise binary
+Meta kernel 可能走 Python 注册路径，profiler 会看到
+`torch/_prims_common/wrappers.py`、`torch/_refs/__init__.py` 和
+`torch/_dynamo/eval_frame.py` 等栈，并且实际引入明显额外开销。
+
+这类算子应优先直接用 C++ 元信息工具推导：
+
+- 用 `at::infer_size(self.sizes(), other.sizes())` 做 broadcast shape 检查。
+- functional 版本用 `at::result_type(self, other)` / `at::result_type(self, scalar)`
+  推导输出 dtype 后分配 `mcpu` out。
+- `out` / inplace 版本只检查预期 shape，然后直接映射 CPU view 并调用 CPU `out`
+  或 inplace 计算。
+
+同时要显式注册业务会直接触发的 schema，例如 `add.Tensor`、`add_.Tensor`、
+`add.Scalar`、`sub.Scalar`，不能只注册 `add.out`。否则 Python 层可能先走
+Composite / refs 分解，再间接调用 `out`，调用栈和性能都会变差。
+
+### 4.2.2 什么时候可以保留原始 `meta_out`
+
+不是所有 `meta_out` 都有问题。判断标准看 dispatcher 里 active `Meta` kernel 的来源：
+
+```python
+import torch
+print(torch._C._dispatch_dump("aten::index.Tensor_out"))
+```
+
+可以保留 `meta_out` 的情况：
+
+- `Meta:` 注册来自 `pytorch/build/aten/src/ATen/RegisterMeta_*.cpp`，通常是 C++
+  meta kernel，调用栈简洁，例如 `index.Tensor_out`、`gather.out`、`topk.values`。
+- 该 op 的 shape / dtype / stride 规则复杂，并且 C++ Meta 路径不会在 profiler
+  中出现 `torch/_refs`、`torch/_prims_common`、`torch/_dynamo/eval_frame`。
+
+应该替换 `meta_out` 的情况：
+
+- `Meta:` 注册来自 `torch/_meta_registrations.py`，尤其是内部会走
+  `torch/_refs` 或 `torch/_prims_common` 的算子。
+- profiler trace 中能看到这类 Python 栈，并且这个 op 位于热路径。
+
+替换时不能只看 shape。必须同时保持 PyTorch 语义：
+
+- dtype promotion：例如 `cumsum` 在 `dtype=None` 且输入为 integral/bool 时，
+  functional 结果 dtype 是 `int64`，不能简单继承 `self.scalar_type()`。
+- 特殊 shape 规则：例如 `cat` 会忽略 1-D empty tensor 占位输入，
+  `torch.cat([torch.empty(0), torch.ones(2, 3)], dim=0/1)` 都是合法的。
+- `out` 版本保持“不主动 resize 原始 mcpu out”的约定，但 shape/dtype 规则要和
+  PyTorch CPU 行为兼容。
+
 ### 4.3 inplace 算子
 
 典型如 `fill_`。

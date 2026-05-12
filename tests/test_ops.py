@@ -211,6 +211,20 @@ class TestFallback(TestCase):
         )
         self.assertEqual(cumsum_res.device.type, "mcpu")
 
+        int_cumsum = torch.cumsum(
+            torch.tensor([1, 1, 1], device="mcpu", dtype=torch.int8),
+            dim=0,
+        )
+        self.assertEqual(int_cumsum.dtype, torch.int64)
+        self.assertEqual(int_cumsum, torch.tensor([1, 2, 3], dtype=torch.int64))
+
+        bool_cumsum = torch.cumsum(
+            torch.tensor([True, True, False], device="mcpu"),
+            dim=0,
+        )
+        self.assertEqual(bool_cumsum.dtype, torch.int64)
+        self.assertEqual(bool_cumsum, torch.tensor([1, 2, 2], dtype=torch.int64))
+
         filled = torch.empty(2, 3, device="mcpu", dtype=torch.float32)
         filled.fill_(7)
         self.assertEqual(filled, torch.full((2, 3), 7, dtype=torch.float32))
@@ -273,6 +287,11 @@ class TestFallback(TestCase):
         cat_out = torch.empty(4, 2, device="mcpu")
         torch.cat([x, y], dim=0, out=cat_out)
         self.assertEqual(cat_out, torch.cat([x.cpu(), y.cpu()], dim=0))
+
+        empty_1d = torch.empty(0, device="mcpu")
+        cat_empty_out = torch.empty(2, 2, device="mcpu")
+        torch.cat([empty_1d, x], dim=0, out=cat_empty_out)
+        self.assertEqual(cat_empty_out, x.cpu())
 
         vals = torch.empty(2, 1, device="mcpu")
         inds = torch.empty(2, 1, device="mcpu", dtype=torch.long)
