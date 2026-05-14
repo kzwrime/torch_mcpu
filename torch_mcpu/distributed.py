@@ -58,10 +58,20 @@ def patch_mcpu_distributed():
     original_dist_all_gather = dist.all_gather
     original_dist_all_gather_into_tensor = dist.all_gather_into_tensor
     original_dist_gather = dist.gather
+    original_dist_send = dist.send
+    original_dist_recv = dist.recv
+    original_dist_isend = dist.isend
+    original_dist_irecv = dist.irecv
+    original_dist_broadcast = dist.broadcast
     original_all_reduce = dist_c10d.all_reduce
     original_all_gather = dist_c10d.all_gather
     original_all_gather_into_tensor = dist_c10d.all_gather_into_tensor
     original_gather = dist_c10d.gather
+    original_send = dist_c10d.send
+    original_recv = dist_c10d.recv
+    original_isend = dist_c10d.isend
+    original_irecv = dist_c10d.irecv
+    original_broadcast = dist_c10d.broadcast
 
     @wraps(original_all_reduce)
     def _mcpu_all_reduce(tensor, op=dist.ReduceOp.SUM, group=None, async_op=False):
@@ -182,14 +192,128 @@ def patch_mcpu_distributed():
             group_dst=group_dst,
         )
 
+    @wraps(original_send)
+    def _mcpu_send(tensor, dst=None, group=None, tag=0, group_dst=None):
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "mcpu":
+            return original_send(
+                _mcpu_to_cpu_view_tensor(tensor),
+                dst=dst,
+                group=group,
+                tag=tag,
+                group_dst=group_dst,
+            )
+        return original_send(
+            tensor,
+            dst=dst,
+            group=group,
+            tag=tag,
+            group_dst=group_dst,
+        )
+
+    @wraps(original_recv)
+    def _mcpu_recv(tensor, src=None, group=None, tag=0, group_src=None):
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "mcpu":
+            return original_recv(
+                _mcpu_to_cpu_view_tensor(tensor),
+                src=src,
+                group=group,
+                tag=tag,
+                group_src=group_src,
+            )
+        return original_recv(
+            tensor,
+            src=src,
+            group=group,
+            tag=tag,
+            group_src=group_src,
+        )
+
+    @wraps(original_isend)
+    def _mcpu_isend(tensor, dst=None, group=None, tag=0, group_dst=None):
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "mcpu":
+            cpu_tensor = _mcpu_to_cpu_view_tensor(tensor)
+            work = original_isend(
+                cpu_tensor,
+                dst=dst,
+                group=group,
+                tag=tag,
+                group_dst=group_dst,
+            )
+            return _mcpu_wrap_async_work(work, tensor, cpu_tensor)
+        return original_isend(
+            tensor,
+            dst=dst,
+            group=group,
+            tag=tag,
+            group_dst=group_dst,
+        )
+
+    @wraps(original_irecv)
+    def _mcpu_irecv(tensor, src=None, group=None, tag=0, group_src=None):
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "mcpu":
+            cpu_tensor = _mcpu_to_cpu_view_tensor(tensor)
+            work = original_irecv(
+                cpu_tensor,
+                src=src,
+                group=group,
+                tag=tag,
+                group_src=group_src,
+            )
+            return _mcpu_wrap_async_work(work, tensor, cpu_tensor)
+        return original_irecv(
+            tensor,
+            src=src,
+            group=group,
+            tag=tag,
+            group_src=group_src,
+        )
+
+    @wraps(original_broadcast)
+    def _mcpu_broadcast(
+        tensor,
+        src=None,
+        group=None,
+        async_op=False,
+        group_src=None,
+    ):
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "mcpu":
+            cpu_tensor = _mcpu_to_cpu_view_tensor(tensor)
+            work = original_broadcast(
+                cpu_tensor,
+                src=src,
+                group=group,
+                async_op=async_op,
+                group_src=group_src,
+            )
+            if async_op and work is not None:
+                return _mcpu_wrap_async_work(work, tensor, cpu_tensor)
+            return work
+        return original_broadcast(
+            tensor,
+            src=src,
+            group=group,
+            async_op=async_op,
+            group_src=group_src,
+        )
+
     dist_c10d.all_reduce = _mcpu_all_reduce
     dist_c10d.all_gather = _mcpu_all_gather
     dist_c10d.all_gather_into_tensor = _mcpu_all_gather_into_tensor
     dist_c10d.gather = _mcpu_gather
+    dist_c10d.send = _mcpu_send
+    dist_c10d.recv = _mcpu_recv
+    dist_c10d.isend = _mcpu_isend
+    dist_c10d.irecv = _mcpu_irecv
+    dist_c10d.broadcast = _mcpu_broadcast
     dist.all_reduce = _mcpu_all_reduce
     dist.all_gather = _mcpu_all_gather
     dist.all_gather_into_tensor = _mcpu_all_gather_into_tensor
     dist.gather = _mcpu_gather
+    dist.send = _mcpu_send
+    dist.recv = _mcpu_recv
+    dist.isend = _mcpu_isend
+    dist.irecv = _mcpu_irecv
+    dist.broadcast = _mcpu_broadcast
     _patch_imported_function_aliases(
         "all_reduce",
         original_dist_all_reduce,
@@ -213,5 +337,35 @@ def patch_mcpu_distributed():
         original_dist_gather,
         original_gather,
         replacement=_mcpu_gather,
+    )
+    _patch_imported_function_aliases(
+        "send",
+        original_dist_send,
+        original_send,
+        replacement=_mcpu_send,
+    )
+    _patch_imported_function_aliases(
+        "recv",
+        original_dist_recv,
+        original_recv,
+        replacement=_mcpu_recv,
+    )
+    _patch_imported_function_aliases(
+        "isend",
+        original_dist_isend,
+        original_isend,
+        replacement=_mcpu_isend,
+    )
+    _patch_imported_function_aliases(
+        "irecv",
+        original_dist_irecv,
+        original_irecv,
+        replacement=_mcpu_irecv,
+    )
+    _patch_imported_function_aliases(
+        "broadcast",
+        original_dist_broadcast,
+        original_broadcast,
+        replacement=_mcpu_broadcast,
     )
     dist_c10d._mcpu_collectives_patched = True
