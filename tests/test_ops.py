@@ -280,6 +280,32 @@ class TestFallback(TestCase):
         torch.reciprocal(x, out=reciprocal_out)
         self.assertEqual(reciprocal_out.cpu(), torch.reciprocal(x.cpu()))
 
+        neg_out = torch.empty_like(x)
+        torch.neg(x, out=neg_out)
+        self.assertEqual(neg_out.cpu(), torch.neg(x.cpu()))
+
+        clamp_out = torch.empty_like(x)
+        torch.clamp(x, min=5.0, max=6.0, out=clamp_out)
+        self.assertEqual(clamp_out.cpu(), torch.clamp(x.cpu(), min=5.0, max=6.0))
+
+        clamp_tensor_min = torch.tensor([[5.0, 6.0], [4.0, 6.0]], device="mcpu")
+        clamp_tensor_out = torch.empty_like(x)
+        torch.clamp(x, min=clamp_tensor_min, out=clamp_tensor_out)
+        self.assertEqual(
+            clamp_tensor_out.cpu(),
+            torch.clamp(x.cpu(), min=clamp_tensor_min.cpu()),
+        )
+
+        bad_unary_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::neg.out"):
+            torch.neg(x, out=bad_unary_out)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::clamp.out"):
+            torch.clamp(x, min=5.0, max=6.0, out=bad_unary_out)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::clamp.Tensor_out"):
+            torch.clamp(x, min=clamp_tensor_min, out=bad_unary_out)
+
         scalar_pow_out = torch.empty_like(x)
         torch.pow(2.0, x, out=scalar_pow_out)
         self.assertEqual(scalar_pow_out.cpu(), torch.pow(2.0, x.cpu()))
