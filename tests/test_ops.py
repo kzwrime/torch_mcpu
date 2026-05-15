@@ -385,6 +385,23 @@ class TestFallback(TestCase):
             torch.scatter_add(scatter_self.cpu(), 1, scatter_index.cpu(), scatter_src.cpu()),
         )
 
+        softmax_out = torch.empty_like(x)
+        torch.ops.aten._softmax.out(x, 1, False, out=softmax_out)
+        self.assertEqual(
+            softmax_out.cpu(),
+            torch.ops.aten._softmax.out(x.cpu(), 1, False, out=torch.empty_like(x.cpu())),
+        )
+
+        exp_sample = torch.empty(8, device="mcpu")
+        exp_sample.exponential_(2.0)
+        self.assertEqual(exp_sample.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(exp_sample.cpu()).all())
+        self.assertTrue((exp_sample.cpu() >= 0).all())
+
+        argmax_out = torch.empty(2, 1, device="mcpu", dtype=torch.long)
+        torch.argmax(x, dim=1, keepdim=True, out=argmax_out)
+        self.assertEqual(argmax_out.cpu(), torch.argmax(x.cpu(), dim=1, keepdim=True))
+
         bad_max_values = torch.empty(1, device="mcpu")
         bad_max_indices = torch.empty(1, device="mcpu", dtype=torch.long)
         with self.assertRaisesRegex(RuntimeError, "aten::max.dim_max"):
@@ -397,6 +414,14 @@ class TestFallback(TestCase):
         bad_scatter_out = torch.empty(1, device="mcpu")
         with self.assertRaisesRegex(RuntimeError, "aten::scatter_add.out"):
             torch.scatter_add(scatter_self, 1, scatter_index, scatter_src, out=bad_scatter_out)
+
+        bad_softmax_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::_softmax.out"):
+            torch.ops.aten._softmax.out(x, 1, False, out=bad_softmax_out)
+
+        bad_argmax_out = torch.empty(1, device="mcpu", dtype=torch.long)
+        with self.assertRaisesRegex(RuntimeError, "aten::argmax.out"):
+            torch.argmax(x, dim=1, keepdim=True, out=bad_argmax_out)
 
     def test_explicit_gather_out(self):
         x = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="mcpu")
