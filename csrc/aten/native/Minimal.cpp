@@ -1,6 +1,8 @@
 #include "Minimal.h"
 #include "MCPUFallback.h"
 
+#include <ATen/WrapDimUtils.h>
+
 #include <unordered_set>
 
 namespace at::native::mcpu {
@@ -161,6 +163,43 @@ at::Tensor& set_source_Storage_storage_offset_(
 at::Tensor view(const at::Tensor& self, c10::SymIntArrayRef size) {
   MemoryGuard guard(self);
   return at::native::view(self, C10_AS_INTARRAYREF_SLOW(size));
+}
+
+at::Tensor unfold(
+    const at::Tensor& self,
+    int64_t dimension,
+    int64_t size,
+    int64_t step) {
+  const auto ndim = self.dim();
+  const auto wrapped_dim =
+      at::maybe_wrap_dim(dimension, ndim, /*wrap_scalar=*/true);
+
+  auto sizes = self.sizes().vec();
+  auto strides = self.strides().vec();
+  const int64_t max_size = ndim == 0 ? 1 : sizes[wrapped_dim];
+  TORCH_CHECK(size >= 0, "size is ", size, " but must be >= 0");
+  TORCH_CHECK(
+      size <= max_size,
+      "maximum size for tensor at dimension ",
+      wrapped_dim,
+      " is ",
+      max_size,
+      " but size is ",
+      size);
+  TORCH_CHECK(step > 0, "step is ", step, " but must be > 0");
+
+  sizes.push_back(size);
+  strides.push_back(ndim == 0 ? 1 : strides[wrapped_dim]);
+  if (wrapped_dim < ndim) {
+    sizes[wrapped_dim] = (sizes[wrapped_dim] - size) / step + 1;
+    strides[wrapped_dim] *= step;
+  }
+
+  return at::native::mcpu::as_strided(
+      self,
+      c10::fromIntArrayRefSlow(sizes),
+      c10::fromIntArrayRefSlow(strides),
+      std::nullopt);
 }
 
 // LITERALINCLUDE START: FALLBACK IMPL

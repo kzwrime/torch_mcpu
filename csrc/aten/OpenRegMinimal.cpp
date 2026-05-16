@@ -101,6 +101,14 @@ at::Tensor wrapper_view(const at::Tensor& self, c10::SymIntArrayRef size) {
   return at::native::mcpu::view(self, size);
 }
 
+at::Tensor wrapper_unfold(
+    const at::Tensor& self,
+    int64_t dimension,
+    int64_t size,
+    int64_t step) {
+  return at::native::mcpu::unfold(self, dimension, size, step);
+}
+
 // LITERALINCLUDE START: FALLBACK WRAPPER
 void wrapper_cpu_fallback(
     const c10::OperatorHandle& op,
@@ -127,6 +135,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
       "set_.source_Storage_storage_offset",
       wrapper_set_source_Storage_storage_offsetset_);
   m.impl("view", wrapper_view);
+  m.impl("unfold", wrapper_unfold);
 }
 // LITERALINCLUDE END: TORCH_LIBRARY_IMPL DEFAULT
 

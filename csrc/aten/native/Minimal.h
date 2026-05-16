@@ -56,6 +56,12 @@ at::Tensor& set_source_Storage_storage_offset_(
 
 at::Tensor view(const at::Tensor& self, c10::SymIntArrayRef size);
 
+at::Tensor unfold(
+    const at::Tensor& self,
+    int64_t dimension,
+    int64_t size,
+    int64_t step);
+
 void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack);
 
 } // namespace at::native::mcpu

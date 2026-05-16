@@ -641,6 +641,22 @@ class TestOpsExtended(TestCase):
         self.assertEqual(y.device.type, "mcpu")
         self.assertEqual(y.shape, torch.Size([2, 2]))
 
+    def test_unfold(self):
+        """Test unfold view operation"""
+        x_cpu = torch.arange(2 * 3 * 4 * 5 * 6, dtype=torch.float32).reshape(
+            2, 3, 4, 5, 6
+        )
+        x = x_cpu.to(device="mcpu")
+
+        y = x.unfold(2, 2, 2).unfold(3, 3, 1).unfold(4, 2, 2)
+        y_cpu = x_cpu.unfold(2, 2, 2).unfold(3, 3, 1).unfold(4, 2, 2)
+
+        self.assertEqual(y.device.type, "mcpu")
+        self.assertEqual(y.shape, y_cpu.shape)
+        self.assertEqual(y.stride(), y_cpu.stride())
+        self.assertEqual(y.cpu(), y_cpu)
+        self.assertEqual(x.data_ptr(), y.data_ptr())
+
     def test_local_scalar_dense(self):
         """Test local scalar dense extraction"""
         x = torch.tensor([5.0], device="mcpu")
