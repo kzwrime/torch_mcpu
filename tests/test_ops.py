@@ -439,6 +439,37 @@ class TestFallback(TestCase):
         with self.assertRaisesRegex(RuntimeError, "aten::gather.out"):
             torch.gather(x, 1, index, out=bad_out)
 
+    def test_explicit_index_select_and_index_copy(self):
+        x = torch.tensor(
+            [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="mcpu"
+        )
+        index = torch.tensor([2, 0], device="mcpu", dtype=torch.long)
+
+        selected = torch.index_select(x, 1, index)
+        self.assertEqual(selected.cpu(), torch.index_select(x.cpu(), 1, index.cpu()))
+        self.assertEqual(selected.device.type, "mcpu")
+
+        selected_out = torch.empty(2, 2, device="mcpu")
+        torch.index_select(x, 1, index, out=selected_out)
+        self.assertEqual(
+            selected_out.cpu(), torch.index_select(x.cpu(), 1, index.cpu())
+        )
+
+        bad_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::index_select.out"):
+            torch.index_select(x, 1, index, out=bad_out)
+
+        target = torch.zeros(2, 3, device="mcpu")
+        source = torch.tensor(
+            [[10.0, 20.0], [30.0, 40.0]], device="mcpu"
+        )
+        result = target.index_copy_(1, index, source)
+        self.assertIs(result, target)
+        self.assertEqual(
+            target.cpu(),
+            torch.zeros(2, 3).index_copy_(1, index.cpu(), source.cpu()),
+        )
+
     def test_tensorlist_type_fallback(self):
         """Test tensor list type fallback to CPU"""
         # create tensors located in custom device
