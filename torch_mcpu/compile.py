@@ -1,4 +1,7 @@
+import os
+
 import torch
+import torch._inductor.config as inductor_config
 from torch._dynamo.device_interface import (
     CpuInterface,
     register_interface_for_device,
@@ -13,6 +16,13 @@ from torch_mcpu.inductor.extension_codegen_backend import (
     McpuScheduling,
     McpuWrapperCodegen,
 )
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class McpuInterface(CpuInterface):
@@ -92,6 +102,9 @@ class McpuInterface(CpuInterface):
 
 def setup_mcpu_compile() -> None:
     """Register mcpu with Dynamo and Inductor."""
+    inductor_config.fallback_by_default = _env_flag(
+        "TORCH_MCPU_INDUCTOR_FALLBACK_BY_DEFAULT"
+    )
     register_interface_for_device("mcpu", McpuInterface)
     register_interface_for_device("privateuseone", McpuInterface)
     register_backend_for_device(

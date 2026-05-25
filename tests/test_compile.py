@@ -158,6 +158,31 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertEqual(res.device.type, "mcpu")
         self.assertTrue(torch.allclose(ref, res.to("cpu")))
 
+    def test_cpp_wrapper_uses_mcpu_aten_fallback_not_cpp_fused_loop(self):
+        """mcpu cpp_wrapper must not emit raw Inductor C++ fused loops."""
+
+        def pointwise(a, b, c):
+            return a[:, None].sigmoid() * b + c
+
+        a = torch.empty(4, device="mcpu", dtype=torch.bfloat16).fill_(1)
+        b = torch.empty(4, 8, device="mcpu", dtype=torch.bfloat16).fill_(2)
+        c = torch.empty(4, 8, device="mcpu", dtype=torch.bfloat16).fill_(3)
+        ref = pointwise(a, b, c).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "fallback_by_default": True,
+        }):
+            opt_fn = torch.compile(pointwise)
+            res, code = run_and_get_cpp_code(opt_fn, a, b, c)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.allclose(ref, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
+        self.assertIn("aoti_torch_mcpu_mul_Tensor", code_text)
+        self.assertIn("aoti_torch_mcpu_add_Tensor", code_text)
+
     def test_compile_repeated_calls(self):
         """Compiled function produces consistent results across multiple calls."""
         x, y, z, ref = self._make_tensors()

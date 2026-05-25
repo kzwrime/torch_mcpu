@@ -1,6 +1,7 @@
 
 #pragma once
 
+#include <ATen/ExpandUtils.h>
 #include <ATen/core/TensorBody.h>
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <torch/csrc/inductor/aoti_torch/utils.h>
@@ -52,6 +53,22 @@ inline at::Tensor get_cpu_view_from_mcpu_tensor(const at::Tensor& mcpu_tensor) {
   return result;
 }
 
+inline at::Tensor get_cpu_tensor_view_if_needed(const at::Tensor& tensor) {
+  if (tensor.device().is_cpu()) {
+    return tensor;
+  }
+  return get_cpu_view_from_mcpu_tensor(tensor);
+}
+
+inline at::Tensor empty_binary_mcpu_result(
+    const at::Tensor& self,
+    const at::Tensor& other) {
+  auto out_sizes = at::infer_size(self.sizes(), other.sizes());
+  return at::empty(
+      out_sizes,
+      self.options().dtype(at::result_type(self, other)));
+}
+
 // clang-format off
 inline AOTITorchError aoti_torch_mcpu_view_dtype(AtenTensorHandle self, int32_t dtype, AtenTensorHandle* ret0) {
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
@@ -89,6 +106,32 @@ inline AOTITorchError aoti_torch_mcpu_addmm_out(AtenTensorHandle out, AtenTensor
             cpu_out, cpu_self, cpu_mat1, cpu_mat2, beta, alpha
         );
 
+    });
+}
+
+inline AOTITorchError aoti_torch_mcpu_add_Tensor(AtenTensorHandle self, AtenTensorHandle other, double alpha, AtenTensorHandle* ret0) {
+    at::Tensor* t_self = tensor_handle_to_tensor_pointer(self);
+    at::Tensor* t_other = tensor_handle_to_tensor_pointer(other);
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        auto out = empty_binary_mcpu_result(*t_self, *t_other);
+        at::Tensor cpu_self = get_cpu_tensor_view_if_needed(*t_self);
+        at::Tensor cpu_other = get_cpu_tensor_view_if_needed(*t_other);
+        at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
+        at::add_out(cpu_out, cpu_self, cpu_other, alpha);
+        *ret0 = new_tensor_handle(std::move(out));
+    });
+}
+
+inline AOTITorchError aoti_torch_mcpu_mul_Tensor(AtenTensorHandle self, AtenTensorHandle other, AtenTensorHandle* ret0) {
+    at::Tensor* t_self = tensor_handle_to_tensor_pointer(self);
+    at::Tensor* t_other = tensor_handle_to_tensor_pointer(other);
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        auto out = empty_binary_mcpu_result(*t_self, *t_other);
+        at::Tensor cpu_self = get_cpu_tensor_view_if_needed(*t_self);
+        at::Tensor cpu_other = get_cpu_tensor_view_if_needed(*t_other);
+        at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
+        at::mul_out(cpu_out, cpu_self, cpu_other);
+        *ret0 = new_tensor_handle(std::move(out));
     });
 }
 // clang-format on
