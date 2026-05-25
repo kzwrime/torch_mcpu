@@ -16,6 +16,10 @@ from torch_mcpu.inductor.extension_codegen_backend import (
     McpuScheduling,
     McpuWrapperCodegen,
 )
+from torch_mcpu.inductor.torch_xcpu_fusion import (
+    McpuTorchXcpuFusionPass,
+    append_post_grad_pass,
+)
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -105,6 +109,11 @@ def setup_mcpu_compile() -> None:
     inductor_config.fallback_by_default = _env_flag(
         "TORCH_MCPU_INDUCTOR_FALLBACK_BY_DEFAULT"
     )
+    if _env_flag("TORCH_MCPU_ENABLE_TORCH_XCPU_FUSIONS", True):
+        inductor_config.post_grad_custom_post_pass = append_post_grad_pass(
+            inductor_config.post_grad_custom_post_pass,
+            McpuTorchXcpuFusionPass(),
+        )
     register_interface_for_device("mcpu", McpuInterface)
     register_interface_for_device("privateuseone", McpuInterface)
     register_backend_for_device(
