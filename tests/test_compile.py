@@ -234,7 +234,10 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertEqual(res.device.type, "mcpu")
         self.assertTrue(torch.allclose(ref, res.to("cpu")))
         self.assertNotIn("cpp_fused_add_mul_sigmoid", code_text)
-        self.assertIn("torch_xcpu::fused_sigmoid_and_add_bf16", code_text)
+        self.assertIn(
+            "torch_xcpu::fused_sigmoid_mul_add_3d_lastdim_bf16",
+            code_text,
+        )
 
     def test_cpp_wrapper_fuses_sigmoid_and_mul_with_torch_xcpu(self):
         """mcpu post-grad pass replaces mul/sigmoid with torch_xcpu op."""
@@ -262,7 +265,10 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertEqual(res.device.type, "mcpu")
         self.assertTrue(torch.allclose(ref, res.to("cpu")))
         self.assertNotIn("cpp_fused_mul_sigmoid", code_text)
-        self.assertIn("torch_xcpu::fused_sigmoid_and_mul_bf16", code_text)
+        self.assertIn(
+            "torch_xcpu::fused_sigmoid_mul_3d_lastdim_bf16",
+            code_text,
+        )
 
     def test_cpp_wrapper_direct_dispatch_fusions_with_dynamic_shapes(self):
         """Cover the vLLM path: dynamic dims, direct dispatch, AOTI C++ wrapper."""
@@ -272,35 +278,35 @@ class TestMcpuCompile(unittest.TestCase):
         except ImportError:
             self.skipTest("torch_xcpu is not available")
 
-        def pointwise(gate_2d, input_2d, other_2d, gate_3d, input_3d):
-            add_out = input_2d * gate_2d.sigmoid() + other_2d
-            mul_out = input_3d * gate_3d.sigmoid()
+        def pointwise(input2_2d, input1_2d, input3_2d, input2_3d, input1_3d):
+            add_out = input1_2d * input2_2d.sigmoid() + input3_2d
+            mul_out = input1_3d * input2_3d.sigmoid()
             return add_out, mul_out
 
-        gate_2d = torch.empty(
+        input2_2d = torch.empty(
             4, 1, device="mcpu", dtype=torch.bfloat16
         ).fill_(1)
-        input_2d = torch.empty(
+        input1_2d = torch.empty(
             4, 8, device="mcpu", dtype=torch.bfloat16
         ).fill_(2)
-        other_2d = torch.empty(
+        input3_2d = torch.empty(
             4, 8, device="mcpu", dtype=torch.bfloat16
         ).fill_(3)
-        gate_3d = torch.empty(
+        input2_3d = torch.empty(
             4, 2, 8, device="mcpu", dtype=torch.bfloat16
         ).fill_(1)
-        input_3d = torch.empty(
+        input1_3d = torch.empty(
             4, 2, 8, device="mcpu", dtype=torch.bfloat16
         ).fill_(2)
 
         ref_add, ref_mul = pointwise(
-            gate_2d, input_2d, other_2d, gate_3d, input_3d
+            input2_2d, input1_2d, input3_2d, input2_3d, input1_3d
         )
-        torch._dynamo.mark_dynamic(gate_2d, 0)
-        torch._dynamo.mark_dynamic(input_2d, 0)
-        torch._dynamo.mark_dynamic(other_2d, 0)
-        torch._dynamo.mark_dynamic(gate_3d, 0)
-        torch._dynamo.mark_dynamic(input_3d, 0)
+        torch._dynamo.mark_dynamic(input2_2d, 0)
+        torch._dynamo.mark_dynamic(input1_2d, 0)
+        torch._dynamo.mark_dynamic(input3_2d, 0)
+        torch._dynamo.mark_dynamic(input2_3d, 0)
+        torch._dynamo.mark_dynamic(input1_3d, 0)
 
         with (
             patch.dict(os.environ, _torch_xcpu_aoti_env(), clear=False),
@@ -308,7 +314,7 @@ class TestMcpuCompile(unittest.TestCase):
         ):
             opt_fn = torch.compile(pointwise, dynamic=True)
             res, code = run_and_get_cpp_code(
-                opt_fn, gate_2d, input_2d, other_2d, gate_3d, input_3d
+                opt_fn, input2_2d, input1_2d, input3_2d, input2_3d, input1_3d
             )
 
         code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
@@ -316,8 +322,235 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertTrue(torch.allclose(ref_mul.to("cpu"), res[1].to("cpu")))
         self.assertNotIn("cpp_fused_add_mul_sigmoid", code_text)
         self.assertNotIn("cpp_fused_mul_sigmoid", code_text)
-        self.assertIn("aoti_torch_mcpu_fused_sigmoid_and_add_bf16", code_text)
-        self.assertIn("aoti_torch_mcpu_fused_sigmoid_and_mul_bf16", code_text)
+        self.assertIn(
+            "aoti_torch_mcpu_fused_sigmoid_mul_add_3d_lastdim_bf16",
+            code_text,
+        )
+        self.assertIn(
+            "aoti_torch_mcpu_fused_sigmoid_mul_3d_lastdim_bf16",
+            code_text,
+        )
+
+    def test_torch_xcpu_fusion_fuses_3d_broadcast_add(self):
+        """Cover MoE-style [tokens, 1, hidden] * [tokens, 1, 1] + residual."""
+
+        try:
+            import torch_xcpu  # noqa: F401
+        except ImportError:
+            self.skipTest("torch_xcpu is not available")
+
+        def pointwise(input2, input1, input3):
+            return input1 * input2.sigmoid() + input3
+
+        input2 = torch.empty(4, 1, 1, device="mcpu", dtype=torch.bfloat16).fill_(1)
+        input1 = torch.empty(4, 1, 8, device="mcpu", dtype=torch.bfloat16).fill_(2)
+        input3 = torch.empty(4, 1, 8, device="mcpu", dtype=torch.bfloat16).fill_(3)
+        ref = pointwise(input2, input1, input3).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "post_grad_custom_post_pass": McpuTorchXcpuFusionPass(),
+        }):
+            opt_fn = torch.compile(pointwise)
+            res, code = run_and_get_cpp_code(opt_fn, input2, input1, input3)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.allclose(ref, res.to("cpu")))
+        self.assertIn(
+            "torch_xcpu::fused_sigmoid_mul_add_3d_lastdim_bf16",
+            code_text,
+        )
+
+    def test_torch_xcpu_fusion_follows_pytorch_2d_broadcast_for_3d_add(self):
+        """A [seq, hidden] gate broadcasts to [1, seq, hidden], not [seq, 1, hidden]."""
+
+        try:
+            import torch_xcpu  # noqa: F401
+        except ImportError:
+            self.skipTest("torch_xcpu is not available")
+
+        def pointwise(input2, input1, input3):
+            return input1 * input2.sigmoid() + input3
+
+        input2_cpu = torch.arange(32, dtype=torch.float32).reshape(4, 8) / 16
+        input2 = input2_cpu.to(torch.bfloat16).to("mcpu")
+        input1 = torch.empty(4, 4, 8, device="mcpu", dtype=torch.bfloat16).fill_(1)
+        input3 = torch.empty(4, 4, 8, device="mcpu", dtype=torch.bfloat16).fill_(0)
+        ref = pointwise(input2, input1, input3).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "post_grad_custom_post_pass": McpuTorchXcpuFusionPass(),
+        }):
+            opt_fn = torch.compile(pointwise)
+            res, code = run_and_get_cpp_code(opt_fn, input2, input1, input3)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.allclose(ref, res.to("cpu"), atol=1e-2, rtol=1e-2))
+        self.assertIn(
+            "torch_xcpu::fused_sigmoid_mul_add_3d_lastdim_bf16",
+            code_text,
+        )
+
+    def test_torch_xcpu_fusion_follows_pytorch_1d_broadcast_for_3d_add(self):
+        """A [hidden] gate stays right-aligned even when batch == hidden."""
+
+        try:
+            import torch_xcpu  # noqa: F401
+        except ImportError:
+            self.skipTest("torch_xcpu is not available")
+
+        def pointwise(input2, input1, input3):
+            return input1 * input2.sigmoid() + input3
+
+        input2_cpu = torch.arange(4, dtype=torch.float32) / 4
+        input2 = input2_cpu.to(torch.bfloat16).to("mcpu")
+        input1 = torch.empty(4, 2, 4, device="mcpu", dtype=torch.bfloat16).fill_(1)
+        input3 = torch.empty(4, 2, 4, device="mcpu", dtype=torch.bfloat16).fill_(0)
+        ref = pointwise(input2, input1, input3).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "post_grad_custom_post_pass": McpuTorchXcpuFusionPass(),
+        }):
+            opt_fn = torch.compile(pointwise)
+            res, code = run_and_get_cpp_code(opt_fn, input2, input1, input3)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.allclose(ref, res.to("cpu"), atol=1e-2, rtol=1e-2))
+        self.assertIn(
+            "torch_xcpu::fused_sigmoid_mul_add_3d_lastdim_bf16",
+            code_text,
+        )
+
+    def test_torch_xcpu_fusion_fuses_3d_lastdim_contiguous_slice_mul(self):
+        """Cover attention-style gate slices whose last dimension is contiguous."""
+
+        try:
+            import torch_xcpu  # noqa: F401
+        except ImportError:
+            self.skipTest("torch_xcpu is not available")
+
+        def pointwise(input2, input1):
+            return input1 * input2.sigmoid()
+
+        input1 = torch.empty(4, 8, 256, device="mcpu", dtype=torch.bfloat16).fill_(2)
+        input2_base = torch.empty(
+            4, 8, 512, device="mcpu", dtype=torch.bfloat16
+        ).fill_(1)
+        input2 = input2_base[:, :, 256:]
+        ref = pointwise(input2, input1).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "post_grad_custom_post_pass": McpuTorchXcpuFusionPass(),
+        }):
+            opt_fn = torch.compile(pointwise)
+            res, code = run_and_get_cpp_code(opt_fn, input2, input1)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.allclose(ref, res.to("cpu")))
+        self.assertIn(
+            "torch_xcpu::fused_sigmoid_mul_3d_lastdim_bf16",
+            code_text,
+        )
+
+    def test_torch_xcpu_fusion_skips_unsupported_stride(self):
+        """The custom pass only selects kernels matching their layout names."""
+
+        try:
+            import torch_xcpu  # noqa: F401
+        except ImportError:
+            self.skipTest("torch_xcpu is not available")
+
+        def noncontig_mul(a, b):
+            return b * a.sigmoid()
+
+        a_base = torch.empty(2, 3, 16, device="mcpu", dtype=torch.bfloat16).fill_(1)
+        b_base = torch.empty(2, 3, 16, device="mcpu", dtype=torch.bfloat16).fill_(2)
+        a = a_base[:, :, ::2]
+        b = b_base[:, :, ::2]
+        ref = noncontig_mul(a, b).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "post_grad_custom_post_pass": McpuTorchXcpuFusionPass(),
+        }):
+            opt_fn = torch.compile(noncontig_mul)
+            res, code = run_and_get_cpp_code(opt_fn, a, b)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.allclose(ref, res.to("cpu")))
+        self.assertNotIn(
+            "torch_xcpu::fused_sigmoid_mul_3d_lastdim",
+            code_text,
+        )
+
+    def test_torch_xcpu_fusion_skips_mixed_dtype_add(self):
+        """Do not reinterpret mixed dtype tensors as a single fused-op dtype."""
+
+        try:
+            import torch_xcpu  # noqa: F401
+        except ImportError:
+            self.skipTest("torch_xcpu is not available")
+
+        def mixed_dtype_add(a, b, c):
+            return b * a[:, None].sigmoid() + c
+
+        a = torch.empty(4, device="mcpu", dtype=torch.bfloat16).fill_(1)
+        b = torch.empty(4, 8, device="mcpu", dtype=torch.bfloat16).fill_(2)
+        c = torch.empty(4, 8, device="mcpu", dtype=torch.float32).fill_(3)
+        ref = mixed_dtype_add(a, b, c).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "post_grad_custom_post_pass": McpuTorchXcpuFusionPass(),
+        }):
+            opt_fn = torch.compile(mixed_dtype_add)
+            res, code = run_and_get_cpp_code(opt_fn, a, b, c)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.allclose(ref, res.to("cpu"), atol=1e-2, rtol=1e-2))
+        self.assertNotIn(
+            "torch_xcpu::fused_sigmoid_mul_add_3d_lastdim",
+            code_text,
+        )
+
+    def test_torch_xcpu_fusion_skips_mixed_dtype_mul(self):
+        """Do not fuse sigmoid/mul when the two operands have different dtypes."""
+
+        try:
+            import torch_xcpu  # noqa: F401
+        except ImportError:
+            self.skipTest("torch_xcpu is not available")
+
+        def mixed_dtype_mul(a, b):
+            return b * a.sigmoid()
+
+        a = torch.empty(2, 3, 8, device="mcpu", dtype=torch.float32).fill_(1)
+        b = torch.empty(2, 3, 8, device="mcpu", dtype=torch.bfloat16).fill_(2)
+        ref = mixed_dtype_mul(a, b).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "post_grad_custom_post_pass": McpuTorchXcpuFusionPass(),
+        }):
+            opt_fn = torch.compile(mixed_dtype_mul)
+            res, code = run_and_get_cpp_code(opt_fn, a, b)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.allclose(ref, res.to("cpu"), atol=1e-2, rtol=1e-2))
+        self.assertNotIn(
+            "torch_xcpu::fused_sigmoid_mul_3d_lastdim",
+            code_text,
+        )
 
     def test_compile_repeated_calls(self):
         """Compiled function produces consistent results across multiple calls."""

@@ -9,15 +9,20 @@ from torch import fx
 from torch._higher_order_ops.auto_functionalize import auto_functionalized
 from torch._ops import OpOverload
 
+from . import fusion_layout, torch_xcpu_kernels
+from .fusion_layout import Shape3D
+from .torch_xcpu_kernels import (
+    Kernel3DPlan,
+    fused_sigmoid_mul_3d_lastdim_op,
+    fused_sigmoid_mul_add_3d_lastdim_op,
+    plan_sigmoid_mul_3d_lastdim,
+    plan_sigmoid_mul_add_3d_lastdim,
+)
+
 
 def _node_tensor(node: fx.Node) -> torch.Tensor | None:
     value = node.meta.get("val", node.meta.get("example_value"))
     return value if isinstance(value, torch.Tensor) else None
-
-
-def _is_mcpu_tensor(node: fx.Node) -> bool:
-    value = _node_tensor(node)
-    return value is not None and value.device.type in ("mcpu", "privateuseone")
 
 
 def _is_call(node: fx.Node, target: object) -> bool:
@@ -25,7 +30,10 @@ def _is_call(node: fx.Node, target: object) -> bool:
 
 
 def _is_add(node: fx.Node) -> bool:
-    return _is_call(node, torch.ops.aten.add.Tensor) and node.kwargs.get("alpha", 1) == 1
+    return (
+        _is_call(node, torch.ops.aten.add.Tensor)
+        and node.kwargs.get("alpha", 1) == 1
+    )
 
 
 def _is_mul(node: fx.Node) -> bool:
@@ -49,20 +57,40 @@ def _match_sigmoid_mul(node: fx.Node) -> tuple[fx.Node, fx.Node] | None:
     return None
 
 
-def _fused_sigmoid_and_add_op(dtype: torch.dtype) -> OpOverload | None:
-    if dtype == torch.bfloat16:
-        return torch.ops.torch_xcpu.fused_sigmoid_and_add_bf16.default
-    if dtype == torch.float32:
-        return torch.ops.torch_xcpu.fused_sigmoid_and_add_fp32.default
-    return None
+def _reshape_to_3d(
+    graph: fx.Graph,
+    anchor: fx.Node,
+    node: fx.Node,
+    shape: Shape3D,
+) -> fx.Node:
+    value = _node_tensor(node)
+    if value is not None and value.dim() == 3 and tuple(value.shape) == shape:
+        return node
+    with graph.inserting_before(anchor):
+        reshaped = graph.call_function(
+            torch.ops.aten.reshape.default,
+            (node, list(shape)),
+        )
+        if value is not None:
+            reshaped.meta["val"] = value.reshape(shape)
+        return reshaped
 
 
-def _fused_sigmoid_and_mul_op(dtype: torch.dtype) -> OpOverload | None:
-    if dtype == torch.bfloat16:
-        return torch.ops.torch_xcpu.fused_sigmoid_and_mul_bf16.default
-    if dtype == torch.float32:
-        return torch.ops.torch_xcpu.fused_sigmoid_and_mul_fp32.default
-    return None
+def _restore_shape_if_needed(
+    graph: fx.Graph,
+    replacement: fx.Node,
+    plan: Kernel3DPlan,
+    meta_value: torch.Tensor,
+) -> fx.Node:
+    if plan.restore_shape is None:
+        return replacement
+    with graph.inserting_after(replacement):
+        restored = graph.call_function(
+            torch.ops.aten.reshape.default,
+            (replacement, list(plan.restore_shape)),
+        )
+        restored.meta["val"] = meta_value
+        return restored
 
 
 def _replace_with_auto_functionalized(
@@ -107,32 +135,38 @@ def _fuse_sigmoid_and_add(graph: fx.Graph) -> tuple[int, set[fx.Node]]:
         if match is None or not isinstance(mul_node, fx.Node):
             continue
 
-        gate, input_ = match
-        input_value = _node_tensor(input_)
-        gate_value = _node_tensor(gate)
+        input2, input1 = match
+        input1_value = _node_tensor(input1)
+        input2_value = _node_tensor(input2)
         other_value = _node_tensor(other)
-        if input_value is None or gate_value is None or other_value is None:
-            continue
-        if not _is_mcpu_tensor(input_) or input_value.dim() != 2:
-            continue
-        if other_value.shape != input_value.shape:
-            continue
-        if gate_value.dim() not in (1, 2) or gate_value.shape[0] != input_value.shape[0]:
-            continue
-        if gate_value.dim() == 2 and gate_value.shape[1] not in (1, input_value.shape[1]):
+        if input1_value is None or input2_value is None or other_value is None:
             continue
 
-        fused_op = _fused_sigmoid_and_add_op(input_value.dtype)
+        plan = plan_sigmoid_mul_add_3d_lastdim(
+            input1_value,
+            input2_value,
+            other_value,
+        )
+        if plan is None:
+            continue
+
+        fused_op = fused_sigmoid_mul_add_3d_lastdim_op(input1_value.dtype)
         if fused_op is None:
             continue
+
+        input1_3d = _reshape_to_3d(graph, node, input1, plan.input1_shape)
+        input2_3d = _reshape_to_3d(graph, node, input2, plan.input2_shape)
+        assert plan.input3_shape is not None
+        other_3d = _reshape_to_3d(graph, node, other, plan.input3_shape)
 
         replacement = _replace_with_auto_functionalized(
             graph,
             node,
             fused_op,
-            input_,
-            {"gate": gate, "input": input_, "other": other},
+            input1_3d,
+            {"input1": input1_3d, "input2": input2_3d, "input3": other_3d},
         )
+        replacement = _restore_shape_if_needed(graph, replacement, plan, input1_value)
         node.replace_all_uses_with(replacement)
         consumed_mul_nodes.add(mul_node)
         count += 1
@@ -148,17 +182,17 @@ def _fuse_sigmoid_and_mul(graph: fx.Graph, skip_nodes: set[fx.Node]) -> int:
         if match is None:
             continue
 
-        gate, input_ = match
-        input_value = _node_tensor(input_)
-        gate_value = _node_tensor(gate)
-        if input_value is None or gate_value is None:
-            continue
-        if not _is_mcpu_tensor(input_) or input_value.dim() != 3:
-            continue
-        if gate_value.shape != input_value.shape:
+        input2, input1 = match
+        input1_value = _node_tensor(input1)
+        input2_value = _node_tensor(input2)
+        if input1_value is None or input2_value is None:
             continue
 
-        fused_op = _fused_sigmoid_and_mul_op(input_value.dtype)
+        plan = plan_sigmoid_mul_3d_lastdim(input1_value, input2_value)
+        if plan is None:
+            continue
+
+        fused_op = fused_sigmoid_mul_3d_lastdim_op(input1_value.dtype)
         if fused_op is None:
             continue
 
@@ -166,8 +200,8 @@ def _fuse_sigmoid_and_mul(graph: fx.Graph, skip_nodes: set[fx.Node]) -> int:
             graph,
             node,
             fused_op,
-            input_,
-            {"input": input_, "gate": gate},
+            input1,
+            {"input1": input1, "input2": input2},
         )
         node.replace_all_uses_with(replacement)
         count += 1
@@ -190,7 +224,11 @@ class McpuTorchXcpuFusionPass:
     def uuid(self) -> str:
         hasher = hashlib.sha256()
         for item in (
+            fusion_layout,
+            torch_xcpu_kernels,
             McpuTorchXcpuFusionPass,
+            _reshape_to_3d,
+            _restore_shape_if_needed,
             _fuse_sigmoid_and_add,
             _fuse_sigmoid_and_mul,
         ):
