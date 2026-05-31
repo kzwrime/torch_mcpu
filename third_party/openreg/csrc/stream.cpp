@@ -1,11 +1,19 @@
 #include <include/openreg.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
+#include <memory>
 #include <mutex>
-#include <queue>
 #include <set>
 #include <thread>
+#include <vector>
+
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 static std::mutex g_mutex;
 static std::once_flag g_flag;
@@ -18,6 +26,28 @@ static void initialize_registries() {
   int device_count = 0;
   orGetDeviceCount(&device_count);
   g_streams_per_device.resize(device_count);
+}
+
+static int choose_worker_core() {
+  if (const char* env = std::getenv("TORCH_MCPU_STREAM_WORKER_CORE")) {
+    return std::atoi(env);
+  }
+  const int cores = static_cast<int>(std::thread::hardware_concurrency());
+  return cores > 1 ? cores - 1 : -1;
+}
+
+static void pin_this_thread_to_core(int core) {
+#if defined(__linux__)
+  if (core < 0) {
+    return;
+  }
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(core, &cpuset);
+  pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+#else
+  (void)core;
+#endif
 }
 
 struct orEventImpl {
@@ -33,57 +63,52 @@ struct orEvent {
   std::shared_ptr<orEventImpl> impl;
 };
 
-struct orStream {
-  std::queue<std::function<void()>> tasks;
-  std::mutex mtx;
-  std::condition_variable cv;
-  std::thread worker;
-  std::atomic<bool> stop_flag{false};
-  std::atomic<int> running_tasks{0};
-  int device_index = -1;
+orStream::orStream() {
+  worker = std::thread([this] {
+    pin_this_thread_to_core(choose_worker_core());
+    workerLoop();
+  });
+}
 
-  orStream() {
-    worker = std::thread([this] {
-      while (true) {
-        std::function<void()> task;
-        {
-          std::unique_lock<std::mutex> lock(this->mtx);
-          this->cv.wait(lock, [this] {
-            return this->stop_flag.load() || !this->tasks.empty();
-          });
-          if (this->stop_flag.load() && this->tasks.empty()) {
-            return;
-          }
-          task = std::move(this->tasks.front());
-          this->tasks.pop();
-        }
-        this->running_tasks.fetch_add(1);
-        task();
-        this->running_tasks.fetch_sub(1);
-      }
-    });
-  }
-
-  ~orStream() {
-    stop_flag.store(true);
-    cv.notify_one();
+orStream::~orStream() {
+  synchronize();
+  stop.store(true, std::memory_order_release);
+  if (worker.joinable()) {
     worker.join();
   }
-};
+}
 
-orError_t openreg::addTaskToStream(
-    orStream_t stream,
-    std::function<void()> task) {
-  if (!stream)
-    return orErrorUnknown;
+void orStream::workerLoop() {
+  std::uint64_t local_head = head.load(std::memory_order_relaxed);
+  while (true) {
+    const auto local_tail = tail.load(std::memory_order_acquire);
+    if (local_head == local_tail) {
+      if (stop.load(std::memory_order_acquire)) {
+        return;
+      }
+      openreg::cpu_relax();
+      continue;
+    }
 
-  {
-    std::lock_guard<std::mutex> lock(stream->mtx);
-    stream->tasks.push(std::move(task));
+    auto& slot = slots[local_head & kQueueMask];
+    slot.run(slot.storage);
+    slot.destroy(slot.storage);
+    ++local_head;
+    head.store(local_head, std::memory_order_release);
+    completed.store(local_head, std::memory_order_release);
   }
+}
 
-  stream->cv.notify_one();
-  return orSuccess;
+void orStream::synchronize() {
+  const auto target = tail.load(std::memory_order_acquire);
+  while (completed.load(std::memory_order_acquire) < target) {
+    openreg::cpu_relax();
+  }
+}
+
+bool orStream::idle() const {
+  return completed.load(std::memory_order_acquire) ==
+      tail.load(std::memory_order_acquire);
 }
 
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
@@ -128,20 +153,16 @@ orError_t orEventRecord(orEvent_t event, orStream_t stream) {
 
   auto event_impl = event->impl;
   event_impl->completed.store(false);
-  auto record_task = [event_impl]() {
+  return orLaunchKernel(stream, [event_impl]() {
     if (event_impl->timing_enabled) {
       event_impl->completion_time = std::chrono::high_resolution_clock::now();
     }
-
     {
       std::lock_guard<std::mutex> lock(event_impl->mtx);
       event_impl->completed.store(true);
     }
-
     event_impl->cv.notify_all();
-  };
-
-  return openreg::addTaskToStream(stream, record_task);
+  });
 }
 
 orError_t orEventSynchronize(orEvent_t event) {
@@ -206,8 +227,7 @@ orError_t orStreamCreateWithPriority(
   int current_device = 0;
   orGetDevice(&current_device);
 
-  orStream_t new_stream = nullptr;
-  new_stream = new orStream();
+  orStream_t new_stream = new orStream();
   new_stream->device_index = current_device;
 
   {
@@ -231,10 +251,7 @@ orError_t orStreamCreate(orStream_t* stream) {
 orError_t orStreamGetPriority(
     [[maybe_unused]] orStream_t stream,
     int* priority) {
-  // Since OpenReg has only one priority level, the following code
-  // returns 0 directly for convenience.
   *priority = 0;
-
   return orSuccess;
 }
 
@@ -246,7 +263,8 @@ orError_t orStreamDestroy(orStream_t stream) {
     std::lock_guard<std::mutex> lock(g_mutex);
 
     int device_idx = stream->device_index;
-    if (device_idx >= 0 && device_idx < g_streams_per_device.size()) {
+    if (device_idx >= 0 &&
+        device_idx < static_cast<int>(g_streams_per_device.size())) {
       g_streams_per_device[device_idx].erase(stream);
     }
   }
@@ -260,24 +278,15 @@ orError_t orStreamQuery(orStream_t stream) {
     return orErrorUnknown;
   }
 
-  std::lock_guard<std::mutex> lock(stream->mtx);
-  return stream->tasks.empty() && stream->running_tasks.load() == 0
-      ? orSuccess
-      : orErrorNotReady;
+  return stream->idle() ? orSuccess : orErrorNotReady;
 }
 
 orError_t orStreamSynchronize(orStream_t stream) {
   if (!stream)
     return orErrorUnknown;
 
-  orEvent_t event;
-  orEventCreate(&event);
-  orEventRecord(event, stream);
-
-  orError_t status = orEventSynchronize(event);
-  orEventDestroy(event);
-
-  return status;
+  stream->synchronize();
+  return orSuccess;
 }
 
 orError_t orStreamWaitEvent(orStream_t stream, orEvent_t event, unsigned int) {
@@ -285,12 +294,10 @@ orError_t orStreamWaitEvent(orStream_t stream, orEvent_t event, unsigned int) {
     return orErrorUnknown;
 
   auto event_impl = event->impl;
-  auto wait_task = [event_impl]() {
+  return orLaunchKernel(stream, [event_impl]() {
     std::unique_lock<std::mutex> lock(event_impl->mtx);
     event_impl->cv.wait(lock, [&] { return event_impl->completed.load(); });
-  };
-
-  return openreg::addTaskToStream(stream, wait_task);
+  });
 }
 
 orError_t orDeviceGetStreamPriorityRange(
@@ -300,7 +307,6 @@ orError_t orDeviceGetStreamPriorityRange(
     return orErrorUnknown;
   }
 
-  // OpenReg priority levels are 0 and 1
   *leastPriority = 0;
   *greatestPriority = 1;
   return orSuccess;
