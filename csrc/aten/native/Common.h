@@ -27,7 +27,16 @@
 
 #include <include/openreg.h>
 
+#include "runtime/OpenRegStream.h"
+
 namespace at::native::mcpu {
+
+inline void synchronize_if_mcpu(const at::TensorBase& tensor) {
+  if (tensor.defined() &&
+      tensor.device().type() == c10::DeviceType::PrivateUse1) {
+    c10::mcpu::getCurrentMcpuStream(tensor.device().index()).synchronize();
+  }
+}
 
 class MemoryGuard {
  public:

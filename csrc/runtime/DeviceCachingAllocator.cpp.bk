@@ -81,6 +81,9 @@ namespace c10::mcpu { // [1]
 using namespace c10::CachingAllocator;
 using namespace c10::CachingDeviceAllocator;
 
+// newly allocated memory with 512-byte alignment.
+constexpr size_t kDeviceAlignment = 512;
+
 namespace {
 using stream_set = ska::flat_hash_set<McpuStream>; // [2]
 
@@ -921,36 +924,7 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
   }
 
   void copy_data(void* dest, const void* src, std::size_t count) const final {
-#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
-    orPointerAttributes dest_attr;
-    orPointerAttributes src_attr;
-    const bool dest_is_device =
-        orPointerGetAttributes(&dest_attr, dest) == orSuccess &&
-        dest_attr.type == orMemoryTypeDevice;
-    const bool src_is_device =
-        orPointerGetAttributes(&src_attr, src) == orSuccess &&
-        src_attr.type == orMemoryTypeDevice;
-
-    if (dest_is_device) {
-      MCPU_CHECK(orMemoryUnprotect(dest_attr.pointer));
-    }
-    if (src_is_device &&
-        (!dest_is_device || src_attr.pointer != dest_attr.pointer)) {
-      MCPU_CHECK(orMemoryUnprotect(src_attr.pointer));
-    }
-
     std::memcpy(dest, src, count); // [1] SYCL queue memcpy → std::memcpy
-
-    if (src_is_device &&
-        (!dest_is_device || src_attr.pointer != dest_attr.pointer)) {
-      MCPU_CHECK(orMemoryProtect(src_attr.pointer));
-    }
-    if (dest_is_device) {
-      MCPU_CHECK(orMemoryProtect(dest_attr.pointer));
-    }
-#else
-    std::memcpy(dest, src, count); // [1] SYCL queue memcpy → std::memcpy
-#endif
   }
 
   DeviceStats getDeviceStats(DeviceIndex device) override {

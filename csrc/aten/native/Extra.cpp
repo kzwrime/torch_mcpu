@@ -1,5 +1,6 @@
 #include "Extra.h"
 
+#include "runtime/McpuKernelLaunch.h"
 #include "runtime/OpenRegException.h"
 #include "runtime/OpenRegStream.h"
 
@@ -235,14 +236,13 @@ at::Tensor custom_abs(at::Tensor x) {
 
 at::Tensor& stream_sleep_fill_(at::Tensor& x, int64_t value, int64_t sleep_ms) {
   check_stream_test_tensor(x);
-  auto stream = c10::mcpu::getCurrentMcpuStream(x.device().index());
 
-  MCPU_CHECK(openreg::addTaskToStream(stream, [x, value, sleep_ms]() mutable {
+  at::mcpu::launch_kernel(x, [x, value, sleep_ms]() mutable {
     sleep_for_ms(sleep_ms);
-    MemoryGuard guard(x);
+    at::mcpu::KernelMemoryGuard guard(x);
     auto* data = x.data_ptr<int64_t>();
     std::fill_n(data, x.numel(), value);
-  }));
+  });
 
   return x;
 }
@@ -257,12 +257,11 @@ at::Tensor& stream_sleep_copy_(
       dst.sizes() == src.sizes(),
       "stream_sleep_copy_ expects src/dst with identical shapes");
 
-  auto stream = c10::mcpu::getCurrentMcpuStream(dst.device().index());
-  MCPU_CHECK(openreg::addTaskToStream(stream, [dst, src, sleep_ms]() mutable {
+  at::mcpu::launch_kernel(dst, [dst, src, sleep_ms]() mutable {
     sleep_for_ms(sleep_ms);
-    MemoryGuard guard(dst, src);
+    at::mcpu::KernelMemoryGuard guard(dst, src);
     std::copy_n(src.data_ptr<int64_t>(), src.numel(), dst.data_ptr<int64_t>());
-  }));
+  });
 
   return dst;
 }

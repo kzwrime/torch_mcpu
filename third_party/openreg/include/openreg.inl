@@ -9,6 +9,14 @@
 namespace openreg {
 OPENREG_EXPORT orError_t
 addTaskToStream(orStream* stream, std::function<void()> task);
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+OPENREG_EXPORT bool isInKernelTask();
+OPENREG_EXPORT void setInKernelTask(bool enabled);
+#else
+inline bool isInKernelTask() {
+  return true;
+}
+#endif
 }
 
 template <typename Func, typename... Args>

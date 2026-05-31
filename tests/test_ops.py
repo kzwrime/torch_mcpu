@@ -201,6 +201,7 @@ class TestFallback(TestCase):
         idx = torch.tensor([1, 0], device="mcpu", dtype=torch.long)
 
         arange_res = torch.arange(1, 7, 2, device="mcpu", dtype=torch.int64)
+        torch.mcpu.synchronize()
         self.assertEqual(arange_res, torch.tensor([1, 3, 5], dtype=torch.int64))
         self.assertEqual(arange_res.device.type, "mcpu")
 
@@ -227,6 +228,7 @@ class TestFallback(TestCase):
 
         filled = torch.empty(2, 3, device="mcpu", dtype=torch.float32)
         filled.fill_(7)
+        torch.mcpu.synchronize()
         self.assertEqual(filled, torch.full((2, 3), 7, dtype=torch.float32))
         self.assertEqual(filled.device.type, "mcpu")
 

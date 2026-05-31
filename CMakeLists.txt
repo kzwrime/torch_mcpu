@@ -17,6 +17,11 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 
+option(TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+       "Enable page-level protection for simulated mcpu device memory" ON)
+option(TORCH_MCPU_ENABLE_ASYNC_LAUNCH
+       "Enable stream worker queue for launched mcpu kernels" ON)
+
 if(APPLE)
   set(CMAKE_INSTALL_RPATH "@loader_path/lib;@loader_path;${PYTORCH_INSTALL_DIR}/lib")
 elseif(UNIX)

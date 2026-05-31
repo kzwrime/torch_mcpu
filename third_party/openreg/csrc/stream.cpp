@@ -10,6 +10,9 @@
 static std::mutex g_mutex;
 static std::once_flag g_flag;
 static std::vector<std::set<orStream_t>> g_streams_per_device;
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+thread_local bool g_in_kernel_task = false;
+#endif
 
 static void initialize_registries() {
   int device_count = 0;
@@ -36,6 +39,7 @@ struct orStream {
   std::condition_variable cv;
   std::thread worker;
   std::atomic<bool> stop_flag{false};
+  std::atomic<int> running_tasks{0};
   int device_index = -1;
 
   orStream() {
@@ -53,7 +57,9 @@ struct orStream {
           task = std::move(this->tasks.front());
           this->tasks.pop();
         }
+        this->running_tasks.fetch_add(1);
         task();
+        this->running_tasks.fetch_sub(1);
       }
     });
   }
@@ -79,6 +85,16 @@ orError_t openreg::addTaskToStream(
   stream->cv.notify_one();
   return orSuccess;
 }
+
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+bool openreg::isInKernelTask() {
+  return g_in_kernel_task;
+}
+
+void openreg::setInKernelTask(bool enabled) {
+  g_in_kernel_task = enabled;
+}
+#endif
 
 orError_t orEventCreateWithFlags(orEvent_t* event, unsigned int flags) {
   if (!event)
@@ -245,7 +261,9 @@ orError_t orStreamQuery(orStream_t stream) {
   }
 
   std::lock_guard<std::mutex> lock(stream->mtx);
-  return stream->tasks.empty() ? orSuccess : orErrorNotReady;
+  return stream->tasks.empty() && stream->running_tasks.load() == 0
+      ? orSuccess
+      : orErrorNotReady;
 }
 
 orError_t orStreamSynchronize(orStream_t stream) {

@@ -4,6 +4,7 @@
 //   _temperature_kernel — divide logits by per-request temperature
 
 #include "common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 namespace {
 
@@ -56,13 +57,28 @@ void vllm_temperature_kernel_impl(
   const float* temp_ptr = temperature.data_ptr<float>();
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_temperature_kernel", {
-    vllm_temperature_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(),
-        num_tokens,
-        logits_stride,
-        idx_ptr,
-        temp_ptr,
-        vocab_size);
+    scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
+    at::mcpu::launch_kernel(
+        logits,
+        [logits,
+         expanded_idx_mapping,
+         temperature,
+         num_tokens,
+         logits_stride,
+         logits_ptr,
+         idx_ptr,
+         temp_ptr,
+         vocab_size]() mutable {
+          at::mcpu::KernelMemoryGuard guard(
+              logits, expanded_idx_mapping, temperature);
+          vllm_temperature_kernel_typed<scalar_t>(
+              logits_ptr,
+              num_tokens,
+              logits_stride,
+              idx_ptr,
+              temp_ptr,
+              vocab_size);
+        });
   });
 }
 

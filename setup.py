@@ -48,6 +48,10 @@ def build_deps():
         + os.path.realpath(os.path.join(BASE_DIR, "torch_mcpu")),
         "-DPYTHON_INCLUDE_DIR=" + sysconfig.get_paths().get("include"),
         "-DPYTORCH_INSTALL_DIR=" + get_pytorch_dir(),
+        "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION="
+        + os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "ON"),
+        "-DTORCH_MCPU_ENABLE_ASYNC_LAUNCH="
+        + os.getenv("TORCH_MCPU_ENABLE_ASYNC_LAUNCH", "ON"),
     ]
 
     subprocess.check_call(

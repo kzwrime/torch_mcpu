@@ -6,6 +6,7 @@
 // All logits below threshold are set to -inf.
 
 #include "common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 namespace {
 
@@ -83,13 +84,28 @@ void vllm_min_p_kernel_impl(
   const float* min_p_ptr = min_p.data_ptr<float>();
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_min_p_kernel", {
-    vllm_min_p_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(),
-        num_tokens,
-        logits_stride,
-        idx_ptr,
-        min_p_ptr,
-        vocab_size);
+    scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
+    at::mcpu::launch_kernel(
+        logits,
+        [logits,
+         expanded_idx_mapping,
+         min_p,
+         num_tokens,
+         logits_stride,
+         logits_ptr,
+         idx_ptr,
+         min_p_ptr,
+         vocab_size]() mutable {
+          at::mcpu::KernelMemoryGuard guard(
+              logits, expanded_idx_mapping, min_p);
+          vllm_min_p_kernel_typed<scalar_t>(
+              logits_ptr,
+              num_tokens,
+              logits_stride,
+              idx_ptr,
+              min_p_ptr,
+              vocab_size);
+        });
   });
 }
 

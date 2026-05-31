@@ -88,6 +88,8 @@ at::Tensor _copy_from(
   TORCH_CHECK(self.defined(), "Source tensor (self) is not defined.");
   TORCH_CHECK(dst.defined(), "Destination tensor (dst) is not defined.");
 
+  synchronize_if_mcpu(self);
+  synchronize_if_mcpu(dst);
   MemoryGuard guard(self, dst);
 
   if (self.device() == dst.device()) {
@@ -139,6 +141,7 @@ at::Tensor _copy_from_and_resize(
 }
 
 at::Scalar _local_scalar_dense(const at::Tensor& self) {
+  synchronize_if_mcpu(self);
   MemoryGuard guard(self);
   return at::native::_local_scalar_dense_cpu(self);
 }

@@ -8,6 +8,7 @@
 //       all_token_ids[req, num_computed + 1 + i]
 
 #include "common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 namespace {
 
@@ -27,25 +28,48 @@ void vllm_prompt_logprobs_token_ids_impl(
 
   int64_t num_reqs = idx_mapping.size(0);
   int64_t token_ids_stride = all_token_ids.stride(0);
-
   int64_t* out_ptr = prompt_logprobs_token_ids.data_ptr<int64_t>();
   const int32_t* qs_ptr = query_start_loc.data_ptr<int32_t>();
   const int32_t* idx_ptr = idx_mapping.data_ptr<int32_t>();
   const int32_t* ncomp_ptr = num_computed_tokens.data_ptr<int32_t>();
   const int32_t* tids_ptr = all_token_ids.data_ptr<int32_t>();
 
-  for (int64_t batch_idx = 0; batch_idx < num_reqs; batch_idx++) {
-    int32_t req = idx_ptr[batch_idx];
-    int32_t query_start = qs_ptr[batch_idx];
-    int32_t query_end = qs_ptr[batch_idx + 1];
-    int32_t query_len = query_end - query_start;
-    int32_t num_computed = ncomp_ptr[req];
-    const int32_t* req_tokens = tids_ptr + (int64_t)req * token_ids_stride;
+  at::mcpu::launch_kernel(
+      prompt_logprobs_token_ids,
+      [prompt_logprobs_token_ids,
+       query_start_loc,
+       idx_mapping,
+       num_computed_tokens,
+       all_token_ids,
+       num_reqs,
+       token_ids_stride,
+       out_ptr,
+       qs_ptr,
+       idx_ptr,
+       ncomp_ptr,
+       tids_ptr]() mutable {
+        at::mcpu::KernelMemoryGuard guard(
+            prompt_logprobs_token_ids,
+            query_start_loc,
+            idx_mapping,
+            num_computed_tokens,
+            all_token_ids);
 
-    for (int32_t i = 0; i < query_len; i++) {
-      out_ptr[query_start + i] = (int64_t)req_tokens[num_computed + 1 + i];
-    }
-  }
+        for (int64_t batch_idx = 0; batch_idx < num_reqs; batch_idx++) {
+          int32_t req = idx_ptr[batch_idx];
+          int32_t query_start = qs_ptr[batch_idx];
+          int32_t query_end = qs_ptr[batch_idx + 1];
+          int32_t query_len = query_end - query_start;
+          int32_t num_computed = ncomp_ptr[req];
+          const int32_t* req_tokens =
+              tids_ptr + (int64_t)req * token_ids_stride;
+
+          for (int32_t i = 0; i < query_len; i++) {
+            out_ptr[query_start + i] =
+                (int64_t)req_tokens[num_computed + 1 + i];
+          }
+        }
+      });
 }
 
 } // namespace

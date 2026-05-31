@@ -12,6 +12,9 @@ struct Block {
   int device = -1;
   void* pointer = nullptr;
   size_t size = 0;
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  int refcount = 0;
+#endif
 };
 
 class MemoryManager {
@@ -26,7 +29,14 @@ class MemoryManager {
       return orErrorUnknown;
 
     std::lock_guard<std::mutex> lock(m_mutex);
-    constexpr size_t alignment = openreg::kAlignment;
+    const size_t alignment =
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+        type == orMemoryType::orMemoryTypeDevice
+        ? static_cast<size_t>(openreg::get_pagesize())
+        : openreg::kAlignment;
+#else
+        openreg::kAlignment;
+#endif
     size_t aligned_size = ((size - 1) / alignment + 1) * alignment;
     void* mem = nullptr;
     int current_device = -1;
@@ -35,11 +45,34 @@ class MemoryManager {
       orGetDevice(&current_device);
     }
 
-    if (openreg::alloc(&mem, alignment, aligned_size) != 0) {
-      return orErrorUnknown;
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    if (type == orMemoryType::orMemoryTypeDevice) {
+      mem = openreg::mmap(aligned_size);
+      if (!mem) {
+        return orErrorUnknown;
+      }
+      if (openreg::mprotect(mem, aligned_size, F_PROT_NONE) != 0) {
+        openreg::munmap(mem, aligned_size);
+        return orErrorUnknown;
+      }
+    } else
+#endif
+    {
+      if (openreg::alloc(&mem, alignment, aligned_size) != 0) {
+        return orErrorUnknown;
+      }
     }
 
-    m_registry[mem] = {type, current_device, mem, aligned_size};
+    m_registry[mem] = {
+        type,
+        current_device,
+        mem,
+        aligned_size
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+        ,
+        0
+#endif
+    };
     *ptr = mem;
     return orSuccess;
   }
@@ -54,7 +87,15 @@ class MemoryManager {
       return orErrorUnknown;
 
     const auto& info = it->second;
-    openreg::free(info.pointer);
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    if (info.type == orMemoryType::orMemoryTypeDevice) {
+      openreg::mprotect(info.pointer, info.size, F_PROT_READ | F_PROT_WRITE);
+      openreg::munmap(info.pointer, info.size);
+    } else
+#endif
+    {
+      openreg::free(info.pointer);
+    }
 
     m_registry.erase(it);
     return orSuccess;
@@ -95,7 +136,19 @@ class MemoryManager {
         break;
     }
 
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    if (unprotectNoLock(dst_info) != orSuccess ||
+        unprotectNoLock(src_info) != orSuccess) {
+      return orErrorUnknown;
+    }
+#endif
     ::memcpy(dst, src, count);
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    if (protectNoLock(src_info) != orSuccess ||
+        protectNoLock(dst_info) != orSuccess) {
+      return orErrorUnknown;
+    }
+#endif
 
     return orSuccess;
   }
@@ -122,8 +175,54 @@ class MemoryManager {
     return orSuccess;
   }
 
+  orError_t unprotect(void* ptr) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return unprotectNoLock(getBlockInfoNoLock(ptr));
+#else
+    return orSuccess;
+#endif
+  }
+
+  orError_t protect(void* ptr) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return protectNoLock(getBlockInfoNoLock(ptr));
+#else
+    return orSuccess;
+#endif
+  }
+
  private:
   MemoryManager() = default;
+
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  orError_t unprotectNoLock(Block* info) {
+    if (info && info->type == orMemoryType::orMemoryTypeDevice) {
+      if (info->refcount == 0 &&
+          openreg::mprotect(
+              info->pointer, info->size, F_PROT_READ | F_PROT_WRITE) != 0) {
+        return orErrorUnknown;
+      }
+      info->refcount++;
+    }
+    return orSuccess;
+  }
+
+  orError_t protectNoLock(Block* info) {
+    if (info && info->type == orMemoryType::orMemoryTypeDevice) {
+      if (info->refcount <= 0) {
+        return orErrorUnknown;
+      }
+      if (info->refcount == 1 &&
+          openreg::mprotect(info->pointer, info->size, F_PROT_NONE) != 0) {
+        return orErrorUnknown;
+      }
+      info->refcount--;
+    }
+    return orSuccess;
+  }
+#endif
 
   Block* getBlockInfoNoLock(const void* ptr) {
     auto it = m_registry.upper_bound(const_cast<void*>(ptr));
@@ -194,11 +293,9 @@ orError_t orPointerGetAttributes(
 }
 
 orError_t orMemoryUnprotect(void* devPtr) {
-  // No-op: protection functionality removed
-  return orSuccess;
+  return MemoryManager::getInstance().unprotect(devPtr);
 }
 
 orError_t orMemoryProtect(void* devPtr) {
-  // No-op: protection functionality removed
-  return orSuccess;
+  return MemoryManager::getInstance().protect(devPtr);
 }

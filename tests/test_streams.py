@@ -7,7 +7,9 @@ from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, T
 
 class TestStream(TestCase):
     def _stream_test_tensor(self, value=0, size=8):
-        return torch.full((size,), value, dtype=torch.int64, device="mcpu")
+        tensor = torch.full((size,), value, dtype=torch.int64, device="mcpu")
+        torch.mcpu.synchronize()
+        return tensor
 
     @skipIfTorchDynamo()
     def test_stream_create(self):
