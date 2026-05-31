@@ -1,3 +1,6 @@
+import os
+import time
+
 import torch
 
 import torch_mcpu._C  # type: ignore[misc]
@@ -7,6 +10,55 @@ from .amp import get_amp_supported_dtype  # noqa: F401
 from typing import Optional, Any
 
 _initialized = False
+_TORCH_STREAM_BASE = torch.Stream
+_TORCH_EVENT_BASE = torch.Event
+_SYNC_DELAY_SECONDS_ENV = "TORCH_MCPU_SYNC_DELAY_SECONDS"
+_DISABLE_SYNC_DELAY_ENV = "TORCH_MCPU_DISABLE_SYNC_DELAY"
+
+# Defaults:
+# - TORCH_MCPU_DISABLE_SYNC_DELAY: enabled by default, so no sync delay is added.
+# - TORCH_MCPU_SYNC_DELAY_SECONDS: 10.0 seconds when sync delay is explicitly enabled.
+_DEFAULT_DISABLE_SYNC_DELAY = "1"
+_DEFAULT_SYNC_DELAY_SECONDS = "10.0"
+
+
+def _env_flag_enabled(value: str, default: bool) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _sync_delay_seconds() -> float:
+    disable_delay = _env_flag_enabled(
+        os.getenv(_DISABLE_SYNC_DELAY_ENV, _DEFAULT_DISABLE_SYNC_DELAY),
+        default=True,
+    )
+    if disable_delay:
+        return 0.0
+
+    raw_delay = os.getenv(_SYNC_DELAY_SECONDS_ENV, _DEFAULT_SYNC_DELAY_SECONDS)
+    try:
+        return max(0.0, float(raw_delay))
+    except ValueError:
+        return float(_DEFAULT_SYNC_DELAY_SECONDS)
+
+
+def _is_mcpu_sync_target(obj: Any) -> bool:
+    device = getattr(obj, "device", None)
+    device_type = getattr(device, "type", None)
+    return device_type in {"mcpu", "privateuseone"}
+
+
+def _maybe_delay_sync(obj: Any) -> None:
+    if not _is_mcpu_sync_target(obj):
+        return
+
+    delay_seconds = _sync_delay_seconds()
+    if delay_seconds > 0:
+        time.sleep(delay_seconds)
 
 
 class device:
@@ -28,13 +80,29 @@ class device:
         self.idx = torch_mcpu._C._set_device(self.prev_idx)
         return False
 
-class Stream(torch.Stream):
+class Stream(_TORCH_STREAM_BASE):
     def __new__(cls, device=None, priority=0, **kwargs):
         if device is None:
             return super().__new__(cls, priority=priority, **kwargs)
         else:
             with torch.mcpu.device(device):
                 return super().__new__(cls, priority=priority, **kwargs)
+
+    def query(self):
+        _maybe_delay_sync(self)
+        return super().query()
+
+    def synchronize(self) -> None:
+        _maybe_delay_sync(self)
+        return super().synchronize()
+
+    def wait_event(self, event) -> None:
+        _maybe_delay_sync(self)
+        return super().wait_event(event)
+
+    def wait_stream(self, stream) -> None:
+        _maybe_delay_sync(self)
+        return super().wait_stream(stream)
 
     @classmethod
     def priority_range(cls):
@@ -55,6 +123,26 @@ class Stream(torch.Stream):
         if stream_type == 0x6:  # DEFAULT stream
             return 0
         return stream_type
+
+
+class Event(_TORCH_EVENT_BASE):
+    def query(self):
+        _maybe_delay_sync(self)
+        return super().query()
+
+    def synchronize(self) -> None:
+        _maybe_delay_sync(self)
+        return super().synchronize()
+
+    def wait(self, stream=None) -> None:
+        _maybe_delay_sync(self)
+        if stream is None:
+            return super().wait()
+        return super().wait(stream)
+
+    def elapsed_time(self, end_event) -> float:
+        _maybe_delay_sync(self)
+        return super().elapsed_time(end_event)
 
 class StreamContext:
     r"""Context-manager that selects a given stream.
@@ -135,6 +223,8 @@ def set_stream(stream: Optional[Stream]) -> None:
 
 
 def synchronize(device=None) -> None:
+    delay_target = current_stream(device)
+    _maybe_delay_sync(delay_target)
     torch.accelerator.synchronize(device)
 
 

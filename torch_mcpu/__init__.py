@@ -18,6 +18,8 @@ from torch_mcpu.compile import setup_mcpu_compile
 torch.utils.rename_privateuse1_backend("mcpu")
 torch._register_device_module("mcpu", torch_mcpu.openreg)
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
+torch.Stream = torch_mcpu.openreg.Stream
+torch.Event = torch_mcpu.openreg.Event
 torch_mcpu.dlpack.patch_mcpu_dlpack()
 setup_mcpu_compile()
 torch_mcpu.distributed.patch_mcpu_distributed()
