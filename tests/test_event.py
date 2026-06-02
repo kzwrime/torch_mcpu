@@ -50,6 +50,52 @@ class TestEvent(TestCase):
         self.assertNotEqual(event1.event_id, event2.event_id)
 
     @skipIfTorchDynamo()
+    def test_event_re_record_waits_for_latest_version(self):
+        stream1 = torch.Stream(device="mcpu:0")
+        stream2 = torch.Stream(device="mcpu:0")
+        marker1 = torch.zeros(1, dtype=torch.int64, device="mcpu")
+        marker2 = torch.zeros(1, dtype=torch.int64, device="mcpu")
+        event = torch.Event(device="mcpu:0")
+        torch.mcpu.synchronize()
+
+        with stream1:
+            torch.ops.mcpu.stream_sleep_fill_(marker1, 1, 100)
+            event.record(stream1)
+
+        with stream2:
+            torch.ops.mcpu.stream_sleep_fill_(marker2, 1, 2000)
+            event.record(stream2)
+
+        stream1.synchronize()
+        self.assertTrue(stream1.query())
+        self.assertFalse(event.query())
+
+        event.synchronize()
+        self.assertTrue(event.query())
+        self.assertEqual(torch.ops.mcpu.first_element_int(marker2), 1)
+
+    @skipIfTorchDynamo()
+    def test_stream_wait_event_waits_for_record_version_at_call(self):
+        producer = torch.Stream(device="mcpu:0")
+        consumer = torch.Stream(device="mcpu:0")
+        src = torch.zeros(8, dtype=torch.int64, device="mcpu")
+        dst = torch.full((8,), -1, dtype=torch.int64, device="mcpu")
+        event = torch.Event(device="mcpu:0")
+        torch.mcpu.synchronize()
+
+        with producer:
+            torch.ops.mcpu.stream_sleep_fill_(src, 23, 300)
+            event.record(producer)
+
+        with consumer:
+            consumer.wait_event(event)
+            torch.ops.mcpu.stream_sleep_copy_(dst, src, 0)
+
+        self.assertFalse(consumer.query())
+        consumer.synchronize()
+        self.assertEqual(torch.ops.mcpu.first_element_int(dst), 23)
+
+    @skipIfTorchDynamo()
     def test_event_elapsed_time(self):
         stream = torch.Stream(device="mcpu:0")
 

@@ -53,7 +53,8 @@ static void pin_this_thread_to_core(int core) {
 struct orEventImpl {
   std::mutex mtx;
   std::condition_variable cv;
-  std::atomic<bool> completed{true};
+  std::uint64_t recorded_version = 0;
+  std::uint64_t completed_version = 0;
   int device_index = -1;
   bool timing_enabled{false};
   std::chrono::high_resolution_clock::time_point completion_time;
@@ -152,15 +153,20 @@ orError_t orEventRecord(orEvent_t event, orStream_t stream) {
     return orErrorUnknown;
 
   auto event_impl = event->impl;
-  event_impl->completed.store(false);
-  return orLaunchKernel(stream, [event_impl]() {
+  std::uint64_t version = 0;
+  {
+    std::lock_guard<std::mutex> lock(event_impl->mtx);
+    version = ++event_impl->recorded_version;
+  }
+  return orLaunchKernel(stream, [event_impl, version]() {
+    std::lock_guard<std::mutex> lock(event_impl->mtx);
+    if (version <= event_impl->completed_version) {
+      return;
+    }
     if (event_impl->timing_enabled) {
       event_impl->completion_time = std::chrono::high_resolution_clock::now();
     }
-    {
-      std::lock_guard<std::mutex> lock(event_impl->mtx);
-      event_impl->completed.store(true);
-    }
+    event_impl->completed_version = version;
     event_impl->cv.notify_all();
   });
 }
@@ -171,7 +177,10 @@ orError_t orEventSynchronize(orEvent_t event) {
 
   auto event_impl = event->impl;
   std::unique_lock<std::mutex> lock(event_impl->mtx);
-  event_impl->cv.wait(lock, [&] { return event_impl->completed.load(); });
+  const auto target_version = event_impl->recorded_version;
+  event_impl->cv.wait(lock, [&] {
+    return event_impl->completed_version >= target_version;
+  });
 
   return orSuccess;
 }
@@ -180,7 +189,11 @@ orError_t orEventQuery(orEvent_t event) {
   if (!event)
     return orErrorUnknown;
 
-  return event->impl->completed.load() ? orSuccess : orErrorNotReady;
+  auto event_impl = event->impl;
+  std::lock_guard<std::mutex> lock(event_impl->mtx);
+  return event_impl->completed_version >= event_impl->recorded_version
+      ? orSuccess
+      : orErrorNotReady;
 }
 
 orError_t orEventElapsedTime(float* ms, orEvent_t start, orEvent_t end) {
@@ -198,11 +211,25 @@ orError_t orEventElapsedTime(float* ms, orEvent_t start, orEvent_t end) {
     return orErrorUnknown;
   }
 
-  if (!start_impl->completed.load() || !end_impl->completed.load()) {
+  auto snapshot_completion_time = [](const std::shared_ptr<orEventImpl>& impl,
+                                     auto* completion_time) {
+    std::lock_guard<std::mutex> lock(impl->mtx);
+    if (impl->recorded_version == 0 ||
+        impl->completed_version < impl->recorded_version) {
+      return false;
+    }
+    *completion_time = impl->completion_time;
+    return true;
+  };
+
+  std::chrono::high_resolution_clock::time_point start_completion_time;
+  std::chrono::high_resolution_clock::time_point end_completion_time;
+  if (!snapshot_completion_time(start_impl, &start_completion_time) ||
+      !snapshot_completion_time(end_impl, &end_completion_time)) {
     return orErrorUnknown;
   }
 
-  auto duration = end_impl->completion_time - start_impl->completion_time;
+  auto duration = end_completion_time - start_completion_time;
   *ms = std::chrono::duration_cast<std::chrono::duration<float, std::milli>>(
             duration)
             .count();
@@ -294,9 +321,16 @@ orError_t orStreamWaitEvent(orStream_t stream, orEvent_t event, unsigned int) {
     return orErrorUnknown;
 
   auto event_impl = event->impl;
-  return orLaunchKernel(stream, [event_impl]() {
+  std::uint64_t target_version = 0;
+  {
+    std::lock_guard<std::mutex> lock(event_impl->mtx);
+    target_version = event_impl->recorded_version;
+  }
+  return orLaunchKernel(stream, [event_impl, target_version]() {
     std::unique_lock<std::mutex> lock(event_impl->mtx);
-    event_impl->cv.wait(lock, [&] { return event_impl->completed.load(); });
+    event_impl->cv.wait(lock, [&] {
+      return event_impl->completed_version >= target_version;
+    });
   });
 }
 
