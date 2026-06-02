@@ -76,7 +76,9 @@ def _mcpu_tensor_dlpack(
             event = torch.cuda.Event()
             event.record(current_stream)
             stream.wait_event(event)
-    elif self.device.type in ("cpu", "mcpu"):
+    elif self.device.type == "mcpu":
+        _sync_mcpu_dlpack_stream(self, stream)
+    elif self.device.type == "cpu":
         assert stream is None or stream == -1, "stream should be None on cpu."
 
     if self.device.type == "xla":
@@ -91,22 +93,69 @@ def _mcpu_tensor_dlpack(
 
         return xla_dlpack.to_dlpack(self)
 
-    if self.device.type == "mcpu" and dl_device is not None:
-        target_device_type, _ = dl_device
-        if target_device_type == DLDeviceType.kDLCPU:
-            cpu_view = torch.mcpu.get_cpu_view_from_mcpu_tensor(self)
-            return torch.Tensor._mcpu_original_dlpack(
-                cpu_view,
-                stream=stream,
-                max_version=max_version,
-                dl_device=dl_device,
-                copy=copy,
+    if _is_mcpu_to_cpu_dlpack(self, dl_device):
+        if copy is False:
+            device_index = self.device.index if self.device.index is not None else 0
+            raise ValueError(
+                "cannot move (i.e. copy=False) tensor from "
+                f"mcpu:{device_index} to cpu "
+                "without copying."
             )
+
+        torch.mcpu.current_stream(self.device).synchronize()
+        cpu_copy = self.cpu()
+        return torch.Tensor._mcpu_original_dlpack(
+            cpu_copy,
+            stream=None,
+            max_version=max_version,
+            dl_device=dl_device,
+            copy=copy,
+        )
 
     if max_version is None or max_version[0] < 1:
         return _C._to_dlpack(self, dl_device=dl_device, copy=copy)
 
     return _C._to_dlpack_versioned(self, dl_device=dl_device, copy=copy)
+
+
+def _is_mcpu_to_cpu_dlpack(tensor, dl_device) -> bool:
+    if tensor.device.type != "mcpu" or dl_device is None:
+        return False
+
+    target_device_type, _ = dl_device
+    return target_device_type == DLDeviceType.kDLCPU
+
+
+def _sync_mcpu_dlpack_stream(tensor, stream) -> None:
+    current_stream = torch.mcpu.current_stream(tensor.device)
+
+    if stream == -1:
+        return
+
+    if stream is None:
+        stream = _mcpu_default_stream(current_stream)
+    else:
+        assert stream != 0, "unsupported stream on MCPU: 0."
+        stream = torch.Stream(
+            stream_id=stream,
+            device_type=current_stream.device_type,
+            device_index=current_stream.device_index,
+        )
+
+    if stream == current_stream:
+        return
+
+    event = torch.Event()
+    event.record(current_stream)
+    stream.wait_event(event)
+
+
+def _mcpu_default_stream(current_stream):
+    return torch.Stream(
+        stream_id=(0x6 << 1) | 1,
+        device_type=current_stream.device_type,
+        device_index=current_stream.device_index,
+    )
 
 
 def _mcpu_tensor_dlpack_device(self):
