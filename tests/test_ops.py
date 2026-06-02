@@ -995,5 +995,75 @@ class TestCustomAutogradFunctions(TestCase):
         self.assertFalse(y.requires_grad)
 
 
+class TestMM(TestCase):
+    def test_mm_basic(self):
+        """Test basic mm operation"""
+        a = torch.randn(3, 4, device="mcpu")
+        b = torch.randn(4, 5, device="mcpu")
+        c = torch.mm(a, b)
+        self.assertEqual(c.device.type, "mcpu")
+        self.assertEqual(c.shape, torch.Size([3, 5]))
+        self.assertEqual(c.cpu(), torch.mm(a.cpu(), b.cpu()))
+
+    def test_mm_out(self):
+        """Test mm with output tensor"""
+        a = torch.randn(3, 4, device="mcpu")
+        b = torch.randn(4, 5, device="mcpu")
+        out = torch.empty(3, 5, device="mcpu")
+        torch.mm(a, b, out=out)
+        self.assertEqual(out.cpu(), torch.mm(a.cpu(), b.cpu()))
+
+    def test_mm_out_wrong_size(self):
+        """Test mm.out rejects wrong output size"""
+        a = torch.randn(3, 4, device="mcpu")
+        b = torch.randn(4, 5, device="mcpu")
+        bad_out = torch.empty(1, 1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::mm.out"):
+            torch.mm(a, b, out=bad_out)
+
+    def test_mm_square(self):
+        """Test mm with square matrices"""
+        a = torch.randn(4, 4, device="mcpu")
+        b = torch.randn(4, 4, device="mcpu")
+        c = torch.mm(a, b)
+        self.assertEqual(c.cpu(), torch.mm(a.cpu(), b.cpu()))
+
+    def test_addmm_basic(self):
+        """Test basic addmm operation"""
+        bias = torch.randn(3, 5, device="mcpu")
+        a = torch.randn(3, 4, device="mcpu")
+        b = torch.randn(4, 5, device="mcpu")
+        c = torch.addmm(bias, a, b)
+        self.assertEqual(c.device.type, "mcpu")
+        self.assertEqual(c.shape, torch.Size([3, 5]))
+        self.assertEqual(c.cpu(), torch.addmm(bias.cpu(), a.cpu(), b.cpu()))
+
+    def test_addmm_alpha_beta(self):
+        """Test addmm with non-default alpha and beta"""
+        bias = torch.randn(3, 5, device="mcpu")
+        a = torch.randn(3, 4, device="mcpu")
+        b = torch.randn(4, 5, device="mcpu")
+        c = torch.addmm(bias, a, b, beta=0.5, alpha=2.0)
+        expected = torch.addmm(bias.cpu(), a.cpu(), b.cpu(), beta=0.5, alpha=2.0)
+        self.assertEqual(c.cpu(), expected)
+
+    def test_addmm_out(self):
+        """Test addmm with output tensor"""
+        bias = torch.randn(3, 5, device="mcpu")
+        a = torch.randn(3, 4, device="mcpu")
+        b = torch.randn(4, 5, device="mcpu")
+        out = torch.empty(3, 5, device="mcpu")
+        torch.addmm(bias, a, b, out=out)
+        self.assertEqual(out.cpu(), torch.addmm(bias.cpu(), a.cpu(), b.cpu()))
+
+    def test_addmm_broadcast_bias(self):
+        """Test addmm with broadcastable bias"""
+        bias = torch.randn(5, device="mcpu")
+        a = torch.randn(3, 4, device="mcpu")
+        b = torch.randn(4, 5, device="mcpu")
+        c = torch.addmm(bias, a, b)
+        self.assertEqual(c.cpu(), torch.addmm(bias.cpu(), a.cpu(), b.cpu()))
+
+
 if __name__ == "__main__":
     run_tests()
