@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/ops/cumsum.h>
 #include <torch/library.h>
@@ -25,10 +26,12 @@ at::Tensor cumsum(
     std::optional<at::ScalarType> dtype) {
   auto result_dtype = cumsum_result_dtype(self, dtype);
   auto out = at::empty(self.sizes(), self.options().dtype(result_dtype));
-  at::native::mcpu::MemoryGuard guard(self, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::cumsum_out(cpu_out, cpu_self, dim, dtype);
+  launch_kernel(out, [self, out, dim, dtype]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::cumsum_out(cpu_out, cpu_self, dim, dtype);
+  });
   return out;
 }
 
@@ -39,10 +42,12 @@ at::Tensor& cumsum_out(
     at::Tensor& out) {
   ops::check_out_sizes("aten::cumsum.out", out, self.sizes());
 
-  at::native::mcpu::MemoryGuard guard(self, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::cumsum_out(cpu_out, cpu_self, dim, dtype);
+  launch_kernel(out, [self, out, dim, dtype]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::cumsum_out(cpu_out, cpu_self, dim, dtype);
+  });
   return out;
 }
 

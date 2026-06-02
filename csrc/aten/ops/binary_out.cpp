@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/add.h>
@@ -38,11 +39,13 @@ at::Tensor& add_out(
       ", but got ",
       out.sizes());
 
-  at::native::mcpu::MemoryGuard guard(self, other, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::add_out(cpu_out, cpu_self, cpu_other, alpha);
+  launch_kernel(out, [self, other, out, alpha]() mutable {
+    KernelMemoryGuard guard(self, other, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::add_out(cpu_out, cpu_self, cpu_other, alpha);
+  });
   return out;
 }
 
@@ -68,10 +71,12 @@ at::Tensor add_Scalar(
     const at::Scalar& other,
     const at::Scalar& alpha) {
   auto out = empty_like_mcpu_result(self, other);
-  at::native::mcpu::MemoryGuard guard(self, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::add_out(cpu_out, cpu_self, other, alpha);
+  launch_kernel(out, [self, other, out, alpha]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::add_out(cpu_out, cpu_self, other, alpha);
+  });
   return out;
 }
 
@@ -79,9 +84,11 @@ at::Tensor& add_Scalar_(
     at::Tensor& self,
     const at::Scalar& other,
     const at::Scalar& alpha) {
-  at::native::mcpu::MemoryGuard guard(self);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  at::add_out(cpu_self, cpu_self, other, alpha);
+  launch_kernel(self, [self, other, alpha]() mutable {
+    KernelMemoryGuard guard(self);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    at::add_out(cpu_self, cpu_self, other, alpha);
+  });
   return self;
 }
 
@@ -92,11 +99,13 @@ at::Tensor& div_out(
   auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
   ops::check_out_sizes("aten::div.out", out, expected_sizes);
 
-  at::native::mcpu::MemoryGuard guard(self, other, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::div_out(cpu_out, cpu_self, cpu_other);
+  launch_kernel(out, [self, other, out]() mutable {
+    KernelMemoryGuard guard(self, other, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::div_out(cpu_out, cpu_self, cpu_other);
+  });
   return out;
 }
 
@@ -107,11 +116,13 @@ at::Tensor& mul_out(
   auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
   ops::check_out_sizes("aten::mul.out", out, expected_sizes);
 
-  at::native::mcpu::MemoryGuard guard(self, other, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::mul_out(cpu_out, cpu_self, cpu_other);
+  launch_kernel(out, [self, other, out]() mutable {
+    KernelMemoryGuard guard(self, other, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::mul_out(cpu_out, cpu_self, cpu_other);
+  });
   return out;
 }
 
@@ -122,11 +133,13 @@ at::Tensor& remainder_Tensor_out(
   auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
   ops::check_out_sizes("aten::remainder.Tensor_out", out, expected_sizes);
 
-  at::native::mcpu::MemoryGuard guard(self, other, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::remainder_out(cpu_out, cpu_self, cpu_other);
+  launch_kernel(out, [self, other, out]() mutable {
+    KernelMemoryGuard guard(self, other, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::remainder_out(cpu_out, cpu_self, cpu_other);
+  });
   return out;
 }
 
@@ -135,11 +148,13 @@ at::Tensor sub_Tensor(
     const at::Tensor& other,
     const at::Scalar& alpha) {
   auto out = empty_binary_mcpu(self, other);
-  at::native::mcpu::MemoryGuard guard(self, other, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::sub_out(cpu_out, cpu_self, cpu_other, alpha);
+  launch_kernel(out, [self, other, out, alpha]() mutable {
+    KernelMemoryGuard guard(self, other, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::sub_out(cpu_out, cpu_self, cpu_other, alpha);
+  });
   return out;
 }
 
@@ -156,11 +171,13 @@ at::Tensor& sub_out(
       ", but got ",
       out.sizes());
 
-  at::native::mcpu::MemoryGuard guard(self, other, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::sub_out(cpu_out, cpu_self, cpu_other, alpha);
+  launch_kernel(out, [self, other, out, alpha]() mutable {
+    KernelMemoryGuard guard(self, other, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::sub_out(cpu_out, cpu_self, cpu_other, alpha);
+  });
   return out;
 }
 
@@ -177,10 +194,12 @@ at::Tensor sub_Scalar(
     const at::Scalar& other,
     const at::Scalar& alpha) {
   auto out = empty_like_mcpu_result(self, other);
-  at::native::mcpu::MemoryGuard guard(self, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::sub_out(cpu_out, cpu_self, other, alpha);
+  launch_kernel(out, [self, out, other, alpha]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::sub_out(cpu_out, cpu_self, other, alpha);
+  });
   return out;
 }
 
@@ -188,9 +207,11 @@ at::Tensor& sub_Scalar_(
     at::Tensor& self,
     const at::Scalar& other,
     const at::Scalar& alpha) {
-  at::native::mcpu::MemoryGuard guard(self);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  at::sub_out(cpu_self, cpu_self, other, alpha);
+  launch_kernel(self, [self, other, alpha]() mutable {
+    KernelMemoryGuard guard(self);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    at::sub_out(cpu_self, cpu_self, other, alpha);
+  });
   return self;
 }
 
@@ -200,10 +221,12 @@ at::Tensor& pow_Scalar_out(
     at::Tensor& out) {
   ops::check_out_sizes("aten::pow.Scalar_out", out, exponent.sizes());
 
-  at::native::mcpu::MemoryGuard guard(exponent, out);
-  auto cpu_exponent = ops::get_cpu_tensor_view_if_needed(exponent);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::pow_out(cpu_out, self, cpu_exponent);
+  launch_kernel(out, [self, exponent, out]() mutable {
+    KernelMemoryGuard guard(exponent, out);
+    auto cpu_exponent = ops::get_cpu_tensor_view_if_needed(exponent);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::pow_out(cpu_out, self, cpu_exponent);
+  });
   return out;
 }
 

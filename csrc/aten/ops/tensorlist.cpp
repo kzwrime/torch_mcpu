@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/ops/cat.h>
 #include <torch/library.h>
@@ -69,10 +70,12 @@ at::Tensor& cat_out(
   auto expected_sizes = cat_sizes(tensor_vec, dim);
   ops::check_out_sizes("aten::cat.out", out, expected_sizes);
 
-  auto cpu_tensors = ops::to_cpu_tensors_if_needed(tensor_vec);
-  at::native::mcpu::MemoryGuard guard(out, c10::IValue(tensor_vec));
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::cat_out(cpu_out, at::ITensorListRef(cpu_tensors), dim);
+  launch_kernel(out, [out, tensor_vec, dim]() mutable {
+    KernelMemoryGuard guard(out, c10::IValue(tensor_vec));
+    auto cpu_tensors = ops::to_cpu_tensors_if_needed(tensor_vec);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::cat_out(cpu_out, at::ITensorListRef(cpu_tensors), dim);
+  });
   return out;
 }
 

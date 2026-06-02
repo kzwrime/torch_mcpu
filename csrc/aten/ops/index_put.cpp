@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/ops/_index_put_impl.h>
 #include <torch/library.h>
@@ -12,11 +13,13 @@ at::Tensor& _index_put_impl_(
     const at::Tensor& values,
     bool accumulate,
     bool unsafe) {
-  at::native::mcpu::MemoryGuard guard(self, values, c10::IValue(indices));
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_values = ops::get_cpu_tensor_view_if_needed(values);
-  auto cpu_indices = ops::to_cpu_indices(indices);
-  at::_index_put_impl_(cpu_self, cpu_indices, cpu_values, accumulate, unsafe);
+  launch_kernel(self, [self, indices, values, accumulate, unsafe]() mutable {
+    KernelMemoryGuard guard(self, values, c10::IValue(indices));
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_values = ops::get_cpu_tensor_view_if_needed(values);
+    auto cpu_indices = ops::to_cpu_indices(indices);
+    at::_index_put_impl_(cpu_self, cpu_indices, cpu_values, accumulate, unsafe);
+  });
   return self;
 }
 

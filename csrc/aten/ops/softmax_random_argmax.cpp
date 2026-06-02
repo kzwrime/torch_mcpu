@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/ops/_softmax.h>
 #include <ATen/ops/argmax.h>
@@ -15,10 +16,12 @@ at::Tensor& _softmax_out(
     at::Tensor& out) {
   ops::check_out_sizes("aten::_softmax.out", out, self.sizes());
 
-  at::native::mcpu::MemoryGuard guard(self, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::_softmax_out(cpu_out, cpu_self, dim, half_to_float);
+  launch_kernel(out, [self, out, dim, half_to_float]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::_softmax_out(cpu_out, cpu_self, dim, half_to_float);
+  });
   return out;
 }
 
@@ -26,9 +29,11 @@ at::Tensor& exponential_(
     at::Tensor& self,
     double lambd,
     std::optional<at::Generator> generator) {
-  at::native::mcpu::MemoryGuard guard(self);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  at::_ops::exponential_::call(cpu_self, lambd, generator);
+  launch_kernel(self, [self, lambd, generator]() mutable {
+    KernelMemoryGuard guard(self);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    at::_ops::exponential_::call(cpu_self, lambd, generator);
+  });
   return self;
 }
 
@@ -42,10 +47,12 @@ at::Tensor& argmax_out(
   at::argmax_out(meta_out, meta_self, dim, keepdim);
   ops::check_out_sizes("aten::argmax.out", out, meta_out);
 
-  at::native::mcpu::MemoryGuard guard(self, out);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  at::argmax_out(cpu_out, cpu_self, dim, keepdim);
+  launch_kernel(out, [self, out, dim, keepdim]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::argmax_out(cpu_out, cpu_self, dim, keepdim);
+  });
   return out;
 }
 

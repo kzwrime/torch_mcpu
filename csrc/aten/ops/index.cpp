@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/ops/index.h>
 #include <torch/library.h>
@@ -15,11 +16,13 @@ at::Tensor index_Tensor(
   at::index_out(meta_out, meta_self, meta_indices);
 
   auto out = ops::empty_mcpu_from_meta(meta_out, self.options());
-  at::native::mcpu::MemoryGuard guard(self, out, c10::IValue(indices));
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  auto cpu_indices = ops::to_cpu_indices(indices);
-  at::index_out(cpu_out, cpu_self, cpu_indices);
+  launch_kernel(out, [self, out, indices]() mutable {
+    KernelMemoryGuard guard(self, out, c10::IValue(indices));
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    auto cpu_indices = ops::to_cpu_indices(indices);
+    at::index_out(cpu_out, cpu_self, cpu_indices);
+  });
   return out;
 }
 
@@ -33,11 +36,13 @@ at::Tensor& index_Tensor_out(
   at::index_out(meta_out, meta_self, meta_indices);
   ops::check_out_sizes("aten::index.Tensor_out", out, meta_out);
 
-  at::native::mcpu::MemoryGuard guard(self, out, c10::IValue(indices));
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  auto cpu_indices = ops::to_cpu_indices(indices);
-  at::index_out(cpu_out, cpu_self, cpu_indices);
+  launch_kernel(out, [self, out, indices]() mutable {
+    KernelMemoryGuard guard(self, out, c10::IValue(indices));
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    auto cpu_indices = ops::to_cpu_indices(indices);
+    at::index_out(cpu_out, cpu_self, cpu_indices);
+  });
   return out;
 }
 

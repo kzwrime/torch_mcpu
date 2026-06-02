@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/ops/topk.h>
 #include <torch/library.h>
@@ -23,11 +24,15 @@ namespace {
   ops::check_out_sizes("aten::topk.values", "values", values, meta_values);
   ops::check_out_sizes("aten::topk.values", "indices", indices, meta_indices);
 
-  at::native::mcpu::MemoryGuard guard(self, values, indices);
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_values = ops::get_cpu_view_from_mcpu_tensor(values);
-  auto cpu_indices = ops::get_cpu_view_from_mcpu_tensor(indices);
-  at::topk_out(cpu_values, cpu_indices, cpu_self, k, dim, largest, sorted);
+  launch_kernel(
+      values, [self, values, indices, k, dim, largest, sorted]() mutable {
+        KernelMemoryGuard guard(self, values, indices);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_values = ops::get_cpu_view_from_mcpu_tensor(values);
+        auto cpu_indices = ops::get_cpu_view_from_mcpu_tensor(indices);
+        at::topk_out(
+            cpu_values, cpu_indices, cpu_self, k, dim, largest, sorted);
+      });
   return std::forward_as_tuple(values, indices);
 }
 
