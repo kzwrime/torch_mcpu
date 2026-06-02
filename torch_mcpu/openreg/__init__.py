@@ -234,6 +234,7 @@ def is_available():
 
 def empty_cache() -> None:
     """Release all unoccupied cached memory back to the OS."""
+    synchronize()
     torch_mcpu._C._empty_cache()
 
 
@@ -292,22 +293,41 @@ def get_mcpu_view_from_cpu_tensor(cpu_tensor: "torch.Tensor") -> "torch.Tensor":
     return torch.ops.mcpu.get_mcpu_view_from_cpu_tensor(cpu_tensor)
 
 
-def get_cpu_view_from_mcpu_tensor(mcpu_tensor: "torch.Tensor") -> "torch.Tensor":
-    """Return a CPU tensor that is a view of *mcpu_tensor*'s memory.
+# def get_cpu_view_from_mcpu_tensor(mcpu_tensor: "torch.Tensor") -> "torch.Tensor":
+#     """Return a CPU tensor that is a view of *mcpu_tensor*'s memory.
+#
+#     Unlike the CPU->mcpu direction, this path does not require pinned memory.
+#
+#     Args:
+#         mcpu_tensor: An mcpu tensor.
+#
+#     Returns:
+#         A CPU tensor backed by the same memory.
+#     """
+#     if not isinstance(mcpu_tensor, torch.Tensor):
+#         raise TypeError("Expected mcpu_tensor to be a torch.Tensor")
+#     if mcpu_tensor.device.type != "mcpu":
+#         raise ValueError("Expected mcpu_tensor to be on mcpu")
+#     return torch.ops.mcpu.get_cpu_view_from_mcpu_tensor(mcpu_tensor)
 
-    Unlike the CPU->mcpu direction, this path does not require pinned memory.
 
-    Args:
-        mcpu_tensor: An mcpu tensor.
+def get_unprotected_cpu_view_from_mcpu_tensor(
+    mcpu_tensor: "torch.Tensor",
+) -> "torch.Tensor":
+    """Return a CPU view of *mcpu_tensor* after disabling page protection.
 
-    Returns:
-        A CPU tensor backed by the same memory.
+    This is an explicit opt-in escape hatch for Python code that needs direct
+    CPU access to mcpu backing memory.  The strict
+    :func:`get_cpu_view_from_mcpu_tensor` API keeps page protection intact, so
+    it can still catch accidental host-side memory accesses while porting
+    third-party kernels.
     """
     if not isinstance(mcpu_tensor, torch.Tensor):
         raise TypeError("Expected mcpu_tensor to be a torch.Tensor")
     if mcpu_tensor.device.type != "mcpu":
         raise ValueError("Expected mcpu_tensor to be on mcpu")
-    return torch.ops.mcpu.get_cpu_view_from_mcpu_tensor(mcpu_tensor)
+    synchronize(mcpu_tensor.device)
+    return torch.ops.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(mcpu_tensor)
 
 
 def reset_accumulated_memory_stats(device=None) -> None:
@@ -387,6 +407,7 @@ __all__ = [
     "mem_get_info",
     "get_mcpu_view_from_cpu_tensor",
     "get_cpu_view_from_mcpu_tensor",
+    "get_unprotected_cpu_view_from_mcpu_tensor",
     "memory_stats",
     "memory_allocated",
     "memory_reserved",

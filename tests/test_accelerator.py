@@ -206,6 +206,7 @@ class TestAccelerator(TestCase):
         tmp = torch.ones(256, device=acc)
         self.assertGreater(torch.accelerator.memory_allocated(), prev_allocated)
         self.assertGreaterEqual(torch.accelerator.memory_reserved(), prev_reserved)
+        torch.accelerator.synchronize()
         del tmp
         gc.collect()
         torch.accelerator.empty_cache()
@@ -226,6 +227,7 @@ class TestAccelerator(TestCase):
             1024 + prev_active_current,
         )
         self.assertEqual(torch.accelerator.memory_stats()["active_bytes.all.freed"], 0)
+        torch.accelerator.synchronize()
         del tmp
         gc.collect()
         torch.accelerator.empty_cache()

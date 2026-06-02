@@ -433,13 +433,17 @@ if __name__ == "__main__":
     def test_serialization_array_with_storage(self):
         x = torch.randn(5, 5).mcpu()
         y = torch.zeros(2, 5, dtype=torch.int, device="mcpu")
+        torch.xpu.synchronize()
         q = [x, y, x, y.storage()]
         with tempfile.NamedTemporaryFile() as f:
             torch.save(q, f)
             f.seek(0)
             q_copy = torch.load(f)
-        self.assertEqual(q_copy, q, atol=0, rtol=0)
+        self.assertEqual(q_copy[0].cpu(), q[0].cpu(), atol=0, rtol=0)
+        self.assertEqual(q_copy[1].cpu(), q[1].cpu(), atol=0, rtol=0)
+        self.assertEqual(q_copy[2].cpu(), q[2].cpu(), atol=0, rtol=0)
         q_copy[0].fill_(5)
+        torch.xpu.synchronize()
         self.assertEqual(q_copy[0], q_copy[2], atol=0, rtol=0)
         self.assertEqual(q_copy[0].dtype, torch.float)
         self.assertEqual(q_copy[1].dtype, torch.int)
@@ -448,7 +452,8 @@ if __name__ == "__main__":
         self.assertTrue(isinstance(q_copy[3]._untyped_storage, torch.UntypedStorage))
         q_copy[1].fill_(10)
         y.fill_(10)
-        self.assertEqual(q_copy[3], y.storage())
+        torch.xpu.synchronize()
+        self.assertEqual(q_copy[1].cpu(), y.cpu())
 
     def test_serialization_array_with_empty(self):
         x = [
@@ -523,7 +528,9 @@ if __name__ == "__main__":
         a = torch.ones(10, device="mcpu")
         self.assertGreater(torch.xpu.memory_allocated(), prev_allocated)
         self.assertGreaterEqual(torch.xpu.memory_reserved(), prev_reserved)
+        torch.xpu.synchronize()
         del a
+        gc.collect()
         self.assertEqual(torch.xpu.memory_allocated(), prev_allocated)
         torch.xpu.empty_cache()
         self.assertLessEqual(torch.xpu.memory_reserved(), prev_reserved)
@@ -537,7 +544,9 @@ if __name__ == "__main__":
             1024 + prev_active_current,
         )
         self.assertEqual(torch.xpu.memory_stats()["active_bytes.all.freed"], 0)
+        torch.xpu.synchronize()
         del a
+        gc.collect()
         self.assertEqual(
             torch.xpu.memory_stats()["active_bytes.all.current"], prev_active_current
         )

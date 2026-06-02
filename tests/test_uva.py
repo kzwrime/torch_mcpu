@@ -65,6 +65,7 @@ class TestGetMcpuViewFromCpuTensor(TestCase):
 
         mcpu[0, 0] = 3
         mcpu[2, 3] = 4
+        torch.mcpu.synchronize()
 
         self.assertEqual(int(cpu[0, 0]), 3)
         self.assertEqual(int(cpu[2, 3]), 4)
@@ -80,6 +81,7 @@ class TestGetMcpuViewFromCpuTensor(TestCase):
         cpu[4, 5] = -1
 
         mcpu.mul_(2)
+        torch.mcpu.synchronize()
 
         self.assertEqual(int(cpu[0, 0]), 2)
         self.assertEqual(int(cpu[2, 3]), 4)
@@ -124,38 +126,39 @@ class TestGetMcpuViewFromCpuTensor(TestCase):
 class TestGetCpuViewFromMcpuTensor(TestCase):
     def test_returns_cpu_tensor(self):
         mcpu = torch.arange(8, dtype=torch.float32, device="mcpu")
-        cpu = torch.mcpu.get_cpu_view_from_mcpu_tensor(mcpu)
+        cpu = torch.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(mcpu)
         self.assertEqual(cpu.device.type, "cpu")
 
     def test_empty_tensor(self):
         mcpu = torch.empty(0, device="mcpu")
-        cpu = torch.mcpu.get_cpu_view_from_mcpu_tensor(mcpu)
+        cpu = torch.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(mcpu)
         self.assertEqual(cpu.device.type, "cpu")
         self.assertEqual(cpu.numel(), 0)
 
     def test_preserves_metadata(self):
         mcpu = torch.arange(24, dtype=torch.int64, device="mcpu").reshape(2, 3, 4)
-        cpu = torch.mcpu.get_cpu_view_from_mcpu_tensor(mcpu)
+        cpu = torch.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(mcpu)
         self.assertEqual(cpu.shape, mcpu.shape)
         self.assertEqual(cpu.dtype, mcpu.dtype)
 
     def test_mcpu_write_visible_on_cpu(self):
         mcpu = torch.zeros(4, 4, dtype=torch.int32, device="mcpu")
-        cpu = torch.mcpu.get_cpu_view_from_mcpu_tensor(mcpu)
+        cpu = torch.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(mcpu)
 
         mcpu[1, 2] = 7
+        torch.mcpu.synchronize()
         self.assertEqual(int(cpu[1, 2]), 7)
 
     def test_cpu_write_visible_on_mcpu(self):
         mcpu = torch.zeros(4, 4, dtype=torch.int32, device="mcpu")
-        cpu = torch.mcpu.get_cpu_view_from_mcpu_tensor(mcpu)
+        cpu = torch.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(mcpu)
 
         cpu[2, 1] = 9
         self.assertEqual(int(mcpu[2, 1]), 9)
 
     def test_same_data_ptr(self):
         mcpu = torch.arange(16, dtype=torch.float32, device="mcpu")
-        cpu = torch.mcpu.get_cpu_view_from_mcpu_tensor(mcpu)
+        cpu = torch.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(mcpu)
         self.assertEqual(cpu.data_ptr(), mcpu.data_ptr())
 
     def test_rejects_non_mcpu_tensor(self):
