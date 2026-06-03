@@ -15,7 +15,7 @@ from torch.testing._internal.common_utils import run_tests, TestCase
 def _collective_worker(rank: int, world_size: int, init_file: str, queue) -> None:
     try:
         dist.init_process_group(
-            "gloo",
+            "cpu:gloo,mcpu:mcpu",
             init_method=f"file://{init_file}",
             rank=rank,
             world_size=world_size,
@@ -175,7 +175,7 @@ def _mm_allreduce_loop_worker(
 ) -> None:
     try:
         dist.init_process_group(
-            "gloo",
+            "cpu:gloo,mcpu:mcpu",
             init_method=f"file://{init_file}",
             rank=rank,
             world_size=world_size,
@@ -208,6 +208,55 @@ def _mm_allreduce_loop_worker(
                 "total_elapsed": total_elapsed,
                 "device": hidden.device.type,
                 "value": float(hidden[0, 0].cpu().item()),
+            }
+        )
+    except Exception as exc:
+        queue.put({"rank": rank, "error": repr(exc)})
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+def _bidirectional_p2p_worker(
+    rank: int,
+    world_size: int,
+    init_file: str,
+    queue,
+) -> None:
+    try:
+        dist.init_process_group(
+            "cpu:gloo,mcpu:mcpu",
+            init_method=f"file://{init_file}",
+            rank=rank,
+            world_size=world_size,
+        )
+
+        group = dist.new_group(list(range(world_size)))
+        peer = 1 - rank
+
+        send_tensor = torch.tensor([float(rank + 1)], device="mcpu")
+        recv_tensor = torch.empty(1, device="mcpu")
+        send_work = dist.isend(send_tensor, group=group, group_dst=peer)
+        recv_work = dist.irecv(recv_tensor, group=group, group_src=peer)
+        send_work.wait()
+        recv_work.wait()
+
+        batch_send = torch.tensor([float(rank + 10)], device="mcpu")
+        batch_recv = torch.empty(1, device="mcpu")
+        works = dist.batch_isend_irecv(
+            [
+                dist.P2POp(dist.isend, batch_send, peer, group=group),
+                dist.P2POp(dist.irecv, batch_recv, peer, group=group),
+            ]
+        )
+        for work in works:
+            work.wait()
+
+        queue.put(
+            {
+                "rank": rank,
+                "recv": float(recv_tensor.cpu().item()),
+                "batch_recv": float(batch_recv.cpu().item()),
             }
         )
     except Exception as exc:
@@ -339,6 +388,48 @@ class TestDistributed(TestCase):
                     f"total={result['total_elapsed']:.6f}s"
                 ),
             )
+
+    @unittest.skipIf(os.name == "nt", "file init + spawn test is Linux-oriented")
+    def test_bidirectional_p2p_does_not_deadlock(self):
+        world_size = 2
+        fd, init_file = tempfile.mkstemp(prefix="mcpu_dist_p2p_")
+        os.close(fd)
+        os.unlink(init_file)
+        ctx = mp.get_context("spawn")
+        queue = ctx.Queue()
+
+        procs = [
+            ctx.Process(
+                target=_bidirectional_p2p_worker,
+                args=(rank, world_size, init_file, queue),
+            )
+            for rank in range(world_size)
+        ]
+
+        for proc in procs:
+            proc.start()
+
+        results = [queue.get(timeout=30) for _ in range(world_size)]
+
+        for proc in procs:
+            proc.join(timeout=30)
+
+        for proc in procs:
+            self.assertEqual(proc.exitcode, 0)
+
+        by_rank = {result["rank"]: result for result in results}
+        self.assertEqual(set(by_rank.keys()), {0, 1})
+        for rank, result in by_rank.items():
+            self.assertNotIn(
+                "error",
+                result,
+                f"rank {rank} failed: {result.get('error')}",
+            )
+
+        self.assertEqual(by_rank[0]["recv"], 2.0)
+        self.assertEqual(by_rank[1]["recv"], 1.0)
+        self.assertEqual(by_rank[0]["batch_recv"], 11.0)
+        self.assertEqual(by_rank[1]["batch_recv"], 10.0)
 
 
 if __name__ == "__main__":

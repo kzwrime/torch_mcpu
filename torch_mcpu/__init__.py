@@ -11,7 +11,6 @@ if sys.platform == "win32":
 
 import torch_mcpu._C  # type: ignore[misc]
 import torch_mcpu.dlpack
-import torch_mcpu.distributed
 import torch_mcpu.openreg
 from torch_mcpu.compile import setup_mcpu_compile
 from torch_mcpu.compile_flags import (
@@ -27,7 +26,6 @@ torch.Stream = torch_mcpu.openreg.Stream
 torch.Event = torch_mcpu.openreg.Event
 torch_mcpu.dlpack.patch_mcpu_dlpack()
 setup_mcpu_compile()
-torch_mcpu.distributed.patch_mcpu_distributed()
 
 # LITERALINCLUDE START: AUTOLOAD
 def _autoload():

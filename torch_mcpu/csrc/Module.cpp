@@ -1,8 +1,6 @@
 #include <ATen/ATen.h>
 #include <ATen/Context.h>
 
-#include "Distributed.h"
-
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/autograd/python_variable.h>
 #include <torch/csrc/utils.h>
@@ -317,8 +315,6 @@ extern "C" MCPU_EXPORT PyObject* initMcpuModule(void) {
   static struct PyModuleDef mcpu_C_module = {
       PyModuleDef_HEAD_INIT, "torch_mcpu._C", nullptr, -1, methods};
   PyObject* mod = PyModule_Create(&mcpu_C_module);
-  auto py_module = py::reinterpret_borrow<py::module>(mod);
-  bindMcpuDistributed(py_module);
 
   return mod;
 }
