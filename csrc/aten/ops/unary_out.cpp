@@ -4,12 +4,15 @@
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/clamp.h>
 #include <ATen/ops/cos.h>
+#include <ATen/ops/empty_like.h>
 #include <ATen/ops/masked_fill.h>
 #include <ATen/ops/masked_fill_cpu_dispatch.h>
 #include <ATen/ops/ne.h>
 #include <ATen/ops/neg.h>
 #include <ATen/ops/nonzero.h>
 #include <ATen/ops/reciprocal.h>
+#include <ATen/ops/sigmoid.h>
+#include <ATen/ops/silu.h>
 #include <ATen/ops/sin.h>
 #include <ATen/ops/sum.h>
 #include <ATen/ops/zero.h>
@@ -25,6 +28,71 @@ inline bool is_nonzero_value(const scalar_t& value) {
   } else {
     return value != scalar_t(0);
   }
+}
+
+at::Tensor empty_unary_mcpu(
+    const at::Tensor& self,
+    at::ScalarType result_dtype) {
+  return at::empty_like(
+      self, self.options().dtype(result_dtype), at::MemoryFormat::Preserve);
+}
+
+at::Tensor& sigmoid_out(const at::Tensor& self, at::Tensor& out) {
+  ops::check_out_sizes("aten::sigmoid.out", out, self.sizes());
+
+  launch_kernel(out, [self, out]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::sigmoid_out(cpu_out, cpu_self);
+  });
+  return out;
+}
+
+at::Tensor sigmoid(const at::Tensor& self) {
+  auto result_dtype =
+      c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)
+      ? at::kFloat
+      : self.scalar_type();
+  auto out = empty_unary_mcpu(self, result_dtype);
+  sigmoid_out(self, out);
+  return out;
+}
+
+at::Tensor& sigmoid_(at::Tensor& self) {
+  launch_kernel(self, [self]() mutable {
+    KernelMemoryGuard guard(self);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    at::sigmoid_(cpu_self);
+  });
+  return self;
+}
+
+at::Tensor& silu_out(const at::Tensor& self, at::Tensor& out) {
+  ops::check_out_sizes("aten::silu.out", out, self.sizes());
+
+  launch_kernel(out, [self, out]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::silu_out(cpu_out, cpu_self);
+  });
+  return out;
+}
+
+at::Tensor silu(const at::Tensor& self) {
+  auto out = empty_unary_mcpu(self, self.scalar_type());
+  silu_out(self, out);
+  return out;
+}
+
+at::Tensor& silu_(at::Tensor& self) {
+  launch_kernel(self, [self]() mutable {
+    KernelMemoryGuard guard(self);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    at::silu_(cpu_self);
+  });
+  return self;
 }
 
 at::Tensor& cos_out(const at::Tensor& self, at::Tensor& out) {
@@ -283,7 +351,13 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("ne.Scalar_out", &ne_Scalar_out);
   m.impl("neg.out", &neg_out);
   m.impl("nonzero", &nonzero);
+  m.impl("sigmoid", &sigmoid);
+  m.impl("sigmoid.out", &sigmoid_out);
+  m.impl("sigmoid_", &sigmoid_);
   m.impl("sin.out", &sin_out);
+  m.impl("silu", &silu);
+  m.impl("silu.out", &silu_out);
+  m.impl("silu_", &silu_);
   m.impl("reciprocal.out", &reciprocal_out);
   m.impl("sum.IntList_out", &sum_IntList_out);
   m.impl("zero_", &zero_);

@@ -226,6 +226,23 @@ class TestFallback(TestCase):
         self.assertEqual(bool_cumsum.dtype, torch.int64)
         self.assertEqual(bool_cumsum, torch.tensor([1, 2, 2], dtype=torch.int64))
 
+        sigmoid_res = torch.sigmoid(x)
+        self.assertEqual(sigmoid_res.cpu(), torch.sigmoid(x.cpu()))
+        self.assertEqual(sigmoid_res.device.type, "mcpu")
+
+        int_sigmoid = torch.sigmoid(
+            torch.tensor([0, 1], device="mcpu", dtype=torch.int32)
+        )
+        self.assertEqual(int_sigmoid.dtype, torch.float32)
+        self.assertEqual(
+            int_sigmoid.cpu(),
+            torch.sigmoid(torch.tensor([0, 1], dtype=torch.int32)),
+        )
+
+        silu_res = torch.nn.functional.silu(x)
+        self.assertEqual(silu_res.cpu(), torch.nn.functional.silu(x.cpu()))
+        self.assertEqual(silu_res.device.type, "mcpu")
+
         filled = torch.empty(2, 3, device="mcpu", dtype=torch.float32)
         filled.fill_(7)
         torch.mcpu.synchronize()
@@ -286,6 +303,25 @@ class TestFallback(TestCase):
         torch.neg(x, out=neg_out)
         self.assertEqual(neg_out.cpu(), torch.neg(x.cpu()))
 
+        sigmoid_out = torch.empty_like(x)
+        torch.sigmoid(x, out=sigmoid_out)
+        self.assertEqual(sigmoid_out.cpu(), torch.sigmoid(x.cpu()))
+
+        sigmoid_inplace = x.clone()
+        sigmoid_inplace.sigmoid_()
+        self.assertEqual(sigmoid_inplace.cpu(), x.cpu().sigmoid_())
+
+        silu_out = torch.empty_like(x)
+        torch.ops.aten.silu.out(x, out=silu_out)
+        self.assertEqual(silu_out.cpu(), torch.nn.functional.silu(x.cpu()))
+
+        silu_inplace = x.clone()
+        torch.ops.aten.silu_.default(silu_inplace)
+        self.assertEqual(
+            silu_inplace.cpu(),
+            torch.ops.aten.silu_.default(x.cpu()),
+        )
+
         clamp_out = torch.empty_like(x)
         torch.clamp(x, min=5.0, max=6.0, out=clamp_out)
         self.assertEqual(clamp_out.cpu(), torch.clamp(x.cpu(), min=5.0, max=6.0))
@@ -301,6 +337,12 @@ class TestFallback(TestCase):
         bad_unary_out = torch.empty(1, device="mcpu")
         with self.assertRaisesRegex(RuntimeError, "aten::neg.out"):
             torch.neg(x, out=bad_unary_out)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::sigmoid.out"):
+            torch.sigmoid(x, out=bad_unary_out)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::silu.out"):
+            torch.ops.aten.silu.out(x, out=bad_unary_out)
 
         with self.assertRaisesRegex(RuntimeError, "aten::clamp.out"):
             torch.clamp(x, min=5.0, max=6.0, out=bad_unary_out)
