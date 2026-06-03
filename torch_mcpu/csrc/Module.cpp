@@ -1,11 +1,14 @@
 #include <ATen/ATen.h>
 #include <ATen/Context.h>
 
+#include "Distributed.h"
+
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/autograd/python_variable.h>
 #include <torch/csrc/utils.h>
 #include <torch/csrc/utils/device_lazy_init.h>
 #include <torch/csrc/utils/object_ptr.h>
+#include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/python_numbers.h>
 
 #include <c10/core/CachingDeviceAllocator.h>
@@ -21,6 +24,8 @@ c10::CachingDeviceAllocator::DeviceStats getDeviceStats(
 void resetPeakStats(c10::DeviceIndex device);
 void resetAccumulatedStats(c10::DeviceIndex device);
 } // namespace c10::mcpu
+
+namespace py = pybind11;
 
 static PyObject* _initExtension(PyObject* self, PyObject* noargs) {
   HANDLE_TH_ERRORS
@@ -192,6 +197,8 @@ extern "C" MCPU_EXPORT PyObject* initMcpuModule(void) {
   static struct PyModuleDef mcpu_C_module = {
       PyModuleDef_HEAD_INIT, "torch_mcpu._C", nullptr, -1, methods};
   PyObject* mod = PyModule_Create(&mcpu_C_module);
+  auto py_module = py::reinterpret_borrow<py::module>(mod);
+  bindMcpuDistributed(py_module);
 
   return mod;
 }
