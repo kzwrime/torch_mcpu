@@ -42,8 +42,15 @@ else()
 endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include(${PROJECT_SOURCE_DIR}/cmake/TorchPythonTargets.cmake)
 
 add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/openreg)
 add_subdirectory(${PROJECT_SOURCE_DIR}/csrc)
 add_subdirectory(${PROJECT_SOURCE_DIR}/torch_mcpu/csrc)
+
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
+    DESTINATION include
+    FILES_MATCHING PATTERN "*.h"
+    PATTERN "*.hpp"
+)

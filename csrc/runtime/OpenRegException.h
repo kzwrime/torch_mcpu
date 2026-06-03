@@ -1,10 +1,11 @@
 #pragma once
 
+#include <include/Macros.h>
 #include <include/openreg.h>
 
 #include <c10/util/Exception.h>
 
-void orCheckFail(
+MCPU_EXPORT void orCheckFail(
     const char* func,
     const char* file,
     uint32_t line,

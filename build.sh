@@ -1,2 +1,3 @@
 #!/bin/bash
-python -m pip install --no-build-isolation -e .
+# export TORCH_MCPU_ENABLE_MEMORY_PROTECTION="${TORCH_MCPU_ENABLE_MEMORY_PROTECTION:-OFF}"
+python -m pip install --no-build-isolation .

@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import torch
 import torch._inductor.config as inductor_config
@@ -27,6 +28,51 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _append_env_flags(name: str, flags: str) -> None:
+    existing = os.environ.get(name, "")
+    parts = existing.split()
+    missing = [flag for flag in flags.split() if flag not in parts]
+    if missing:
+        os.environ[name] = " ".join([existing, *missing]).strip()
+
+
+def _setup_aoti_link_flags() -> None:
+    lib_dir = Path(__file__).resolve().parent / "lib"
+    _append_env_flags(
+        "AOTI_EXTRA_LDFLAGS",
+        f"-L{lib_dir} -Wl,-rpath,{lib_dir} -ltorch_mcpu -lopenreg",
+    )
+
+
+def _disable_inductor_compute_kernels() -> None:
+    """Force every elementwise/reduction aten op to use its eager kernel.
+
+    mcpu runs ops asynchronously via ``launch_kernel`` on a worker thread and its
+    device memory is not host-accessible. Inductor's generated C++ loop kernels
+    (``cpp_fused_*``) read tensor data pointers directly on the host thread, which
+    bypasses that model and segfaults. Inductor only emits such loop kernels for
+    ``pointwise``/``reduction`` tagged ops, so registering an aten fallback for
+    each of them disables fused-kernel generation generically while leaving view,
+    factory and matmul ops to Inductor's normal (data-free) handling.
+    """
+    from torch._inductor import lowering
+
+    for op in list(lowering.lowerings):
+        if (
+            isinstance(op, torch._ops.OpOverload)
+            and op.namespace == "aten"
+            and op not in lowering.fallbacks
+            and (torch.Tag.pointwise in op.tags or torch.Tag.reduction in op.tags)
+        ):
+            lowering.make_fallback(op, warn=False, override_decomp=True)
+
+
+def _register_mcpu_aoti_fallback_shims() -> None:
+    from torchgen.aoti.fallback_ops import inductor_fallback_ops
+
+    inductor_fallback_ops.setdefault("aten.sigmoid.default", {})
 
 
 class McpuInterface(CpuInterface):
@@ -106,9 +152,9 @@ class McpuInterface(CpuInterface):
 
 def setup_mcpu_compile() -> None:
     """Register mcpu with Dynamo and Inductor."""
-    inductor_config.fallback_by_default = _env_flag(
-        "TORCH_MCPU_INDUCTOR_FALLBACK_BY_DEFAULT"
-    )
+    _setup_aoti_link_flags()
+    _disable_inductor_compute_kernels()
+    _register_mcpu_aoti_fallback_shims()
     if _env_flag("TORCH_MCPU_ENABLE_TORCH_XCPU_FUSIONS", True):
         inductor_config.post_grad_custom_post_pass = append_post_grad_pass(
             inductor_config.post_grad_custom_post_pass,

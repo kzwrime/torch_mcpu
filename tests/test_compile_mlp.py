@@ -13,6 +13,7 @@ import torch_mcpu  # noqa: F401 – registers the mcpu backend with PyTorch
 ddevice = "mcpu"
 
 
+@torch._dynamo.disable
 def silu(x):
     """PyTorch-native implementation equivalent to forward()."""
     return F.silu(x)
@@ -64,10 +65,10 @@ def multi_mlp():
     return MultiMLP(num_mlps=20, in_out_dim=4, hidden_dim=8).to(ddevice).eval()
 
 
-@pytest.fixture
-def multi_mlp_compiled(multi_mlp):
+@pytest.fixture(params=[False, True], ids=["python_wrapper", "cpp_wrapper"])
+def multi_mlp_compiled(multi_mlp, request):
     """Create a compiled MultiMLP model."""
-    compiled = torch.compile(multi_mlp)
+    compiled = torch.compile(multi_mlp, options={"cpp_wrapper": request.param})
     return compiled
 
 
@@ -113,5 +114,5 @@ def test_compile_mlp_dynamic_shapes(multi_mlp, multi_mlp_compiled):
 
             assert len(out_eager) == len(out_compiled)
             for orig, comp in zip(out_eager, out_compiled):
-                assert torch.allclose(orig, comp, rtol=1e-4), \
+                assert torch.allclose(orig.cpu(), comp.cpu(), rtol=1e-4), \
                     f"Outputs differ for shape {shape}"

@@ -25,16 +25,20 @@
 #include <ATen/ops/abs_native.h>
 #include <ATen/ops/as_strided_cpu_dispatch.h>
 #include <ATen/ops/copy_native.h>
+#include <ATen/ops/empty_like.h>
 #include <ATen/ops/quantize_per_tensor_native.h>
 #include <ATen/ops/resize_as_native.h>
 #include <ATen/ops/resize_native.h>
 #include <ATen/ops/set_cpu_dispatch.h>
 #include <ATen/ops/set_native.h>
+#include <ATen/ops/sigmoid.h>
 #include <ATen/ops/view_compositeexplicitautograd_dispatch.h>
 #include <ATen/ops/view_native.h>
 
 #include <torch/csrc/autograd/custom_function.h>
 #include <torch/csrc/autograd/function_hook.h>
+
+#include "../runtime/McpuKernelLaunch.h"
 
 using namespace torch::aot_inductor;
 
@@ -60,13 +64,26 @@ inline at::Tensor get_cpu_tensor_view_if_needed(const at::Tensor& tensor) {
   return get_cpu_view_from_mcpu_tensor(tensor);
 }
 
+inline at::Tensor empty_unary_mcpu_result(
+    const at::Tensor& self,
+    at::ScalarType result_dtype) {
+  return at::empty_like(
+      self, self.options().dtype(result_dtype), at::MemoryFormat::Preserve);
+}
+
 inline at::Tensor empty_binary_mcpu_result(
     const at::Tensor& self,
     const at::Tensor& other) {
   auto out_sizes = at::infer_size(self.sizes(), other.sizes());
-  return at::empty(
-      out_sizes,
-      self.options().dtype(at::result_type(self, other)));
+  const bool self_is_mcpu =
+      self.device().type() == c10::DeviceType::PrivateUse1;
+  const bool other_is_mcpu =
+      other.device().type() == c10::DeviceType::PrivateUse1;
+  const at::Tensor& device_tensor = self_is_mcpu ? self : other;
+  auto options = (self_is_mcpu || other_is_mcpu)
+      ? device_tensor.options()
+      : self.options().device(c10::Device(c10::DeviceType::PrivateUse1, 0));
+  return at::empty(out_sizes, options.dtype(at::result_type(self, other)));
 }
 
 // clang-format off
@@ -83,12 +100,14 @@ inline AOTITorchError aoti_torch_mcpu_mm_out(AtenTensorHandle out, AtenTensorHan
     at::Tensor* t_out = tensor_handle_to_tensor_pointer(out);
     at::Tensor* t_self = tensor_handle_to_tensor_pointer(self);
     at::Tensor* t_mat2 = tensor_handle_to_tensor_pointer(mat2);
-    at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(*t_out);
-    at::Tensor cpu_self = get_cpu_view_from_mcpu_tensor(*t_self);
-    at::Tensor cpu_mat2 = get_cpu_view_from_mcpu_tensor(*t_mat2);
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
-        // at::cpu::mm_out(
-        at::mm_out(cpu_out, cpu_self, cpu_mat2);
+        at::mcpu::launch_kernel(*t_out, [out = *t_out, self = *t_self, mat2 = *t_mat2]() mutable {
+            at::mcpu::KernelMemoryGuard guard(out, self, mat2);
+            at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
+            at::Tensor cpu_self = get_cpu_view_from_mcpu_tensor(self);
+            at::Tensor cpu_mat2 = get_cpu_view_from_mcpu_tensor(mat2);
+            at::mm_out(cpu_out, cpu_self, cpu_mat2);
+        });
     });
 }
 
@@ -97,15 +116,15 @@ inline AOTITorchError aoti_torch_mcpu_addmm_out(AtenTensorHandle out, AtenTensor
     at::Tensor* t_self = tensor_handle_to_tensor_pointer(self);
     at::Tensor* t_mat1 = tensor_handle_to_tensor_pointer(mat1);
     at::Tensor* t_mat2 = tensor_handle_to_tensor_pointer(mat2);
-    at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(*t_out);
-    at::Tensor cpu_self = get_cpu_view_from_mcpu_tensor(*t_self);
-    at::Tensor cpu_mat1 = get_cpu_view_from_mcpu_tensor(*t_mat1);
-    at::Tensor cpu_mat2 = get_cpu_view_from_mcpu_tensor(*t_mat2);
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
-        at::addmm_out(
-            cpu_out, cpu_self, cpu_mat1, cpu_mat2, beta, alpha
-        );
-
+        at::mcpu::launch_kernel(*t_out, [out = *t_out, self = *t_self, mat1 = *t_mat1, mat2 = *t_mat2, beta, alpha]() mutable {
+            at::mcpu::KernelMemoryGuard guard(out, self, mat1, mat2);
+            at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
+            at::Tensor cpu_self = get_cpu_view_from_mcpu_tensor(self);
+            at::Tensor cpu_mat1 = get_cpu_view_from_mcpu_tensor(mat1);
+            at::Tensor cpu_mat2 = get_cpu_view_from_mcpu_tensor(mat2);
+            at::addmm_out(cpu_out, cpu_self, cpu_mat1, cpu_mat2, beta, alpha);
+        });
     });
 }
 
@@ -114,11 +133,15 @@ inline AOTITorchError aoti_torch_mcpu_add_Tensor(AtenTensorHandle self, AtenTens
     at::Tensor* t_other = tensor_handle_to_tensor_pointer(other);
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
         auto out = empty_binary_mcpu_result(*t_self, *t_other);
-        at::Tensor cpu_self = get_cpu_tensor_view_if_needed(*t_self);
-        at::Tensor cpu_other = get_cpu_tensor_view_if_needed(*t_other);
-        at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
-        at::add_out(cpu_out, cpu_self, cpu_other, alpha);
+        auto launch_out = out;
         *ret0 = new_tensor_handle(std::move(out));
+        at::mcpu::launch_kernel(launch_out, [out = launch_out, self = *t_self, other = *t_other, alpha]() mutable {
+            at::mcpu::KernelMemoryGuard guard(out, self, other);
+            at::Tensor cpu_self = get_cpu_tensor_view_if_needed(self);
+            at::Tensor cpu_other = get_cpu_tensor_view_if_needed(other);
+            at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
+            at::add_out(cpu_out, cpu_self, cpu_other, alpha);
+        });
     });
 }
 
@@ -127,11 +150,34 @@ inline AOTITorchError aoti_torch_mcpu_mul_Tensor(AtenTensorHandle self, AtenTens
     at::Tensor* t_other = tensor_handle_to_tensor_pointer(other);
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
         auto out = empty_binary_mcpu_result(*t_self, *t_other);
-        at::Tensor cpu_self = get_cpu_tensor_view_if_needed(*t_self);
-        at::Tensor cpu_other = get_cpu_tensor_view_if_needed(*t_other);
-        at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
-        at::mul_out(cpu_out, cpu_self, cpu_other);
+        auto launch_out = out;
         *ret0 = new_tensor_handle(std::move(out));
+        at::mcpu::launch_kernel(launch_out, [out = launch_out, self = *t_self, other = *t_other]() mutable {
+            at::mcpu::KernelMemoryGuard guard(out, self, other);
+            at::Tensor cpu_self = get_cpu_tensor_view_if_needed(self);
+            at::Tensor cpu_other = get_cpu_tensor_view_if_needed(other);
+            at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
+            at::mul_out(cpu_out, cpu_self, cpu_other);
+        });
+    });
+}
+
+inline AOTITorchError aoti_torch_mcpu_sigmoid(AtenTensorHandle self, AtenTensorHandle* ret0) {
+    at::Tensor* t_self = tensor_handle_to_tensor_pointer(self);
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        auto result_dtype =
+            c10::isIntegralType(t_self->scalar_type(), /*includeBool=*/true)
+            ? at::kFloat
+            : t_self->scalar_type();
+        auto out = empty_unary_mcpu_result(*t_self, result_dtype);
+        auto launch_out = out;
+        *ret0 = new_tensor_handle(std::move(out));
+        at::mcpu::launch_kernel(launch_out, [out = launch_out, self = *t_self]() mutable {
+            at::mcpu::KernelMemoryGuard guard(out, self);
+            at::Tensor cpu_self = get_cpu_view_from_mcpu_tensor(self);
+            at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
+            at::sigmoid_out(cpu_out, cpu_self);
+        });
     });
 }
 // clang-format on

@@ -174,12 +174,17 @@ class TestMcpuCompile(unittest.TestCase):
     def test_compile_cpp_wrapper(self):
         """torch.compile with cpp_wrapper=True (AOT C++ code generation)."""
         x, y, z, ref = self._make_tensors()
-        with inductor_config.patch({"cpp_wrapper": True}):
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "fallback_by_default": True,
+        }):
             opt_fn = torch.compile(self.fn)
             res, code = run_and_get_cpp_code(opt_fn, x, y, z)
             # res = opt_fn(x, y, z)
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
         self.assertEqual(res.device.type, "mcpu")
         self.assertTrue(torch.allclose(ref, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
 
     def test_cpp_wrapper_uses_mcpu_aten_fallback_not_cpp_fused_loop(self):
         """mcpu cpp_wrapper must not emit raw Inductor C++ fused loops."""
