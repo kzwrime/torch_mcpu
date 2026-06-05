@@ -135,6 +135,8 @@ def main():
             "lib/*.dll",
             "lib/*.lib",
             "include/**/*.h",
+            "include/**/*.hpp",
+            "include/**/*.inl",
         ]
     }
 

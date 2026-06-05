@@ -38,6 +38,7 @@
 #include <torch/csrc/autograd/custom_function.h>
 #include <torch/csrc/autograd/function_hook.h>
 
+#include "../aten/McpuTensorView.hpp"
 #include "../runtime/McpuKernelLaunch.h"
 
 using namespace torch::aot_inductor;
@@ -45,24 +46,8 @@ using namespace torch::aot_inductor;
 // Warning: 确保所有 op 没有返回新的
 // Tensor，而是通过输出参数（Tensor(a!)）就地修改输入 Tensor。
 
-inline at::Tensor get_cpu_view_from_mcpu_tensor(const at::Tensor& mcpu_tensor) {
-  // For MCPU tensors, we can directly create a view on the CPU without copying
-  // data, since they share the same underlying storage.
-  at::Tensor result = at::from_blob(
-      mcpu_tensor.data_ptr(),
-      mcpu_tensor.sizes(),
-      mcpu_tensor.strides(),
-      /*deleter=*/[](void*) {}, // no-op deleter since we don't own the memory
-      mcpu_tensor.options().device(c10::DeviceType::CPU));
-  return result;
-}
-
-inline at::Tensor get_cpu_tensor_view_if_needed(const at::Tensor& tensor) {
-  if (tensor.device().is_cpu()) {
-    return tensor;
-  }
-  return get_cpu_view_from_mcpu_tensor(tensor);
-}
+using at::mcpu::get_cpu_tensor_view_if_needed;
+using at::mcpu::get_cpu_view_from_mcpu_tensor;
 
 inline at::Tensor empty_unary_mcpu_result(
     const at::Tensor& self,

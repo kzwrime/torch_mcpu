@@ -1,6 +1,8 @@
 #include <ATen/ATen.h>
 #include <torch/library.h>
 
+#include <aten/McpuTensorView.hpp>
+
 #include <include/openreg.h>
 
 namespace at::mcpu {
@@ -30,22 +32,7 @@ at::Tensor get_mcpu_view_from_cpu_tensor_impl(const at::Tensor& cpu_tensor) {
 }
 
 at::Tensor get_cpu_view_from_mcpu_tensor_impl(const at::Tensor& mcpu_tensor) {
-  TORCH_CHECK(
-      mcpu_tensor.device().type() == c10::DeviceType::PrivateUse1,
-      "Input tensor must be on mcpu");
-
-  if (mcpu_tensor.numel() == 0) {
-    return at::empty(
-        mcpu_tensor.sizes(),
-        mcpu_tensor.options().device(c10::DeviceType::CPU));
-  }
-
-  return at::from_blob(
-      mcpu_tensor.data_ptr(),
-      mcpu_tensor.sizes(),
-      mcpu_tensor.strides(),
-      /*deleter=*/[base = mcpu_tensor](void*) {},
-      mcpu_tensor.options().device(c10::DeviceType::CPU));
+  return at::mcpu::get_cpu_view_from_mcpu_tensor(mcpu_tensor);
 }
 
 void unprotect_mcpu_tensor_memory_impl(const at::Tensor& mcpu_tensor) {
