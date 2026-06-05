@@ -1,6 +1,7 @@
 #include "Distributed.h"
 
 #include <ATen/ATen.h>
+#include <ATen/ThreadLocalState.h>
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
 #include <csrc/runtime/OpenRegEvent.h>
