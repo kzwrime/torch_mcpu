@@ -61,19 +61,20 @@ void unprotect_tensor_memory(
 #endif
 }
 
-void launch_kernel_task(
-    const at::Tensor& stream_tensor,
-    std::function<void()> task) {
+orStream_t get_kernel_launch_stream(const at::Tensor& stream_tensor) {
   TORCH_CHECK(
       stream_tensor.defined() &&
           stream_tensor.device().type() == c10::DeviceType::PrivateUse1,
       "launch_kernel expects an mcpu tensor to select the stream");
-#if TORCH_MCPU_ENABLE_ASYNC_LAUNCH
-  auto stream = c10::mcpu::getCurrentMcpuStream(stream_tensor.device().index());
-  MCPU_CHECK(orLaunchKernel(stream, std::move(task)));
-#else
-  task();
-#endif
+  return c10::mcpu::getCurrentMcpuStream(stream_tensor.device().index());
+}
+
+[[deprecated("use launch_kernel or launch_kernel_on_stream instead")]]
+void launch_kernel_task(
+    const at::Tensor& stream_tensor,
+    std::function<void()> task) {
+  MCPU_CHECK(
+      orLaunchKernel(get_kernel_launch_stream(stream_tensor), std::move(task)));
 }
 
 } // namespace at::mcpu::detail

@@ -228,6 +228,18 @@ def synchronize(device=None) -> None:
     torch.accelerator.synchronize(device)
 
 
+def set_op_timing_enabled(enabled: bool) -> None:
+    torch_mcpu._C._set_op_timing_enabled(enabled)
+
+
+def reset_op_timing() -> None:
+    torch_mcpu._C._reset_op_timing()
+
+
+def get_op_timing() -> list[dict[str, Any]]:
+    return torch_mcpu._C._get_op_timing()
+
+
 def is_available():
     return True
 
@@ -395,6 +407,9 @@ __all__ = [
     "current_stream",
     "set_stream",
     "synchronize",
+    "set_op_timing_enabled",
+    "reset_op_timing",
+    "get_op_timing",
     "device_count",
     "current_device",
     "set_device",

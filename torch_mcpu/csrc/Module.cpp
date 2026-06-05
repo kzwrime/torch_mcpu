@@ -13,6 +13,7 @@
 
 #include <c10/core/CachingDeviceAllocator.h>
 #include <runtime/OpenRegFunctions.h>
+#include <runtime/McpuOpTiming.h>
 
 // Forward-declare allocator management functions from libtorch_mcpu.so.
 // (DeviceCachingAllocator.h transitively includes openreg.h which is not on
@@ -164,6 +165,50 @@ static PyObject* _getStreamPriorityRange(PyObject* self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* _setOpTimingEnabled(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  at::mcpu::op_timing::set_enabled(PyObject_IsTrue(arg) != 0);
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _resetOpTiming(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  at::mcpu::op_timing::reset();
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _getOpTiming(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  auto snapshots = at::mcpu::op_timing::snapshot();
+  PyObject* py_threads = PyList_New(static_cast<Py_ssize_t>(snapshots.size()));
+  for (Py_ssize_t i = 0; i < static_cast<Py_ssize_t>(snapshots.size()); ++i) {
+    const auto& snapshot = snapshots[static_cast<std::size_t>(i)];
+    PyObject* py_records =
+        PyList_New(static_cast<Py_ssize_t>(snapshot.records.size()));
+    for (Py_ssize_t j = 0; j < static_cast<Py_ssize_t>(snapshot.records.size());
+         ++j) {
+      const auto& record = snapshot.records[static_cast<std::size_t>(j)];
+      PyObject* py_record = Py_BuildValue(
+          "{s:s,s:s,s:K}",
+          "op",
+          record.op,
+          "phase",
+          record.phase,
+          "t_ns",
+          static_cast<unsigned long long>(record.t_ns));
+      PyList_SET_ITEM(py_records, j, py_record);
+    }
+    PyObject* py_thread = Py_BuildValue(
+        "{s:s,s:O}", "role", snapshot.role, "records", py_records);
+    Py_DECREF(py_records);
+    PyList_SET_ITEM(py_threads, i, py_thread);
+  }
+  return py_threads;
+  END_HANDLE_TH_ERRORS
+}
+
 // LITERALINCLUDE MCPU MODULE METHODS
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
@@ -183,6 +228,9 @@ static PyMethodDef methods[] = {
      _getStreamPriorityRange,
      METH_NOARGS,
      nullptr},
+    {"_set_op_timing_enabled", _setOpTimingEnabled, METH_O, nullptr},
+    {"_reset_op_timing", _resetOpTiming, METH_NOARGS, nullptr},
+    {"_get_op_timing", _getOpTiming, METH_NOARGS, nullptr},
     {nullptr, nullptr, 0, nullptr}};
 // LITERALINCLUDE MCPU MODULE METHODS
 /*

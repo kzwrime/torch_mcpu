@@ -3,7 +3,6 @@
 // Build from the repository root:
 //   g++ -O3 -DNDEBUG -std=c++17 -pthread \
 //     -DTORCH_MCPU_ENABLE_MEMORY_PROTECTION=0 \
-//     -DTORCH_MCPU_ENABLE_ASYNC_LAUNCH=1 \
 //     -Ithird_party/openreg \
 //     -Ibenchmarks/task_queue_dispatch \
 //     benchmarks/task_queue_dispatch/openreg_queue_overhead.cpp \

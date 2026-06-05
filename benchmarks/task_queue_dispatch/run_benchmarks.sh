@@ -24,7 +24,7 @@ Options:
   --pin-core N         Pin worker threads to CPU N where supported.
   --pin-core auto      Pick a high-numbered CPU automatically.
   --stream-spin-only   Keep the openreg stream worker spinning instead of sleeping.
-  --run NAME           Run one benchmark: overhead, breakdown, patterns, progression.
+  --run NAME           Run one benchmark: overhead, breakdown, patterns, progression, pointer.
   --build-only         Compile only.
   --help              Show this help.
 
@@ -106,7 +106,6 @@ compile() {
 compile \
   openreg_queue_overhead \
   -DTORCH_MCPU_ENABLE_MEMORY_PROTECTION=0 \
-  -DTORCH_MCPU_ENABLE_ASYNC_LAUNCH=1 \
   -I"${BENCH_DIR}" \
   -I"${ROOT_DIR}/third_party/openreg" \
   "${BENCH_DIR}/openreg_queue_overhead.cpp" \
@@ -128,6 +127,16 @@ compile \
   stream_progression_benchmark \
   -I"${BENCH_DIR}" \
   "${BENCH_DIR}/stream_progression_benchmark.cpp"
+
+compile \
+  pointer_kernel_launch \
+  -DTORCH_MCPU_ENABLE_MEMORY_PROTECTION=0 \
+  -I"${BENCH_DIR}" \
+  -I"${ROOT_DIR}/third_party/openreg" \
+  "${BENCH_DIR}/pointer_kernel_launch.cpp" \
+  "${ROOT_DIR}/third_party/openreg/csrc/device.cpp" \
+  "${ROOT_DIR}/third_party/openreg/csrc/stream.cpp" \
+  "${ROOT_DIR}/third_party/openreg/csrc/memory.cpp"
 
 if [[ "${BUILD_ONLY}" -eq 1 ]]; then
   exit 0
@@ -180,3 +189,8 @@ run_bench \
   progression \
   "${BUILD_DIR}/stream_progression_benchmark" \
   "${progression_args[@]}"
+
+run_bench \
+  pointer \
+  "${BUILD_DIR}/pointer_kernel_launch" \
+  "${common_args[@]}"

@@ -28,13 +28,11 @@ int max_stream_priorities;
  * a queue is requested, the next queue in the pool to be returned in a
  * round-robin fashion, see Note [Stream Management].
  */
-std::deque<c10::once_flag> device_flags;
 std::vector<std::array<
     std::array<orStream_t, kStreamsPerPool>,
     c10::mcpu::max_compile_time_stream_priorities>>
     streams;
-std::deque<
-    std::array<std::atomic<uint32_t>, max_compile_time_stream_priorities>>
+std::deque<std::array<std::atomic<uint32_t>, max_compile_time_stream_priorities>>
     priority_counters;
 
 thread_local std::unique_ptr<StreamId[]> current_streams = nullptr;
@@ -125,9 +123,14 @@ StreamId makeStreamId(StreamIdType st, size_t si) {
 
 void initGlobalStreamState() {
   num_devices = device_count();
-  device_flags.resize(num_devices);
   streams.resize(num_devices);
   priority_counters.resize(num_devices);
+  for (const auto device : c10::irange(num_devices)) {
+    for (const auto priority :
+         c10::irange(c10::mcpu::max_compile_time_stream_priorities)) {
+      priority_counters[device][priority].store(0, std::memory_order_relaxed);
+    }
+  }
   int leastPriority = -1, greatestPriority = -1;
   MCPU_CHECK(orDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
   auto range = greatestPriority - leastPriority + 1;
@@ -138,32 +141,32 @@ void initGlobalStreamState() {
 
 void initSingleDeviceStream(int priority, DeviceIndex device_index, int i) {
   auto& stream = streams[device_index][priority][i];
+  if (stream != nullptr) {
+    return;
+  }
   MCPU_CHECK(orStreamCreateWithPriority(&stream, 0, priority));
-  priority_counters[device_index][priority] = 0;
 }
 
-// Creates stream pools for the specified device. It should be call only once.
-void initDeviceStreamState(DeviceIndex device_index) {
-  DeviceGuard device_guard{Device(DeviceType::PrivateUse1, device_index)};
-  for (const auto i : c10::irange(kStreamsPerPool)) {
-    for (const auto p : c10::irange(max_stream_priorities)) {
-      initSingleDeviceStream(p, device_index, i);
-    }
+void ensureStreamInitialized(
+    DeviceIndex device_index,
+    int priority,
+    size_t stream_index) {
+  static std::mutex stream_init_mutex;
+  auto& stream = streams[device_index][priority][stream_index];
+  if (stream != nullptr) {
+    return;
   }
+  std::lock_guard<std::mutex> lock(stream_init_mutex);
+  initSingleDeviceStream(priority, device_index, static_cast<int>(stream_index));
 }
 
 void initMcpuStreamsOnce() {
   c10::call_once(init_flag, initGlobalStreamState);
-  for (const auto i : c10::irange(num_devices)) {
-    c10::call_once(
-        device_flags[i], initDeviceStreamState, static_cast<DeviceIndex>(i));
-  }
   if (current_streams) {
     return;
   }
-  // Inits current streams (thread local) to the last queue in the "normal
-  // priority" queue pool. Note: the queue pool have not been initialized yet.
-  // It will be initialized in initDeviceStreamState for the specified device.
+  // Inits current streams (thread local) to the default stream id. The backing
+  // OpenReg stream is created lazily when the stream handle is unwrapped.
   current_streams = std::make_unique<StreamId[]>(num_devices);
   for (const auto i : c10::irange(num_devices)) {
     current_streams[i] = makeStreamId(StreamIdType::DEFAULT, 0);
@@ -206,6 +209,7 @@ orStream_t McpuStream::stream() const {
   // Here, we designate stream 0 from the priority 0 stream pool to serve as the
   // default stream.
   if (st.isDefault()) {
+    ensureStreamInitialized(device_index, 0, 0);
     return streams[device_index][0][0];
   } else if (st.isExt()) {
     return reinterpret_cast<orStream_t>(stream_id);
@@ -220,6 +224,7 @@ orStream_t McpuStream::stream() const {
         " with the value ",
         streamType,
         ")");
+    ensureStreamInitialized(device_index, streamType, si);
     return streams[device_index][streamType][si];
   }
 }

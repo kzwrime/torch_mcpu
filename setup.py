@@ -50,8 +50,6 @@ def build_deps():
         "-DPYTORCH_INSTALL_DIR=" + get_pytorch_dir(),
         "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION="
         + os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "ON"),
-        "-DTORCH_MCPU_ENABLE_ASYNC_LAUNCH="
-        + os.getenv("TORCH_MCPU_ENABLE_ASYNC_LAUNCH", "ON"),
     ]
 
     subprocess.check_call(
