@@ -37,7 +37,7 @@ import torch_mcpu  # noqa: F401 - registers and patches the mcpu backend
 
 DEVICE = torch.device("mcpu")
 OPENREG_QUEUE_CAPACITY = 16_384
-MODE_ID = {"raw": 0, "lambda": 1}
+MODE_ID = {"raw": 0, "lambda": 1, "scoped": 2, "scoped_lambda": 3}
 TIMER_ID = {"clock": 0, "tsc": 1}
 
 
@@ -58,9 +58,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("raw", "lambda", "all"),
+        choices=("raw", "lambda", "scoped", "scoped_lambda", "all"),
         default="all",
-        help="raw uses orLaunchKernel(func,args); lambda captures pointers in a callable",
+        help="raw uses orLaunchKernel(func,args); lambda captures pointers; scoped uses direct Event*; scoped_lambda captures pointers and receives Event*",
     )
     parser.add_argument("--warmup-tasks", type=int, default=64)
     parser.add_argument("--pre-layer-sleep-ms", type=int, default=100)
@@ -124,6 +124,34 @@ def calibrate_tsc_cycles_per_ns() -> float:
     return max(0.001, (end_tick - start_tick) / elapsed_ns)
 
 
+def scoped_event_name(kernel_name: str, mode_name: str) -> str:
+    suffix = "scoped_lambda" if mode_name == "scoped_lambda" else "scoped"
+    if kernel_name == "matmul-128":
+        return f"mcpu::pointer_gap.matmul_128.{suffix}"
+    return f"mcpu::pointer_gap.for_loop.{suffix}"
+
+
+def collect_scoped_events(name: str, tasks: int) -> list[dict[str, int]]:
+    events: list[dict[str, int]] = []
+    for thread in torch.mcpu.get_kernel_timing():
+        if thread.get("role") != "worker":
+            continue
+        for event in thread.get("events", []):
+            if event.get("name") == name:
+                events.append(
+                    {
+                        "begin_tsc": int(event["begin_tsc"]),
+                        "end_tsc": int(event["end_tsc"]),
+                    }
+                )
+    if len(events) < tasks:
+        raise RuntimeError(
+            f"expected at least {tasks} scoped timing events for {name}, "
+            f"got {len(events)}"
+        )
+    return events[-tasks:]
+
+
 def run_mode(
     *,
     mode_name: str,
@@ -145,6 +173,9 @@ def run_mode(
     sleep_marker = torch.empty(1, dtype=torch.int64, device=DEVICE)
     mode_id = MODE_ID[mode_name]
     timer_id = TIMER_ID[timer_name]
+    use_scoped_timing = mode_name in {"scoped", "scoped_lambda"}
+    if use_scoped_timing:
+        torch.mcpu.set_kernel_timing_enabled(True)
 
     warmup = min(tasks, max(0, warmup_tasks))
     if warmup:
@@ -168,6 +199,8 @@ def run_mode(
                     )
         stream.synchronize()
         synchronize_mcpu()
+        if use_scoped_timing:
+            torch.mcpu.reset_kernel_timing()
 
     submit_start = time.perf_counter()
     with torch.inference_mode(), stream:
@@ -191,17 +224,32 @@ def run_mode(
     sync_elapsed_s = time.perf_counter() - sync_start
     total_elapsed_s = time.perf_counter() - submit_start
 
-    begin_cpu = begin_ns.cpu().tolist()
-    end_cpu = end_ns.cpu().tolist()
     scale = cycles_per_ns if timer_name == "tsc" else 1.0
-    body_ns = [
-        int(round((int(end) - int(begin)) / scale))
-        for begin, end in zip(begin_cpu, end_cpu)
-    ]
-    gap_ns = [
-        int(round((int(begin_cpu[i]) - int(end_cpu[i - 1])) / scale))
-        for i in range(1, len(begin_cpu))
-    ]
+    if use_scoped_timing:
+        torch.mcpu.set_kernel_timing_enabled(False)
+        events = collect_scoped_events(
+            scoped_event_name(kernel_name, mode_name), tasks
+        )
+        scale = cycles_per_ns
+        body_ns = [
+            int(round((event["end_tsc"] - event["begin_tsc"]) / scale))
+            for event in events
+        ]
+        gap_ns = [
+            int(round((events[i]["begin_tsc"] - events[i - 1]["end_tsc"]) / scale))
+            for i in range(1, len(events))
+        ]
+    else:
+        begin_cpu = begin_ns.cpu().tolist()
+        end_cpu = end_ns.cpu().tolist()
+        body_ns = [
+            int(round((int(end) - int(begin)) / scale))
+            for begin, end in zip(begin_cpu, end_cpu)
+        ]
+        gap_ns = [
+            int(round((int(begin_cpu[i]) - int(end_cpu[i - 1])) / scale))
+            for i in range(1, len(begin_cpu))
+        ]
 
     sleep_covers_submit = (pre_layer_sleep_ms / 1000.0) >= submit_elapsed_s
     return {
@@ -212,8 +260,10 @@ def run_mode(
         "matmul_shape": "1x128x128" if kernel_name == "matmul-128" else "",
         "data_elements": data_elements,
         "pre_layer_sleep_ms": pre_layer_sleep_ms,
-        "timer": timer_name,
-        "cycles_per_ns": cycles_per_ns if timer_name == "tsc" else 0.0,
+        "timer": "scope-tsc" if use_scoped_timing else timer_name,
+        "cycles_per_ns": cycles_per_ns
+        if (timer_name == "tsc" or use_scoped_timing)
+        else 0.0,
         "submit_elapsed_s": submit_elapsed_s,
         "sync_elapsed_s": sync_elapsed_s,
         "total_elapsed_s": total_elapsed_s,
@@ -274,7 +324,10 @@ def main() -> None:
 
     stream = torch.Stream(device=DEVICE)
     modes = ("raw", "lambda") if args.mode == "all" else (args.mode,)
-    cycles_per_ns = calibrate_tsc_cycles_per_ns() if args.timer == "tsc" else 1.0
+    needs_tsc_scale = args.timer == "tsc" or bool(
+        {"scoped", "scoped_lambda"}.intersection(modes)
+    )
+    cycles_per_ns = calibrate_tsc_cycles_per_ns() if needs_tsc_scale else 1.0
     results = [
         run_mode(
             mode_name=mode,

@@ -12,6 +12,7 @@
 #include <torch/csrc/utils/python_numbers.h>
 
 #include <c10/core/CachingDeviceAllocator.h>
+#include <runtime/McpuKernelTiming.h>
 #include <runtime/OpenRegFunctions.h>
 #include <runtime/McpuOpTiming.h>
 
@@ -209,6 +210,57 @@ static PyObject* _getOpTiming(PyObject* self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* _setKernelTimingEnabled(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  at::mcpu::kernel_timing::set_enabled(PyObject_IsTrue(arg) != 0);
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _resetKernelTiming(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  at::mcpu::kernel_timing::reset();
+  Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _getKernelTiming(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  auto snapshots = at::mcpu::kernel_timing::snapshot();
+  PyObject* py_threads = PyList_New(static_cast<Py_ssize_t>(snapshots.size()));
+  for (Py_ssize_t i = 0; i < static_cast<Py_ssize_t>(snapshots.size()); ++i) {
+    const auto& snapshot = snapshots[static_cast<std::size_t>(i)];
+    PyObject* py_events =
+        PyList_New(static_cast<Py_ssize_t>(snapshot.events.size()));
+    for (Py_ssize_t j = 0; j < static_cast<Py_ssize_t>(snapshot.events.size());
+         ++j) {
+      const auto& event = snapshot.events[static_cast<std::size_t>(j)];
+      PyObject* py_event = Py_BuildValue(
+          "{s:s,s:K,s:K}",
+          "name",
+          event.name,
+          "begin_tsc",
+          static_cast<unsigned long long>(event.begin_tsc),
+          "end_tsc",
+          static_cast<unsigned long long>(event.end_tsc));
+      PyList_SET_ITEM(py_events, j, py_event);
+    }
+    PyObject* py_thread = Py_BuildValue(
+        "{s:s,s:O}", "role", snapshot.role, "events", py_events);
+    Py_DECREF(py_events);
+    PyList_SET_ITEM(py_threads, i, py_thread);
+  }
+  return py_threads;
+  END_HANDLE_TH_ERRORS
+}
+
+static PyObject* _readKernelTimingTsc(PyObject* self, PyObject* noargs) {
+  HANDLE_TH_ERRORS
+  return PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(
+      at::mcpu::kernel_timing::read_tsc()));
+  END_HANDLE_TH_ERRORS
+}
+
 // LITERALINCLUDE MCPU MODULE METHODS
 static PyMethodDef methods[] = {
     {"_init", _initExtension, METH_NOARGS, nullptr},
@@ -231,6 +283,10 @@ static PyMethodDef methods[] = {
     {"_set_op_timing_enabled", _setOpTimingEnabled, METH_O, nullptr},
     {"_reset_op_timing", _resetOpTiming, METH_NOARGS, nullptr},
     {"_get_op_timing", _getOpTiming, METH_NOARGS, nullptr},
+    {"_set_kernel_timing_enabled", _setKernelTimingEnabled, METH_O, nullptr},
+    {"_reset_kernel_timing", _resetKernelTiming, METH_NOARGS, nullptr},
+    {"_get_kernel_timing", _getKernelTiming, METH_NOARGS, nullptr},
+    {"_read_kernel_timing_tsc", _readKernelTimingTsc, METH_NOARGS, nullptr},
     {nullptr, nullptr, 0, nullptr}};
 // LITERALINCLUDE MCPU MODULE METHODS
 /*

@@ -4,6 +4,7 @@
 // next body_begin timestamp minus previous body_end timestamp.
 
 #include "runtime/McpuKernelLaunch.h"
+#include "runtime/McpuKernelTiming.h"
 #include "runtime/OpenRegException.h"
 #include "runtime/OpenRegStream.h"
 
@@ -21,6 +22,10 @@ namespace {
 
 constexpr int64_t kTimerClock = 0;
 constexpr int64_t kTimerTsc = 1;
+constexpr int64_t kModeRaw = 0;
+constexpr int64_t kModeLambda = 1;
+constexpr int64_t kModeScoped = 2;
+constexpr int64_t kModeScopedLambda = 3;
 
 int64_t read_tsc() {
 #if defined(__x86_64__) || defined(__i386__)
@@ -108,7 +113,7 @@ void pointer_gap_for_loop_impl(
   int64_t* end_ptr = end_ns.mutable_data_ptr<int64_t>();
   auto stream = c10::mcpu::getCurrentMcpuStream();
 
-  if (mode == 0) {
+  if (mode == kModeRaw) {
     MCPU_CHECK(orLaunchKernel(
         stream,
         pointer_gap_for_loop_kernel,
@@ -121,10 +126,9 @@ void pointer_gap_for_loop_impl(
     return;
   }
 
-  if (mode == 1) {
+  if (mode == kModeLambda) {
     at::mcpu::launch_kernel_on_stream(
         stream,
-        "mcpu::pointer_gap.for_loop",
         [data_ptr, elements, task, begin_ptr, end_ptr, timer]() {
           pointer_gap_for_loop_kernel(
               data_ptr, elements, task, begin_ptr, end_ptr, timer);
@@ -132,7 +136,39 @@ void pointer_gap_for_loop_impl(
     return;
   }
 
-  TORCH_CHECK(false, "pointer_gap_for_loop mode must be 0(raw) or 1(lambda)");
+  if (mode == kModeScoped) {
+    at::mcpu::launch_timed_kernel_on_stream(
+        stream,
+        "mcpu::pointer_gap.for_loop.scoped",
+        [data_ptr, elements](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::pointer_gap.for_loop.scoped", timing_event);
+          for (int64_t i = 0; i < elements; ++i) {
+            data_ptr[i] = data_ptr[i] * 1.0000001f + 0.000001f;
+          }
+        });
+    return;
+  }
+
+  if (mode == kModeScopedLambda) {
+    at::mcpu::launch_timed_kernel_on_stream(
+        stream,
+        "mcpu::pointer_gap.for_loop.scoped_lambda",
+        [data_ptr, elements](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::pointer_gap.for_loop.scoped_lambda", timing_event);
+          for (int64_t i = 0; i < elements; ++i) {
+            data_ptr[i] = data_ptr[i] * 1.0000001f + 0.000001f;
+          }
+        });
+    return;
+  }
+
+  TORCH_CHECK(
+      false,
+      "pointer_gap_for_loop mode must be 0(raw), 1(lambda), 2(scoped), or 3(scoped_lambda)");
 }
 
 void pointer_gap_matmul_128_impl(
@@ -157,7 +193,7 @@ void pointer_gap_matmul_128_impl(
   int64_t* end_ptr = end_ns.mutable_data_ptr<int64_t>();
   auto stream = c10::mcpu::getCurrentMcpuStream();
 
-  if (mode == 0) {
+  if (mode == kModeRaw) {
     MCPU_CHECK(orLaunchKernel(
         stream,
         pointer_gap_matmul_128_kernel,
@@ -171,10 +207,9 @@ void pointer_gap_matmul_128_impl(
     return;
   }
 
-  if (mode == 1) {
+  if (mode == kModeLambda) {
     at::mcpu::launch_kernel_on_stream(
         stream,
-        "mcpu::pointer_gap.matmul_128",
         [x_ptr, weight_ptr, out_ptr, task, begin_ptr, end_ptr, timer]() {
           pointer_gap_matmul_128_kernel(
               x_ptr, weight_ptr, out_ptr, task, begin_ptr, end_ptr, timer);
@@ -182,7 +217,47 @@ void pointer_gap_matmul_128_impl(
     return;
   }
 
-  TORCH_CHECK(false, "pointer_gap_matmul_128 mode must be 0(raw) or 1(lambda)");
+  if (mode == kModeScoped) {
+    at::mcpu::launch_timed_kernel_on_stream(
+        stream,
+        "mcpu::pointer_gap.matmul_128.scoped",
+        [x_ptr, weight_ptr, out_ptr](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::pointer_gap.matmul_128.scoped", timing_event);
+          for (int64_t j = 0; j < 128; ++j) {
+            float acc = 0.0f;
+            for (int64_t k = 0; k < 128; ++k) {
+              acc += x_ptr[k] * weight_ptr[k * 128 + j];
+            }
+            out_ptr[j] = acc;
+          }
+        });
+    return;
+  }
+
+  if (mode == kModeScopedLambda) {
+    at::mcpu::launch_timed_kernel_on_stream(
+        stream,
+        "mcpu::pointer_gap.matmul_128.scoped_lambda",
+        [x_ptr, weight_ptr, out_ptr](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::pointer_gap.matmul_128.scoped_lambda", timing_event);
+          for (int64_t j = 0; j < 128; ++j) {
+            float acc = 0.0f;
+            for (int64_t k = 0; k < 128; ++k) {
+              acc += x_ptr[k] * weight_ptr[k * 128 + j];
+            }
+            out_ptr[j] = acc;
+          }
+        });
+    return;
+  }
+
+  TORCH_CHECK(
+      false,
+      "pointer_gap_matmul_128 mode must be 0(raw), 1(lambda), 2(scoped), or 3(scoped_lambda)");
 }
 
 } // namespace

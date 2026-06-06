@@ -240,6 +240,22 @@ def get_op_timing() -> list[dict[str, Any]]:
     return torch_mcpu._C._get_op_timing()
 
 
+def set_kernel_timing_enabled(enabled: bool) -> None:
+    torch_mcpu._C._set_kernel_timing_enabled(enabled)
+
+
+def reset_kernel_timing() -> None:
+    torch_mcpu._C._reset_kernel_timing()
+
+
+def get_kernel_timing() -> list[dict[str, Any]]:
+    return torch_mcpu._C._get_kernel_timing()
+
+
+def read_kernel_timing_tsc() -> int:
+    return torch_mcpu._C._read_kernel_timing_tsc()
+
+
 def is_available():
     return True
 
@@ -410,6 +426,10 @@ __all__ = [
     "set_op_timing_enabled",
     "reset_op_timing",
     "get_op_timing",
+    "set_kernel_timing_enabled",
+    "reset_kernel_timing",
+    "get_kernel_timing",
+    "read_kernel_timing_tsc",
     "device_count",
     "current_device",
     "set_device",
