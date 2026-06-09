@@ -126,6 +126,10 @@ class McpuInterface(CpuInterface):
         return torch_mcpu.openreg.current_stream(device)
 
     @staticmethod
+    def default_stream(device: torch.types.Device = None) -> torch.Stream:
+        return torch_mcpu.openreg.default_stream(device)
+
+    @staticmethod
     def set_stream(stream: torch.Stream) -> None:
         torch_mcpu.openreg.set_stream(stream)
 

@@ -9,14 +9,6 @@ from torch.utils.dlpack import DLDeviceType
 
 
 class TestDLPack(TestCase):
-    def _mcpu_default_stream(self):
-        current = torch.mcpu.current_stream()
-        return torch.Stream(
-            stream_id=(0x6 << 1) | 1,
-            device_type=current.device_type,
-            device_index=current.device_index,
-        )
-
     def test_open_device_dlpack(self):
         """Test DLPack conversion for mcpu device"""
         x_in = torch.randn(2, 3).to("mcpu")
@@ -182,7 +174,7 @@ class TestDLPack(TestCase):
         self.assertEqual(raw_y[0].item(), 19)
 
     def test_dlpack_none_stream_waits_on_default_stream(self):
-        default_stream = self._mcpu_default_stream()
+        default_stream = torch.mcpu.default_stream()
         torch.mcpu.set_stream(default_stream)
         producer = torch.Stream(device="mcpu:0")
         x = torch.zeros(8, dtype=torch.int64, device="mcpu")

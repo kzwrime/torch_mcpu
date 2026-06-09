@@ -133,7 +133,7 @@ def _sync_mcpu_dlpack_stream(tensor, stream) -> None:
         return
 
     if stream is None:
-        stream = _mcpu_default_stream(current_stream)
+        stream = torch.mcpu.default_stream(tensor.device)
     else:
         assert stream != 0, "unsupported stream on MCPU: 0."
         stream = torch.Stream(
@@ -148,14 +148,6 @@ def _sync_mcpu_dlpack_stream(tensor, stream) -> None:
     event = torch.Event()
     event.record(current_stream)
     stream.wait_event(event)
-
-
-def _mcpu_default_stream(current_stream):
-    return torch.Stream(
-        stream_id=(0x6 << 1) | 1,
-        device_type=current_stream.device_type,
-        device_index=current_stream.device_index,
-    )
 
 
 def _mcpu_tensor_dlpack_device(self):

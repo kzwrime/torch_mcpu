@@ -128,7 +128,12 @@ void initGlobalStreamState() {
   for (const auto device : c10::irange(num_devices)) {
     for (const auto priority :
          c10::irange(c10::mcpu::max_compile_time_stream_priorities)) {
-      priority_counters[device][priority].store(0, std::memory_order_relaxed);
+      // Priority-0 pool slot 0 is used as the backing OpenReg stream for
+      // MCPU's emulated default stream. User-created pool streams must start
+      // from slot 1 so the first torch.Stream("mcpu") is actually asynchronous
+      // with respect to the default stream.
+      priority_counters[device][priority].store(
+          priority == 0 ? 1 : 0, std::memory_order_relaxed);
     }
   }
   int leastPriority = -1, greatestPriority = -1;

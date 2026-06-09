@@ -32,6 +32,18 @@ class TestStream(TestCase):
         self.assertEqual(stream, stream1)
 
     @skipIfTorchDynamo()
+    def test_first_pool_stream_does_not_alias_default_slot(self):
+        """The first user-created stream should not reuse default's pool slot."""
+        default_stream = torch.mcpu.default_stream()
+        stream = torch.Stream(device="mcpu:0")
+        self.assertEqual(default_stream, torch.mcpu.current_stream())
+        self.assertNotEqual(stream, default_stream)
+        # Native stream ids encode the pool index above the low 4 bits. Index 0
+        # is reserved as the OpenReg backing stream for MCPU's emulated default
+        # stream, so user-created priority-0 streams must start at index 1.
+        self.assertNotEqual(stream.stream_id >> 4, 0)
+
+    @skipIfTorchDynamo()
     def test_stream_context(self):
         """Test stream context manager"""
         with torch.Stream(device="mcpu:0") as stream:

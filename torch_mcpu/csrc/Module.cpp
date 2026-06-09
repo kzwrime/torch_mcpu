@@ -15,6 +15,7 @@
 #include <runtime/McpuKernelTiming.h>
 #include <runtime/OpenRegFunctions.h>
 #include <runtime/McpuOpTiming.h>
+#include <runtime/OpenRegStream.h>
 
 // Forward-declare allocator management functions from libtorch_mcpu.so.
 // (DeviceCachingAllocator.h transitively includes openreg.h which is not on
@@ -166,6 +167,20 @@ static PyObject* _getStreamPriorityRange(PyObject* self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* _getDefaultStream(PyObject* self, PyObject* arg) {
+  HANDLE_TH_ERRORS
+  TORCH_CHECK(THPUtils_checkLong(arg), "_get_default_stream expects an int");
+  auto device_index = THPUtils_unpackDeviceIndex(arg);
+  torch::utils::device_lazy_init(at::kPrivateUse1);
+  auto stream = c10::mcpu::getDefaultMcpuStream(device_index).pack3();
+  return Py_BuildValue(
+      "(Lii)",
+      static_cast<long long>(stream.stream_id),
+      static_cast<int>(stream.device_index),
+      static_cast<int>(stream.device_type));
+  END_HANDLE_TH_ERRORS
+}
+
 static PyObject* _setOpTimingEnabled(PyObject* self, PyObject* arg) {
   HANDLE_TH_ERRORS
   at::mcpu::op_timing::set_enabled(PyObject_IsTrue(arg) != 0);
@@ -280,6 +295,7 @@ static PyMethodDef methods[] = {
      _getStreamPriorityRange,
      METH_NOARGS,
      nullptr},
+    {"_get_default_stream", _getDefaultStream, METH_O, nullptr},
     {"_set_op_timing_enabled", _setOpTimingEnabled, METH_O, nullptr},
     {"_reset_op_timing", _resetOpTiming, METH_NOARGS, nullptr},
     {"_get_op_timing", _getOpTiming, METH_NOARGS, nullptr},

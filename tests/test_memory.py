@@ -592,6 +592,83 @@ class TestCachingDeviceAllocator(TestCase):
         # The caching allocator must have reused the block
         self.assertEqual(ptr1, ptr2, "Caching allocator should reuse freed blocks")
 
+    def test_record_stream_delays_reuse_for_pointer_only_task(self):
+        """record_stream keeps raw-pointer stream work safe after Tensor release."""
+        torch.mcpu.synchronize()
+        torch.mcpu.empty_cache()
+        gc.collect()
+
+        default_stream = torch.mcpu.default_stream()
+        torch.mcpu.set_stream(default_stream)
+        stream = torch.Stream(device="mcpu:0")
+        numel = 3_000_000
+        marker = torch.empty(1, dtype=torch.int64, device="mcpu")
+        data = torch.ones(numel, dtype=torch.float32, device="mcpu")
+        begin = torch.empty(1, dtype=torch.int64, device="mcpu")
+        end = torch.empty(1, dtype=torch.int64, device="mcpu")
+        torch.mcpu.synchronize()
+        data_ptr = data.data_ptr()
+        stats_with_data = torch.mcpu.memory_stats(0)
+
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(marker, 1, 300)
+            torch.ops.mcpu.pointer_gap_for_loop(
+                data,
+                begin,
+                end,
+                0,
+                numel,
+                0,  # raw pointer-only launch mode
+                0,  # c10::getTime timer
+            )
+
+        data.record_stream(stream)
+        del data
+        gc.collect()
+        self.assertFalse(stream.query())
+        stats_pending = torch.mcpu.memory_stats(0)
+        self.assertLess(
+            stats_pending["allocated_bytes.all.current"],
+            stats_with_data["allocated_bytes.all.current"],
+            "destroying the Tensor should release allocated_bytes accounting",
+        )
+
+        replacement = torch.empty(numel, dtype=torch.float32, device="mcpu")
+        stats_replacement = torch.mcpu.memory_stats(0)
+        self.assertGreater(
+            stats_replacement["reserved_bytes.all.current"],
+            stats_pending["reserved_bytes.all.current"],
+            "pending cross-stream use should force a new block reservation",
+        )
+        self.assertNotEqual(
+            replacement.data_ptr(),
+            data_ptr,
+            "record_stream should prevent reuse before the side stream finishes",
+        )
+
+        stream.synchronize()
+        reserved_before_recovered = torch.mcpu.memory_stats(0)[
+            "reserved_bytes.all.current"
+        ]
+        recovered = torch.empty(numel, dtype=torch.float32, device="mcpu")
+        stats_recovered = torch.mcpu.memory_stats(0)
+        self.assertEqual(
+            stats_recovered["reserved_bytes.all.current"],
+            reserved_before_recovered,
+            "completed stream events should make the pending block reusable",
+        )
+        self.assertEqual(
+            recovered.data_ptr(),
+            data_ptr,
+            "the recorded block should return to the reusable pool after stream completion",
+        )
+        self.assertAlmostEqual(
+            recovered.cpu()[0].item(),
+            1.0000011,
+            places=5,
+            msg="the delayed pointer-only task should have written before reuse",
+        )
+
     def test_reset_peak_memory_stats(self):
         """reset_peak_memory_stats clears the peak counter."""
         x = torch.empty(4096, device="mcpu")

@@ -218,6 +218,20 @@ def current_stream(device=None) -> torch.Stream:
     return torch.accelerator.current_stream(device)
 
 
+def default_stream(device=None) -> torch.Stream:
+    device_index = torch.accelerator._get_device_index(device, optional=True)
+    if device_index is None:
+        device_index = current_device()
+    stream_id, device_index, device_type = torch_mcpu._C._get_default_stream(
+        device_index
+    )
+    return torch.Stream(
+        stream_id=stream_id,
+        device_type=device_type,
+        device_index=device_index,
+    )
+
+
 def set_stream(stream: Optional[Stream]) -> None:
     torch.accelerator.set_stream(stream)
 
@@ -430,6 +444,7 @@ __all__ = [
     "StreamContext",
     "stream",
     "current_stream",
+    "default_stream",
     "set_stream",
     "synchronize",
     "set_op_timing_enabled",
