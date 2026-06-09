@@ -8,6 +8,9 @@ add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
 
 target_link_libraries(${LIBRARY_NAME} PRIVATE torch_cpu_library openreg)
 target_include_directories(${LIBRARY_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(${LIBRARY_NAME} PUBLIC
+    TORCH_MCPU_KERNEL_TIMING_USE_TSC=$<BOOL:${TORCH_MCPU_KERNEL_TIMING_USE_TSC}>
+)
 
 install(TARGETS ${LIBRARY_NAME}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

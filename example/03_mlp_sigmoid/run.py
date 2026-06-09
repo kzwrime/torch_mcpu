@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
 
 import torch
 import torch.nn as nn
@@ -111,6 +115,58 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--rtol", type=float, default=1e-4)
     parser.add_argument("--atol", type=float, default=1e-4)
+    parser.add_argument(
+        "--use-profiler",
+        action="store_true",
+        help=(
+            "also run torch.profiler with CPU+PrivateUse1 activities and print "
+            "the key_averages table sorted by self_privateuse1_time_total"
+        ),
+    )
+    parser.add_argument(
+        "--profiler-row-limit",
+        type=int,
+        default=20,
+        help="row limit for the printed profiler key_averages table",
+    )
+    parser.add_argument(
+        "--export-profiler-trace",
+        action="store_true",
+        help="export a Chrome trace when --use-profiler is set",
+    )
+    parser.add_argument(
+        "--torch-profiler-with-stack",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="collect Python stack metadata in torch.profiler traces",
+    )
+    parser.add_argument(
+        "--torch-profiler-record-shapes",
+        action="store_true",
+        help="record tensor shapes in torch.profiler traces",
+    )
+    parser.add_argument(
+        "--torch-profiler-with-memory",
+        action="store_true",
+        help="collect memory events in torch.profiler traces",
+    )
+    parser.add_argument(
+        "--torch-profiler-with-flops",
+        action="store_true",
+        help="collect FLOP estimates in torch.profiler traces where supported",
+    )
+    parser.add_argument(
+        "--torch-profiler-verbose-stack",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="write collected Python stacks into the Chrome trace metadata",
+    )
+    parser.add_argument(
+        "--torch-profiler-all-threads",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="profile host work from all Python threads when supported",
+    )
     return parser.parse_args()
 
 
@@ -210,6 +266,33 @@ def summarize_kernel_events(events: list[dict[str, Any]], cycles_per_ns: float) 
     }
 
 
+def build_profiler_table(
+    profiler: torch.profiler.profile,
+    row_limit: int,
+) -> str:
+    return profiler.key_averages().table(
+        sort_by="self_privateuse1_time_total",
+        row_limit=row_limit,
+    )
+
+
+def count_trace_x_events(path: Path, category: str) -> int:
+    pattern = f'"ph":"X","cat":"{category}"'.encode("utf-8")
+    pretty_pattern = f'"ph": "X", "cat": "{category}"'.encode("utf-8")
+    count = 0
+    tail = b""
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1 << 20)
+            if not chunk:
+                break
+            data = tail + chunk
+            count += data.count(pattern)
+            count += data.count(pretty_pattern)
+            tail = data[-len(pretty_pattern) :]
+    return count
+
+
 def main() -> None:
     args = parse_args()
     if not torch.mcpu.is_available():
@@ -219,6 +302,8 @@ def main() -> None:
     trace_dir.mkdir(parents=True, exist_ok=True)
     summary_file = trace_dir / "mlp_sigmoid_kernel_timing_summary.json"
     events_file = trace_dir / "mlp_sigmoid_kernel_timing_events.json"
+    profiler_table_file = trace_dir / "mlp_sigmoid_profiler_table.txt"
+    profiler_trace_file = trace_dir / "mlp_sigmoid.pt.trace.json"
 
     torch.manual_seed(2026)
     x_cpu = torch.randn(args.tokens, args.model_dim)
@@ -244,22 +329,47 @@ def main() -> None:
     torch.mcpu.reset_kernel_timing()
     torch.mcpu.set_kernel_timing_enabled(True)
 
-    submit_start = time.perf_counter()
-    with torch.inference_mode(), stream:
-        if args.pre_layer_sleep_ms > 0:
-            torch.ops.mcpu.stream_sleep_fill_(sleep_marker, 1, args.pre_layer_sleep_ms)
-        for step in range(args.profile_iters):
-            if torch.accelerator.current_stream() != stream:
-                raise RuntimeError(f"not on explicit stream before layer {step}")
-            y = model(x)
-            if torch.accelerator.current_stream() != stream:
-                raise RuntimeError(f"left explicit stream after layer {step}")
-    submit_elapsed = time.perf_counter() - submit_start
+    profiler = None
+    if args.use_profiler:
+        profiler = torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.PrivateUse1,
+            ],
+            record_shapes=args.torch_profiler_record_shapes,
+            profile_memory=args.torch_profiler_with_memory,
+            with_stack=args.torch_profiler_with_stack,
+            with_flops=args.torch_profiler_with_flops,
+            with_modules=True,
+            experimental_config=torch.profiler._ExperimentalConfig(
+                verbose=(
+                    args.torch_profiler_with_stack
+                    and args.torch_profiler_verbose_stack
+                ),
+                profile_all_threads=args.torch_profiler_all_threads,
+            ),
+            acc_events=True,
+        )
 
-    sync_start = time.perf_counter()
-    stream.synchronize()
-    sync_elapsed = time.perf_counter() - sync_start
-    total_elapsed = time.perf_counter() - submit_start
+    submit_start = time.perf_counter()
+    with profiler if profiler is not None else nullcontext():
+        with torch.inference_mode(), stream:
+            if args.pre_layer_sleep_ms > 0:
+                torch.ops.mcpu.stream_sleep_fill_(
+                    sleep_marker, 1, args.pre_layer_sleep_ms
+                )
+            for step in range(args.profile_iters):
+                if torch.accelerator.current_stream() != stream:
+                    raise RuntimeError(f"not on explicit stream before layer {step}")
+                y = model(x)
+                if torch.accelerator.current_stream() != stream:
+                    raise RuntimeError(f"left explicit stream after layer {step}")
+        submit_elapsed = time.perf_counter() - submit_start
+
+        sync_start = time.perf_counter()
+        stream.synchronize()
+        sync_elapsed = time.perf_counter() - sync_start
+        total_elapsed = time.perf_counter() - submit_start
     torch.mcpu.set_kernel_timing_enabled(False)
 
     actual = y.cpu()
@@ -271,6 +381,17 @@ def main() -> None:
         )
 
     events = collect_kernel_events(cycles_per_ns)
+    profiler_table = ""
+    profiler_mcpu_stream_events = 0
+    if profiler is not None:
+        profiler_table = build_profiler_table(profiler, args.profiler_row_limit)
+        profiler_table_file.write_text(profiler_table, encoding="utf-8")
+        if args.export_profiler_trace:
+            profiler.export_chrome_trace(str(profiler_trace_file))
+            profiler_mcpu_stream_events = count_trace_x_events(
+                profiler_trace_file, "mcpu_kernel"
+            )
+
     summary = {
         "shape": {
             "tokens": args.tokens,
@@ -288,6 +409,16 @@ def main() -> None:
         "total_elapsed_s": total_elapsed,
         "max_diff": max_diff,
         "kernel_timing": summarize_kernel_events(events, cycles_per_ns),
+        "profiler": {
+            "enabled": args.use_profiler,
+            "table_file": str(profiler_table_file) if profiler is not None else "",
+            "trace_file": (
+                str(profiler_trace_file)
+                if profiler is not None and args.export_profiler_trace
+                else ""
+            ),
+            "mcpu_stream_events": profiler_mcpu_stream_events,
+        },
     }
     summary_file.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     events_file.write_text(json.dumps(events, indent=2), encoding="utf-8")
@@ -304,6 +435,13 @@ def main() -> None:
         f"cycles_per_ns={cycles_per_ns:.6f}"
     )
     print(f"reference_check: PASS max_diff={max_diff:.8e}")
+    if profiler_table:
+        print("torch_profiler_key_averages_self_mcpu:")
+        print(profiler_table)
+        print(f"profiler_table={profiler_table_file}")
+        if args.export_profiler_trace:
+            print(f"profiler_trace={profiler_trace_file}")
+            print(f"profiler_mcpu_stream_events={profiler_mcpu_stream_events}")
     print(
         "kernel_gap_ns "
         f"mean={gap['mean_ns']:.1f} median={gap['median_ns']:.1f} "

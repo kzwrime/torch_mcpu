@@ -50,6 +50,8 @@ def build_deps():
         "-DPYTORCH_INSTALL_DIR=" + get_pytorch_dir(),
         "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION="
         + os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "ON"),
+        "-DTORCH_MCPU_KERNEL_TIMING_USE_TSC="
+        + os.getenv("TORCH_MCPU_KERNEL_TIMING_USE_TSC", "OFF"),
     ]
 
     subprocess.check_call(

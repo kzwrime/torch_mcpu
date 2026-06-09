@@ -1,0 +1,239 @@
+import json
+import os
+import tempfile
+import time
+
+import torch
+
+
+_timer_ticks_per_ns = None
+
+
+def _prefer_mcpu_profiler_fallback():
+    try:
+        import torch.autograd.profiler as autograd_profiler
+
+        privateuse1 = torch.profiler.ProfilerActivity.PrivateUse1
+        original_supported = torch.autograd._supported_activities
+
+        def supported_without_mcpu_kineto():
+            activities = set(original_supported())
+            if torch._C._get_privateuse1_backend_name() == "mcpu":
+                activities.discard(privateuse1)
+            return activities
+
+        torch.autograd._supported_activities = supported_without_mcpu_kineto
+        autograd_profiler._supported_activities = supported_without_mcpu_kineto
+    except Exception:
+        pass
+
+
+def _calibrate_timer_ticks_per_ns():
+    global _timer_ticks_per_ns
+    if _timer_ticks_per_ns is not None:
+        return _timer_ticks_per_ns
+
+    start_ticks = torch.mcpu.read_kernel_timing_tsc()
+    start_ns = time.perf_counter_ns()
+    time.sleep(0.002)
+    end_ticks = torch.mcpu.read_kernel_timing_tsc()
+    end_ns = time.perf_counter_ns()
+    elapsed_ns = max(1, end_ns - start_ns)
+    elapsed_ticks = max(1, end_ticks - start_ticks)
+    _timer_ticks_per_ns = max(0.001, elapsed_ticks / elapsed_ns)
+    return _timer_ticks_per_ns
+
+
+def _valid_kernel_events():
+    events = []
+    for thread_index, thread in enumerate(torch.mcpu.get_kernel_timing()):
+        for event in thread.get("events", []):
+            begin = int(event.get("begin_tsc", 0))
+            end = int(event.get("end_tsc", 0))
+            if begin == 0 or end <= begin:
+                continue
+            events.append(
+                (
+                    begin,
+                    end,
+                    str(event.get("name", "mcpu::kernel")),
+                    int(thread.get("thread_index", thread_index)),
+                )
+            )
+    events.sort(key=lambda item: item[0])
+    return events
+
+
+def _number_after(text, key, begin, end):
+    pos = text.find(key, begin, end)
+    if pos < 0:
+        return None
+    pos += len(key)
+    while pos < min(end, len(text)) and text[pos] in " \t\r\n":
+        pos += 1
+    start = pos
+    while pos < min(end, len(text)) and text[pos] in "0123456789+-.eE":
+        pos += 1
+    if pos == start:
+        return None
+    try:
+        return float(text[start:pos])
+    except ValueError:
+        return None
+
+
+def _first_mcpu_host_op_end_us(path):
+    text = ""
+    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+        while True:
+            chunk = handle.read(1 << 20)
+            if not chunk:
+                return 0.0
+            text = (text + chunk)[-(2 << 20) :]
+            marker = '"cat": "cpu_op"'
+            pos = text.find(marker)
+            while pos >= 0:
+                name_pos = text.find('"name": "', pos, pos + 4096)
+                if name_pos >= 0:
+                    name_start = name_pos + len('"name": "')
+                    name_end = text.find('"', name_start)
+                    if name_end >= 0:
+                        name = text[name_start:name_end]
+                        if name.startswith(("aten::", "mcpu::")):
+                            ts = _number_after(text, '"ts":', pos, pos + 4096)
+                            dur = _number_after(text, '"dur":', pos, pos + 4096)
+                            if ts is not None:
+                                return ts + (dur or 0.0)
+                pos = text.find(marker, pos + len(marker))
+
+
+def _find_trace_events_close(path):
+    with open(path, "rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        offset = size
+        tail = b""
+        while offset > 0:
+            read_size = min(1 << 20, offset)
+            offset -= read_size
+            handle.seek(offset)
+            tail = handle.read(read_size) + tail
+            pos = tail.rfind(b"]")
+            if pos >= 0:
+                return offset + pos
+            tail = tail[:256]
+    return -1
+
+
+def _trace_events_need_comma(path, close_pos):
+    with open(path, "rb") as handle:
+        pos = close_pos - 1
+        while pos >= 0:
+            handle.seek(pos)
+            byte = handle.read(1)
+            if byte not in b" \t\r\n":
+                return byte != b"["
+            pos -= 1
+    return False
+
+
+def _append_mcpu_events(path):
+    events = _valid_kernel_events()
+    if not events:
+        return 0
+
+    close_pos = _find_trace_events_close(path)
+    if close_pos < 0:
+        return 0
+
+    ticks_per_ns = _calibrate_timer_ticks_per_ns()
+    first_begin = events[0][0]
+    anchor_us = _first_mcpu_host_op_end_us(path)
+    need_comma = _trace_events_need_comma(path, close_pos)
+
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    fd, temp_path = tempfile.mkstemp(prefix=".mcpu_trace.", suffix=".json", dir=directory)
+    injected = 0
+    try:
+        with os.fdopen(fd, "wb") as out, open(path, "rb") as src:
+            remaining = close_pos
+            while remaining > 0:
+                chunk = src.read(min(1 << 20, remaining))
+                if not chunk:
+                    break
+                out.write(chunk)
+                remaining -= len(chunk)
+
+            if need_comma:
+                out.write(b",")
+            out.write(
+                b'\n{"ph":"M","cat":"mcpu_kernel","name":"process_name",'
+                b'"pid":"MCPU","args":{"name":"MCPU"}}'
+            )
+            for begin, end, name, thread_index in events:
+                ts = anchor_us + ((begin - first_begin) / ticks_per_ns) / 1000.0
+                dur = ((end - begin) / ticks_per_ns) / 1000.0
+                out.write(b",\n")
+                out.write(
+                    json.dumps(
+                        {
+                            "ph": "X",
+                            "cat": "mcpu_kernel",
+                            "name": name,
+                            "pid": "MCPU",
+                            "tid": f"mcpu_stream_{thread_index}",
+                            "ts": ts,
+                            "dur": max(0.0, dur),
+                            "args": {"stream": thread_index},
+                        },
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                injected += 1
+            out.write(b"\n")
+
+            src.seek(close_pos)
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+    return injected
+
+
+def _patch_export_chrome_trace():
+    try:
+        profile_cls = torch.profiler.profile
+        original_export = profile_cls.export_chrome_trace
+    except Exception:
+        return
+
+    if getattr(original_export, "_torch_mcpu_patched", False):
+        return
+
+    def export_chrome_trace_with_mcpu(self, path):
+        result = original_export(self, path)
+        if (
+            torch._C._get_privateuse1_backend_name() == "mcpu"
+            and os.environ.get("TORCH_MCPU_PATCH_PROFILER_TRACE", "1") != "0"
+        ):
+            try:
+                _append_mcpu_events(path)
+            except Exception:
+                pass
+        return result
+
+    export_chrome_trace_with_mcpu._torch_mcpu_patched = True
+    profile_cls.export_chrome_trace = export_chrome_trace_with_mcpu
+
+
+def install():
+    _prefer_mcpu_profiler_fallback()
+    _patch_export_chrome_trace()

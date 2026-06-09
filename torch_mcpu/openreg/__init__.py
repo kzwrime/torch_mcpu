@@ -260,6 +260,15 @@ def is_available():
     return True
 
 
+try:
+    from torch_mcpu.profiler import install as _install_profiler
+
+    _install_profiler()
+    del _install_profiler
+except Exception:
+    pass
+
+
 def empty_cache() -> None:
     """Release all unoccupied cached memory back to the OS."""
     synchronize()

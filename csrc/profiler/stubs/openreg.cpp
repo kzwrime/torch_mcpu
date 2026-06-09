@@ -1,4 +1,5 @@
 #include <sstream>
+#include <cmath>
 
 #include <c10/core/DeviceGuard.h>
 #include <c10/util/ApproximateClock.h>
@@ -8,6 +9,7 @@
 
 #include <include/openreg.h>
 
+#include "runtime/McpuKernelTiming.h"
 #include "runtime/OpenRegFunctions.h"
 #include "runtime/OpenRegStream.h"
 
@@ -28,6 +30,15 @@ static void mcpuCheck(orError_t result, const char* file, int line) {
 }
 #define TORCH_MCPU_CHECK(result) mcpuCheck(result, __FILE__, __LINE__);
 
+struct McpuProfilerEvent {
+  c10::mcpu::McpuStream stream;
+  std::size_t timing_count{0};
+
+  explicit McpuProfilerEvent(c10::mcpu::McpuStream recorded_stream)
+      : stream(recorded_stream),
+        timing_count(at::mcpu::kernel_timing::event_count()) {}
+};
+
 struct McpuMethods : public ProfilerStubs {
   void record(
       c10::DeviceIndex* device,
@@ -40,41 +51,32 @@ struct McpuMethods : public ProfilerStubs {
       *device = c10::mcpu::current_device();
     }
 
-    // Create Mcpu event
-    orEvent_t mcpu_event_ptr{nullptr};
-    TORCH_MCPU_CHECK(
-        orEventCreateWithFlags(&mcpu_event_ptr, orEventEnableTiming));
-    *event = std::shared_ptr<orEvent>(
-        mcpu_event_ptr, [](orEvent_t ptr) { orEventDestroy(ptr); });
-
     // Record CPU timestamp if requested
     if (cpu_ns) {
       *cpu_ns = c10::getTime();
     }
 
-    // Record event on stream
-    TORCH_MCPU_CHECK(orEventRecord(mcpu_event_ptr, stream.stream()));
+    at::mcpu::kernel_timing::set_enabled(true);
+    *event = std::make_shared<McpuProfilerEvent>(stream);
   }
 
   float elapsed(
       const ProfilerVoidEventStub* event_,
       const ProfilerVoidEventStub* event2_) const override {
-    // Cast to shared_ptr<orEvent> - similar to CUDA's ProfilerEventStub cast
-    auto event = reinterpret_cast<const std::shared_ptr<orEvent>*>(event_);
-    auto event2 = reinterpret_cast<const std::shared_ptr<orEvent>*>(event2_);
+    auto event =
+        reinterpret_cast<const std::shared_ptr<McpuProfilerEvent>*>(event_);
+    auto event2 =
+        reinterpret_cast<const std::shared_ptr<McpuProfilerEvent>*>(event2_);
 
     // Check if events are valid
     if (!event || !(*event) || !event2 || !(*event2)) {
       return 0.0f;
     }
 
-    TORCH_MCPU_CHECK(orEventSynchronize(event->get()));
-    TORCH_MCPU_CHECK(orEventSynchronize(event2->get()));
-
-    float ms = 0;
-    TORCH_MCPU_CHECK(orEventElapsedTime(&ms, event->get(), event2->get()));
-    // Convert milliseconds to microseconds
-    return ms * 1000.0;
+    (*event2)->stream.synchronize();
+    const double elapsed_us = at::mcpu::kernel_timing::elapsed_us_between(
+        (*event)->timing_count, (*event2)->timing_count);
+    return static_cast<float>(std::floor(elapsed_us + 0.5));
   }
 
   void mark(const char* name) const override {

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <c10/macros/Macros.h>
+#include <c10/util/ApproximateClock.h>
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
@@ -53,6 +54,10 @@ MCPU_KERNEL_TIMING_EXPORT extern std::atomic<bool> g_enabled;
 MCPU_KERNEL_TIMING_EXPORT void set_enabled(bool value);
 MCPU_KERNEL_TIMING_EXPORT void reset();
 MCPU_KERNEL_TIMING_EXPORT Event* reserve_event_slot(const char* name);
+MCPU_KERNEL_TIMING_EXPORT std::size_t event_count();
+MCPU_KERNEL_TIMING_EXPORT double elapsed_us_between(
+    std::size_t begin,
+    std::size_t end);
 MCPU_KERNEL_TIMING_EXPORT std::vector<ThreadSnapshot> snapshot();
 
 inline thread_local Event* current_event_slot = nullptr;
@@ -62,11 +67,12 @@ inline bool enabled() {
 }
 
 inline std::uint64_t read_tsc() {
-#if defined(__x86_64__) || defined(__i386__)
+#if TORCH_MCPU_KERNEL_TIMING_USE_TSC && \
+    (defined(__x86_64__) || defined(__i386__))
   unsigned int aux = 0;
   return static_cast<std::uint64_t>(__rdtscp(&aux));
 #else
-  return 0;
+  return static_cast<std::uint64_t>(c10::getTime(/*allow_monotonic=*/true));
 #endif
 }
 

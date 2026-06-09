@@ -3,13 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <mutex>
+
+#include <c10/util/ApproximateClock.h>
 
 namespace at::mcpu::op_timing {
 namespace {
 
-constexpr std::size_t kMaxRecordsPerThread = 4096;
+constexpr std::size_t kMaxRecordsPerThread = 262144;
 constexpr const char* kUnknownRole = "unknown";
 
 struct ThreadBuffer {
@@ -26,10 +27,7 @@ std::vector<ThreadBuffer*> g_buffers;
 thread_local ThreadBuffer tls_buffer;
 
 std::uint64_t now_ns() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
+  return static_cast<std::uint64_t>(c10::getTime(/*allow_monotonic=*/true));
 }
 
 void register_buffer(ThreadBuffer& buffer, const char* role) {

@@ -237,12 +237,17 @@ at::Tensor custom_abs(at::Tensor x) {
 at::Tensor& stream_sleep_fill_(at::Tensor& x, int64_t value, int64_t sleep_ms) {
   check_stream_test_tensor(x);
 
-  at::mcpu::launch_kernel(x, [x, value, sleep_ms]() mutable {
-    sleep_for_ms(sleep_ms);
-    at::mcpu::KernelMemoryGuard guard(x);
-    auto* data = x.data_ptr<int64_t>();
-    std::fill_n(data, x.numel(), value);
-  });
+  at::mcpu::launch_timed_kernel(
+      "mcpu::stream_sleep_fill_",
+      [x, value, sleep_ms](
+          at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::stream_sleep_fill_", timing_event);
+        sleep_for_ms(sleep_ms);
+        at::mcpu::KernelMemoryGuard guard(x);
+        auto* data = x.data_ptr<int64_t>();
+        std::fill_n(data, x.numel(), value);
+      });
 
   return x;
 }

@@ -9,17 +9,16 @@ and writable only while a kernel task is running on an MCPU stream. Direct CPU
 access to MCPU storage is intentionally invalid because it bypasses the launch
 queue.
 
-Build-time modes:
+Build-time mode:
 
 - `-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION=OFF`: device allocations use ordinary
   aligned allocation, `orMemoryProtect/Unprotect` are no-ops, and
   `KernelMemoryGuard` compiles to an empty RAII object.
-- `-DTORCH_MCPU_ENABLE_ASYNC_LAUNCH=OFF`: `launch_kernel` directly invokes the
-  callable and does not query current stream, allocate a task, lock a queue, or
-  wake a worker thread.
 
-There is intentionally no environment-variable fallback for these modes. They
-are compile-time choices so the disabled paths have no runtime branch cost.
+`launch_kernel` always uses the stream worker queue. The old synchronous
+compile-time mode has been removed so the launch path has one implementation.
+There is intentionally no environment-variable fallback for memory protection;
+it is a compile-time choice so the disabled path has no runtime branch cost.
 
 ## Operator structure
 

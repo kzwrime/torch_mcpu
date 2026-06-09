@@ -19,6 +19,8 @@ set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 
 option(TORCH_MCPU_ENABLE_MEMORY_PROTECTION
        "Enable page-level protection for simulated mcpu device memory" ON)
+option(TORCH_MCPU_KERNEL_TIMING_USE_TSC
+       "Use x86 rdtscp for MCPU kernel timing instead of c10::getTime" OFF)
 
 if(APPLE)
   set(CMAKE_INSTALL_RPATH "@loader_path/lib;@loader_path;${PYTORCH_INSTALL_DIR}/lib")
