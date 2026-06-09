@@ -1,6 +1,6 @@
 #include "Common.h"
-#include "runtime/McpuKernelTiming.h"
 #include "runtime/McpuKernelLaunch.h"
+#include "runtime/McpuKernelTiming.h"
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/clamp.h>
@@ -24,23 +24,6 @@
 namespace at::mcpu {
 namespace {
 
-void raw_sigmoid_kernel(
-    const float* self,
-    float* out,
-    int64_t numel,
-    int64_t self_stride,
-    int64_t out_stride) {
-  for (int64_t i = 0; i < numel; ++i) {
-    out[i * out_stride] = 1.0f / (1.0f + std::exp(-self[i * self_stride]));
-  }
-}
-
-bool is_float_mcpu_or_cpu(const at::Tensor& tensor) {
-  return tensor.scalar_type() == at::kFloat &&
-      (tensor.device().type() == c10::DeviceType::PrivateUse1 ||
-       tensor.device().type() == c10::DeviceType::CPU);
-}
-
 template <typename scalar_t>
 inline bool is_nonzero_value(const scalar_t& value) {
   if constexpr (c10::is_complex<scalar_t>::value) {
@@ -60,27 +43,15 @@ at::Tensor empty_unary_mcpu(
 at::Tensor& sigmoid_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::sigmoid.out", out, self.sizes());
 
-  if (self.dim() <= 2 && out.dim() <= 2 && is_float_mcpu_or_cpu(self) &&
-      is_float_mcpu_or_cpu(out) && self.is_contiguous() && out.is_contiguous()) {
-    const float* self_ptr = self.const_data_ptr<float>();
-    float* out_ptr = out.mutable_data_ptr<float>();
-    const int64_t numel = self.numel();
-    launch_timed_kernel(
-        "aten::sigmoid",
-        [self_ptr, out_ptr, numel](
-            at::mcpu::kernel_timing::Event* timing_event) {
-          MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::sigmoid", timing_event);
-          KernelPointerMemoryGuard guard({self_ptr, out_ptr});
-          raw_sigmoid_kernel(self_ptr, out_ptr, numel, 1, 1);
-        });
-    return out;
-  }
-
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-  launch_kernel(out, [cpu_self, cpu_out]() mutable {
-    at::sigmoid_out(cpu_out, cpu_self);
-  });
+  launch_timed_kernel(
+      "aten::sigmoid_out",
+      [self, out](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::sigmoid", timing_event);
+        KernelMemoryGuard guard(self, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        at::sigmoid_out(cpu_out, cpu_self);
+      });
   return out;
 }
 
@@ -95,8 +66,9 @@ at::Tensor sigmoid(const at::Tensor& self) {
 }
 
 at::Tensor& sigmoid_(at::Tensor& self) {
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  launch_kernel(self, [cpu_self]() mutable {
+  launch_kernel(self, [self]() mutable {
+    KernelMemoryGuard guard(self);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     at::sigmoid_(cpu_self);
   });
   return self;
