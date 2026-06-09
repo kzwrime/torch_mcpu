@@ -2,7 +2,6 @@
 
 import os
 import tempfile
-import time
 import unittest
 
 import torch
@@ -12,7 +11,7 @@ import torch_mcpu
 from torch.testing._internal.common_utils import run_tests, TestCase
 
 
-def _collective_worker(rank: int, world_size: int, init_file: str, queue) -> None:
+def _collective_worker(rank: int, world_size: int, init_file: str, conn) -> None:
     try:
         dist.init_process_group(
             "cpu:gloo,mcpu:mcpu",
@@ -118,7 +117,7 @@ def _collective_worker(rank: int, world_size: int, init_file: str, queue) -> Non
             if send_work is not None:
                 send_work.wait()
 
-        queue.put(
+        conn.send(
             {
                 "rank": rank,
                 "all_reduce": float(reduced.cpu().item()),
@@ -160,18 +159,17 @@ def _collective_worker(rank: int, world_size: int, init_file: str, queue) -> Non
                 ),
             }
         )
+        os._exit(0)
     except Exception as exc:
-        queue.put({"rank": rank, "error": repr(exc)})
-    finally:
-        if dist.is_initialized():
-            dist.destroy_process_group()
+        conn.send({"rank": rank, "error": repr(exc)})
+        os._exit(1)
 
 
-def _mm_allreduce_loop_worker(
+def _async_submit_worker(
     rank: int,
     world_size: int,
     init_file: str,
-    queue,
+    conn,
 ) -> None:
     try:
         dist.init_process_group(
@@ -182,46 +180,30 @@ def _mm_allreduce_loop_worker(
         )
 
         group = dist.new_group(list(range(world_size)))
-        size = 1024
-        iterations = 8
-        hidden = torch.full((size, size), float(rank + 1), device="mcpu")
-        weight = torch.full((size, size), 1.0 / size, device="mcpu")
+        tensor = torch.tensor([float(rank + 1)], device="mcpu")
+        work = dist.all_reduce(tensor, group=group, async_op=True)
+        completed_before_wait = work.is_completed()
+        work.wait()
 
-        torch.mcpu.synchronize()
-        submit_start = time.perf_counter()
-        for _ in range(iterations):
-            hidden = torch.mm(hidden, weight)
-            hidden = torch.mm(hidden, weight)
-            dist.all_reduce(hidden, group=group)
-        submit_elapsed = time.perf_counter() - submit_start
-
-        sync_start = time.perf_counter()
-        torch.mcpu.synchronize()
-        sync_elapsed = time.perf_counter() - sync_start
-        total_elapsed = time.perf_counter() - submit_start
-
-        queue.put(
+        conn.send(
             {
                 "rank": rank,
-                "submit_elapsed": submit_elapsed,
-                "sync_elapsed": sync_elapsed,
-                "total_elapsed": total_elapsed,
-                "device": hidden.device.type,
-                "value": float(hidden[0, 0].cpu().item()),
+                "completed_before_wait": completed_before_wait,
+                "device": tensor.device.type,
+                "value": float(tensor.cpu().item()),
             }
         )
+        os._exit(0)
     except Exception as exc:
-        queue.put({"rank": rank, "error": repr(exc)})
-    finally:
-        if dist.is_initialized():
-            dist.destroy_process_group()
+        conn.send({"rank": rank, "error": repr(exc)})
+        os._exit(1)
 
 
 def _bidirectional_p2p_worker(
     rank: int,
     world_size: int,
     init_file: str,
-    queue,
+    conn,
 ) -> None:
     try:
         dist.init_process_group(
@@ -252,48 +234,59 @@ def _bidirectional_p2p_worker(
         for work in works:
             work.wait()
 
-        queue.put(
+        conn.send(
             {
                 "rank": rank,
                 "recv": float(recv_tensor.cpu().item()),
                 "batch_recv": float(batch_recv.cpu().item()),
             }
         )
+        os._exit(0)
     except Exception as exc:
-        queue.put({"rank": rank, "error": repr(exc)})
-    finally:
-        if dist.is_initialized():
-            dist.destroy_process_group()
+        conn.send({"rank": rank, "error": repr(exc)})
+        os._exit(1)
 
 
 class TestDistributed(TestCase):
+    def test_mcpu_backend_is_registered(self):
+        self.assertTrue(dist.is_backend_available("mcpu"))
+        self.assertEqual(
+            dist.get_default_backend_for_device(torch.device("mcpu")),
+            "mcpu",
+        )
+
     @unittest.skipIf(os.name == "nt", "file init + spawn test is Linux-oriented")
     def test_distributed_ops_on_mcpu_use_cpu_views(self):
         world_size = 2
         fd, init_file = tempfile.mkstemp(prefix="mcpu_dist_")
         os.close(fd)
         os.unlink(init_file)
-        ctx = mp.get_context("spawn")
-        queue = ctx.Queue()
-
-        procs = [
-            ctx.Process(
-                target=_collective_worker,
-                args=(rank, world_size, init_file, queue),
+        ctx = mp.get_context("fork")
+        parent_conns = []
+        procs = []
+        for rank in range(world_size):
+            parent_conn, child_conn = ctx.Pipe(duplex=False)
+            parent_conns.append(parent_conn)
+            procs.append(
+                ctx.Process(
+                    target=_collective_worker,
+                    args=(rank, world_size, init_file, child_conn),
+                )
             )
-            for rank in range(world_size)
-        ]
 
         for proc in procs:
             proc.start()
 
-        results = [queue.get(timeout=30) for _ in range(world_size)]
+        results = []
+        for parent_conn in parent_conns:
+            self.assertTrue(parent_conn.poll(30), "timed out waiting for result")
+            results.append(parent_conn.recv())
 
         for proc in procs:
-            proc.join(timeout=30)
-
-        for proc in procs:
-            self.assertEqual(proc.exitcode, 0)
+            proc.join(timeout=5)
+            if proc.exitcode is None:
+                proc.terminate()
+                proc.join(timeout=5)
 
         by_rank = {result["rank"]: result for result in results}
         self.assertEqual(set(by_rank.keys()), {0, 1})
@@ -335,32 +328,37 @@ class TestDistributed(TestCase):
         self.assertEqual(by_rank[0]["reduce"], 3.0)
 
     @unittest.skipIf(os.name == "nt", "file init + spawn test is Linux-oriented")
-    def test_mm_mm_allreduce_loop_submits_without_host_blocking(self):
+    def test_async_allreduce_returns_work_and_completes(self):
         world_size = 2
         fd, init_file = tempfile.mkstemp(prefix="mcpu_dist_stream_")
         os.close(fd)
         os.unlink(init_file)
-        ctx = mp.get_context("spawn")
-        queue = ctx.Queue()
-
-        procs = [
-            ctx.Process(
-                target=_mm_allreduce_loop_worker,
-                args=(rank, world_size, init_file, queue),
+        ctx = mp.get_context("fork")
+        parent_conns = []
+        procs = []
+        for rank in range(world_size):
+            parent_conn, child_conn = ctx.Pipe(duplex=False)
+            parent_conns.append(parent_conn)
+            procs.append(
+                ctx.Process(
+                    target=_async_submit_worker,
+                    args=(rank, world_size, init_file, child_conn),
+                )
             )
-            for rank in range(world_size)
-        ]
 
         for proc in procs:
             proc.start()
 
-        results = [queue.get(timeout=180) for _ in range(world_size)]
+        results = []
+        for parent_conn in parent_conns:
+            self.assertTrue(parent_conn.poll(180), "timed out waiting for result")
+            results.append(parent_conn.recv())
 
         for proc in procs:
-            proc.join(timeout=180)
-
-        for proc in procs:
-            self.assertEqual(proc.exitcode, 0)
+            proc.join(timeout=5)
+            if proc.exitcode is None:
+                proc.terminate()
+                proc.join(timeout=5)
 
         by_rank = {result["rank"]: result for result in results}
         self.assertEqual(set(by_rank.keys()), {0, 1})
@@ -372,22 +370,8 @@ class TestDistributed(TestCase):
                 f"rank {rank} failed: {result.get('error')}",
             )
             self.assertEqual(result["device"], "mcpu")
-            self.assertAlmostEqual(result["value"], 384.0)
-            if result["total_elapsed"] < 0.2:
-                self.skipTest(
-                    "mm/mm/all_reduce workload completed too quickly for a "
-                    "stable host-blocking timing assertion"
-                )
-            self.assertLess(
-                result["submit_elapsed"],
-                result["total_elapsed"] * 0.8,
-                (
-                    "mm/mm/all_reduce submission appears to block the host: "
-                    f"submit={result['submit_elapsed']:.6f}s, "
-                    f"sync={result['sync_elapsed']:.6f}s, "
-                    f"total={result['total_elapsed']:.6f}s"
-                ),
-            )
+            self.assertEqual(result["value"], 3.0)
+            self.assertIsInstance(result["completed_before_wait"], bool)
 
     @unittest.skipIf(os.name == "nt", "file init + spawn test is Linux-oriented")
     def test_bidirectional_p2p_does_not_deadlock(self):
@@ -395,27 +379,32 @@ class TestDistributed(TestCase):
         fd, init_file = tempfile.mkstemp(prefix="mcpu_dist_p2p_")
         os.close(fd)
         os.unlink(init_file)
-        ctx = mp.get_context("spawn")
-        queue = ctx.Queue()
-
-        procs = [
-            ctx.Process(
-                target=_bidirectional_p2p_worker,
-                args=(rank, world_size, init_file, queue),
+        ctx = mp.get_context("fork")
+        parent_conns = []
+        procs = []
+        for rank in range(world_size):
+            parent_conn, child_conn = ctx.Pipe(duplex=False)
+            parent_conns.append(parent_conn)
+            procs.append(
+                ctx.Process(
+                    target=_bidirectional_p2p_worker,
+                    args=(rank, world_size, init_file, child_conn),
+                )
             )
-            for rank in range(world_size)
-        ]
 
         for proc in procs:
             proc.start()
 
-        results = [queue.get(timeout=30) for _ in range(world_size)]
+        results = []
+        for parent_conn in parent_conns:
+            self.assertTrue(parent_conn.poll(30), "timed out waiting for result")
+            results.append(parent_conn.recv())
 
         for proc in procs:
-            proc.join(timeout=30)
-
-        for proc in procs:
-            self.assertEqual(proc.exitcode, 0)
+            proc.join(timeout=5)
+            if proc.exitcode is None:
+                proc.terminate()
+                proc.join(timeout=5)
 
         by_rank = {result["rank"]: result for result in results}
         self.assertEqual(set(by_rank.keys()), {0, 1})

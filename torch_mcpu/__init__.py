@@ -1,5 +1,14 @@
 import sys
 
+
+# LITERALINCLUDE START: AUTOLOAD
+def _autoload():
+    # It is a placeholder function here to be registered as an entry point.
+    pass
+
+
+# LITERALINCLUDE END: AUTOLOAD
+
 import torch
 
 
@@ -21,16 +30,9 @@ from torch_mcpu.compile_flags import (
 
 torch.utils.rename_privateuse1_backend("mcpu")
 torch._register_device_module("mcpu", torch_mcpu.openreg)
+import torch_mcpu.distributed
 torch.utils.generate_methods_for_privateuse1_backend(for_storage=True)
 torch.Stream = torch_mcpu.openreg.Stream
 torch.Event = torch_mcpu.openreg.Event
 torch_mcpu.dlpack.patch_mcpu_dlpack()
 setup_mcpu_compile()
-
-# LITERALINCLUDE START: AUTOLOAD
-def _autoload():
-    # It is a placeholder function here to be registered as an entry point.
-    pass
-
-
-# LITERALINCLUDE END: AUTOLOAD

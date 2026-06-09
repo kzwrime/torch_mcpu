@@ -26,6 +26,11 @@ void resetPeakStats(c10::DeviceIndex device);
 void resetAccumulatedStats(c10::DeviceIndex device);
 } // namespace c10::mcpu
 
+namespace c10d {
+PyObject* _create_process_group_mcpu(PyObject* self, PyObject* args);
+void registerMcpuDistributedBindings(PyObject* module);
+}
+
 namespace py = pybind11;
 
 static PyObject* _initExtension(PyObject* self, PyObject* noargs) {
@@ -301,6 +306,10 @@ static PyMethodDef methods[] = {
     {"_reset_kernel_timing", _resetKernelTiming, METH_NOARGS, nullptr},
     {"_get_kernel_timing", _getKernelTiming, METH_NOARGS, nullptr},
     {"_read_kernel_timing_tsc", _readKernelTimingTsc, METH_NOARGS, nullptr},
+    {"create_process_group_mcpu",
+     c10d::_create_process_group_mcpu,
+     METH_VARARGS,
+     nullptr},
     {nullptr, nullptr, 0, nullptr}};
 // LITERALINCLUDE MCPU MODULE METHODS
 /*
@@ -315,6 +324,7 @@ extern "C" MCPU_EXPORT PyObject* initMcpuModule(void) {
   static struct PyModuleDef mcpu_C_module = {
       PyModuleDef_HEAD_INIT, "torch_mcpu._C", nullptr, -1, methods};
   PyObject* mod = PyModule_Create(&mcpu_C_module);
+  c10d::registerMcpuDistributedBindings(mod);
 
   return mod;
 }
