@@ -113,6 +113,7 @@ at::Tensor& mm_out(
          out_s0,
          out_s1](at::mcpu::kernel_timing::Event* timing_event) {
           MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::mm", timing_event);
+          KernelPointerMemoryGuard guard({self_ptr, mat2_ptr, out_ptr});
           raw_mm_kernel(
               self_ptr,
               mat2_ptr,
@@ -208,6 +209,8 @@ at::Tensor& addmm_out(
          beta_value,
          alpha_value](at::mcpu::kernel_timing::Event* timing_event) {
           MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::addmm", timing_event);
+          KernelPointerMemoryGuard guard(
+              {self_ptr, mat1_ptr, mat2_ptr, out_ptr});
           raw_addmm_kernel(
               self_ptr,
               mat1_ptr,

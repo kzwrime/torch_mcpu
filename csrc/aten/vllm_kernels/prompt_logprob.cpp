@@ -34,26 +34,19 @@ void vllm_prompt_logprobs_token_ids_impl(
   const int32_t* ncomp_ptr = num_computed_tokens.data_ptr<int32_t>();
   const int32_t* tids_ptr = all_token_ids.data_ptr<int32_t>();
 
-  at::mcpu::launch_kernel(
-      prompt_logprobs_token_ids,
-      [prompt_logprobs_token_ids,
-       query_start_loc,
-       idx_mapping,
-       num_computed_tokens,
-       all_token_ids,
-       num_reqs,
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_prompt_logprobs_token_ids",
+      [num_reqs,
        token_ids_stride,
        out_ptr,
        qs_ptr,
        idx_ptr,
        ncomp_ptr,
-       tids_ptr]() mutable {
-        at::mcpu::KernelMemoryGuard guard(
-            prompt_logprobs_token_ids,
-            query_start_loc,
-            idx_mapping,
-            num_computed_tokens,
-            all_token_ids);
+       tids_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::vllm_prompt_logprobs_token_ids", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {out_ptr, qs_ptr, idx_ptr, ncomp_ptr, tids_ptr});
 
         for (int64_t batch_idx = 0; batch_idx < num_reqs; batch_idx++) {
           int32_t req = idx_ptr[batch_idx];

@@ -104,6 +104,7 @@ at::Tensor& add_out(
          other_is_1d,
          alpha_value](at::mcpu::kernel_timing::Event* timing_event) {
           MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::add", timing_event);
+          KernelPointerMemoryGuard guard({self_ptr, other_ptr, out_ptr});
           raw_add_kernel(
               self_ptr,
               other_ptr,

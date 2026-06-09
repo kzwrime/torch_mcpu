@@ -117,6 +117,41 @@ void pointer_mm_out_impl(
   const float* mat2_ptr = mat2.const_data_ptr<float>();
   float* out_ptr = out.mutable_data_ptr<float>();
   auto stream = c10::mcpu::getCurrentMcpuStream();
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  at::mcpu::launch_timed_kernel_on_stream(
+      stream,
+      "mcpu::pointer_mlp.mm",
+      [self_ptr,
+       mat2_ptr,
+       out_ptr,
+       m = self.size(0),
+       n = mat2.size(1),
+       k = self.size(1),
+       self_s0 = self.stride(0),
+       self_s1 = self.stride(1),
+       mat2_s0 = mat2.stride(0),
+       mat2_s1 = mat2.stride(1),
+       out_s0 = out.stride(0),
+       out_s1 = out.stride(1)](
+          at::mcpu::kernel_timing::Event* timing_event) {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::pointer_mlp.mm", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {self_ptr, mat2_ptr, out_ptr});
+        pointer_mm_kernel(
+            self_ptr,
+            mat2_ptr,
+            out_ptr,
+            m,
+            n,
+            k,
+            self_s0,
+            self_s1,
+            mat2_s0,
+            mat2_s1,
+            out_s0,
+            out_s1);
+      });
+#else
   MCPU_CHECK(orLaunchKernel(
       stream,
       pointer_mm_kernel,
@@ -132,6 +167,7 @@ void pointer_mm_out_impl(
       mat2.stride(1),
       out.stride(0),
       out.stride(1)));
+#endif
 }
 
 void pointer_add_out_impl(
@@ -157,6 +193,41 @@ void pointer_add_out_impl(
   const float* other_ptr = other.const_data_ptr<float>();
   float* out_ptr = out.mutable_data_ptr<float>();
   auto stream = c10::mcpu::getCurrentMcpuStream();
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  at::mcpu::launch_timed_kernel_on_stream(
+      stream,
+      "mcpu::pointer_mlp.add",
+      [self_ptr,
+       other_ptr,
+       out_ptr,
+       rows = self.size(0),
+       cols = self.size(1),
+       self_s0 = self.stride(0),
+       self_s1 = self.stride(1),
+       other_s0 = other.stride(0),
+       other_s1 = other_is_1d ? 0 : other.stride(1),
+       out_s0 = out.stride(0),
+       out_s1 = out.stride(1),
+       other_is_1d](
+          at::mcpu::kernel_timing::Event* timing_event) {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::pointer_mlp.add", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {self_ptr, other_ptr, out_ptr});
+        pointer_add_kernel(
+            self_ptr,
+            other_ptr,
+            out_ptr,
+            rows,
+            cols,
+            self_s0,
+            self_s1,
+            other_s0,
+            other_s1,
+            out_s0,
+            out_s1,
+            other_is_1d);
+      });
+#else
   MCPU_CHECK(orLaunchKernel(
       stream,
       pointer_add_kernel,
@@ -172,6 +243,7 @@ void pointer_add_out_impl(
       out.stride(0),
       out.stride(1),
       other_is_1d));
+#endif
 }
 
 void pointer_sigmoid_out_impl(const at::Tensor& self, at::Tensor& out) {
@@ -182,12 +254,27 @@ void pointer_sigmoid_out_impl(const at::Tensor& self, at::Tensor& out) {
   VLLM_MCPU_CHECK(out.is_contiguous(), "out must be contiguous");
 
   auto stream = c10::mcpu::getCurrentMcpuStream();
+  const float* self_ptr = self.const_data_ptr<float>();
+  float* out_ptr = out.mutable_data_ptr<float>();
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  at::mcpu::launch_timed_kernel_on_stream(
+      stream,
+      "mcpu::pointer_mlp.sigmoid",
+      [self_ptr, out_ptr, numel = self.numel()](
+          at::mcpu::kernel_timing::Event* timing_event) {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::pointer_mlp.sigmoid", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard({self_ptr, out_ptr});
+        pointer_sigmoid_kernel(self_ptr, out_ptr, numel);
+      });
+#else
   MCPU_CHECK(orLaunchKernel(
       stream,
       pointer_sigmoid_kernel,
-      self.const_data_ptr<float>(),
-      out.mutable_data_ptr<float>(),
+      self_ptr,
+      out_ptr,
       self.numel()));
+#endif
 }
 
 void pointer_write_time_impl(at::Tensor& out) {
@@ -198,8 +285,21 @@ void pointer_write_time_impl(at::Tensor& out) {
     TORCH_CHECK(out.is_contiguous());
   }
   auto stream = c10::mcpu::getCurrentMcpuStream();
+  int64_t* out_ptr = out.mutable_data_ptr<int64_t>();
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  at::mcpu::launch_timed_kernel_on_stream(
+      stream,
+      "mcpu::pointer_mlp.write_time",
+      [out_ptr](at::mcpu::kernel_timing::Event* timing_event) {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::pointer_mlp.write_time", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard({out_ptr});
+        pointer_write_time_kernel(out_ptr);
+      });
+#else
   MCPU_CHECK(orLaunchKernel(
-      stream, pointer_write_time_kernel, out.mutable_data_ptr<int64_t>()));
+      stream, pointer_write_time_kernel, out_ptr));
+#endif
 }
 
 } // namespace

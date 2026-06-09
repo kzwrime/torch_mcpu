@@ -33,18 +33,17 @@ void protect_memory(void* ptr) noexcept {
 #endif
 }
 
-void unprotect_tensor_memory(
-    const at::TensorBase& tensor,
+void unprotect_memory(
+    const void* ptr,
     std::unordered_set<void*>& unprotected_pointers) {
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
   TORCH_CHECK(
       openreg::isInKernelTask(),
-      "mcpu tensor memory may only be accessed from a launched kernel task");
-  if (!tensor.defined() || !tensor.has_storage() || tensor.numel() == 0) {
+      "mcpu memory may only be accessed from a launched kernel task");
+  if (ptr == nullptr) {
     return;
   }
 
-  void* ptr = tensor.data_ptr();
   orPointerAttributes attr;
   if (orPointerGetAttributes(&attr, ptr) != orSuccess ||
       attr.type != orMemoryTypeDevice) {
@@ -55,6 +54,21 @@ void unprotect_tensor_memory(
   if (inserted) {
     MCPU_CHECK(orMemoryUnprotect(attr.pointer));
   }
+#else
+  (void)ptr;
+  (void)unprotected_pointers;
+#endif
+}
+
+void unprotect_tensor_memory(
+    const at::TensorBase& tensor,
+    std::unordered_set<void*>& unprotected_pointers) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  if (!tensor.defined() || !tensor.has_storage() || tensor.numel() == 0) {
+    return;
+  }
+
+  unprotect_memory(tensor.data_ptr(), unprotected_pointers);
 #else
   (void)tensor;
   (void)unprotected_pointers;

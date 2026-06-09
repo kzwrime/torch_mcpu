@@ -70,6 +70,7 @@ at::Tensor& sigmoid_out(const at::Tensor& self, at::Tensor& out) {
         [self_ptr, out_ptr, numel](
             at::mcpu::kernel_timing::Event* timing_event) {
           MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::sigmoid", timing_event);
+          KernelPointerMemoryGuard guard({self_ptr, out_ptr});
           raw_sigmoid_kernel(self_ptr, out_ptr, numel, 1, 1);
         });
     return out;

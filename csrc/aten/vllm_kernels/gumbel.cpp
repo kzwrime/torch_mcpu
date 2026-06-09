@@ -58,19 +58,18 @@ void vllm_temperature_kernel_impl(
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_temperature_kernel", {
     scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
-    at::mcpu::launch_kernel(
-        logits,
-        [logits,
-         expanded_idx_mapping,
-         temperature,
-         num_tokens,
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_temperature_kernel",
+        [num_tokens,
          logits_stride,
          logits_ptr,
          idx_ptr,
          temp_ptr,
-         vocab_size]() mutable {
-          at::mcpu::KernelMemoryGuard guard(
-              logits, expanded_idx_mapping, temperature);
+         vocab_size](at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_temperature_kernel", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {logits_ptr, idx_ptr, temp_ptr});
           vllm_temperature_kernel_typed<scalar_t>(
               logits_ptr,
               num_tokens,

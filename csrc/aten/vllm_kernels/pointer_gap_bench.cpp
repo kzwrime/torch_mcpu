@@ -114,6 +114,20 @@ void pointer_gap_for_loop_impl(
   auto stream = c10::mcpu::getCurrentMcpuStream();
 
   if (mode == kModeRaw) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    at::mcpu::launch_timed_kernel_on_stream(
+        stream,
+        "mcpu::pointer_gap.for_loop.raw",
+        [data_ptr, elements, task, begin_ptr, end_ptr, timer](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::pointer_gap.for_loop.raw", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {data_ptr, begin_ptr, end_ptr});
+          pointer_gap_for_loop_kernel(
+              data_ptr, elements, task, begin_ptr, end_ptr, timer);
+        });
+#else
     MCPU_CHECK(orLaunchKernel(
         stream,
         pointer_gap_for_loop_kernel,
@@ -123,16 +137,32 @@ void pointer_gap_for_loop_impl(
         begin_ptr,
         end_ptr,
         timer));
+#endif
     return;
   }
 
   if (mode == kModeLambda) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    at::mcpu::launch_timed_kernel_on_stream(
+        stream,
+        "mcpu::pointer_gap.for_loop.lambda",
+        [data_ptr, elements, task, begin_ptr, end_ptr, timer](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::pointer_gap.for_loop.lambda", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {data_ptr, begin_ptr, end_ptr});
+          pointer_gap_for_loop_kernel(
+              data_ptr, elements, task, begin_ptr, end_ptr, timer);
+        });
+#else
     at::mcpu::launch_kernel_on_stream(
         stream,
         [data_ptr, elements, task, begin_ptr, end_ptr, timer]() {
           pointer_gap_for_loop_kernel(
               data_ptr, elements, task, begin_ptr, end_ptr, timer);
         });
+#endif
     return;
   }
 
@@ -144,6 +174,7 @@ void pointer_gap_for_loop_impl(
             at::mcpu::kernel_timing::Event* timing_event) {
           MCPU_KERNEL_TIMING_SCOPE_EVENT(
               "mcpu::pointer_gap.for_loop.scoped", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard({data_ptr});
           for (int64_t i = 0; i < elements; ++i) {
             data_ptr[i] = data_ptr[i] * 1.0000001f + 0.000001f;
           }
@@ -159,6 +190,7 @@ void pointer_gap_for_loop_impl(
             at::mcpu::kernel_timing::Event* timing_event) {
           MCPU_KERNEL_TIMING_SCOPE_EVENT(
               "mcpu::pointer_gap.for_loop.scoped_lambda", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard({data_ptr});
           for (int64_t i = 0; i < elements; ++i) {
             data_ptr[i] = data_ptr[i] * 1.0000001f + 0.000001f;
           }
@@ -194,6 +226,20 @@ void pointer_gap_matmul_128_impl(
   auto stream = c10::mcpu::getCurrentMcpuStream();
 
   if (mode == kModeRaw) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    at::mcpu::launch_timed_kernel_on_stream(
+        stream,
+        "mcpu::pointer_gap.matmul_128.raw",
+        [x_ptr, weight_ptr, out_ptr, task, begin_ptr, end_ptr, timer](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::pointer_gap.matmul_128.raw", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {x_ptr, weight_ptr, out_ptr, begin_ptr, end_ptr});
+          pointer_gap_matmul_128_kernel(
+              x_ptr, weight_ptr, out_ptr, task, begin_ptr, end_ptr, timer);
+        });
+#else
     MCPU_CHECK(orLaunchKernel(
         stream,
         pointer_gap_matmul_128_kernel,
@@ -204,16 +250,32 @@ void pointer_gap_matmul_128_impl(
         begin_ptr,
         end_ptr,
         timer));
+#endif
     return;
   }
 
   if (mode == kModeLambda) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    at::mcpu::launch_timed_kernel_on_stream(
+        stream,
+        "mcpu::pointer_gap.matmul_128.lambda",
+        [x_ptr, weight_ptr, out_ptr, task, begin_ptr, end_ptr, timer](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::pointer_gap.matmul_128.lambda", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {x_ptr, weight_ptr, out_ptr, begin_ptr, end_ptr});
+          pointer_gap_matmul_128_kernel(
+              x_ptr, weight_ptr, out_ptr, task, begin_ptr, end_ptr, timer);
+        });
+#else
     at::mcpu::launch_kernel_on_stream(
         stream,
         [x_ptr, weight_ptr, out_ptr, task, begin_ptr, end_ptr, timer]() {
           pointer_gap_matmul_128_kernel(
               x_ptr, weight_ptr, out_ptr, task, begin_ptr, end_ptr, timer);
         });
+#endif
     return;
   }
 
@@ -225,6 +287,8 @@ void pointer_gap_matmul_128_impl(
             at::mcpu::kernel_timing::Event* timing_event) {
           MCPU_KERNEL_TIMING_SCOPE_EVENT(
               "mcpu::pointer_gap.matmul_128.scoped", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {x_ptr, weight_ptr, out_ptr});
           for (int64_t j = 0; j < 128; ++j) {
             float acc = 0.0f;
             for (int64_t k = 0; k < 128; ++k) {
@@ -244,6 +308,8 @@ void pointer_gap_matmul_128_impl(
             at::mcpu::kernel_timing::Event* timing_event) {
           MCPU_KERNEL_TIMING_SCOPE_EVENT(
               "mcpu::pointer_gap.matmul_128.scoped_lambda", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {x_ptr, weight_ptr, out_ptr});
           for (int64_t j = 0; j < 128; ++j) {
             float acc = 0.0f;
             for (int64_t k = 0; k < 128; ++k) {

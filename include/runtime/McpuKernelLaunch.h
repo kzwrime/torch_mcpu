@@ -13,6 +13,7 @@
 #include "runtime/OpenRegStream.h"
 
 #include <functional>
+#include <initializer_list>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -28,6 +29,9 @@ namespace at::mcpu::detail {
 MCPU_KERNEL_LAUNCH_EXPORT bool enter_kernel_task();
 MCPU_KERNEL_LAUNCH_EXPORT void exit_kernel_task(bool previous) noexcept;
 MCPU_KERNEL_LAUNCH_EXPORT void protect_memory(void* ptr) noexcept;
+MCPU_KERNEL_LAUNCH_EXPORT void unprotect_memory(
+    const void* ptr,
+    std::unordered_set<void*>& unprotected_pointers);
 MCPU_KERNEL_LAUNCH_EXPORT void unprotect_tensor_memory(
     const at::TensorBase& tensor,
     std::unordered_set<void*>& unprotected_pointers);
@@ -61,6 +65,35 @@ class KernelTaskScope {
  private:
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
   bool previous_;
+#endif
+};
+
+class KernelPointerMemoryGuard {
+ public:
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  explicit KernelPointerMemoryGuard(std::initializer_list<const void*> ptrs) {
+    for (const void* ptr : ptrs) {
+      detail::unprotect_memory(ptr, unprotected_pointers_);
+    }
+  }
+
+  ~KernelPointerMemoryGuard() noexcept {
+    for (void* ptr : unprotected_pointers_) {
+      detail::protect_memory(ptr);
+    }
+  }
+#else
+  explicit KernelPointerMemoryGuard(
+      std::initializer_list<const void*>) noexcept {}
+  ~KernelPointerMemoryGuard() noexcept = default;
+#endif
+
+  KernelPointerMemoryGuard(const KernelPointerMemoryGuard&) = delete;
+  KernelPointerMemoryGuard& operator=(const KernelPointerMemoryGuard&) = delete;
+
+ private:
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  std::unordered_set<void*> unprotected_pointers_;
 #endif
 };
 

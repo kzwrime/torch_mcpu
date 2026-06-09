@@ -1,5 +1,7 @@
 #include "native/Minimal.h"
 
+#include <runtime/DeviceCachingAllocator.h>
+
 #include <ATen/native/CPUFallback.h>
 #include <ATen/native/DispatchStub.h>
 
@@ -109,6 +111,11 @@ at::Tensor wrapper_unfold(
   return at::native::mcpu::unfold(self, dimension, size, step);
 }
 
+void wrapper_record_stream(at::Tensor& self, c10::Stream stream) {
+  c10::mcpu::recordStream(
+      self.storage().data_ptr(), c10::mcpu::McpuStream{stream});
+}
+
 // LITERALINCLUDE START: FALLBACK WRAPPER
 void wrapper_cpu_fallback(
     const c10::OperatorHandle& op,
@@ -136,6 +143,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
       wrapper_set_source_Storage_storage_offsetset_);
   m.impl("view", wrapper_view);
   m.impl("unfold", wrapper_unfold);
+  m.impl("record_stream", wrapper_record_stream);
 }
 // LITERALINCLUDE END: TORCH_LIBRARY_IMPL DEFAULT
 

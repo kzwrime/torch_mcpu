@@ -2,6 +2,9 @@
 
 This document describes the migration rule for `torch_mcpu`.
 
+For allocator lifetime and stream-reuse rules behind pointer-only kernels, see
+[`mcpu_stream_memory_lifetime.md`](mcpu_stream_memory_lifetime.md).
+
 ## Runtime model
 
 MCPU device memory is page protected by default. A tensor allocation is readable
@@ -74,6 +77,29 @@ The lambda keeps tensors alive and unlocks their backing storage. The raw
 pointers are passed to the kernel just like CUDA kernels receive device
 pointers. Dtype dispatch is outside the launch task; the task should not contain
 dispatch or pointer lookup unless a fallback CPU operator requires it.
+
+For pointer-only kernels that intentionally pass only raw pointers and scalar
+launch parameters into the task body, use `KernelPointerMemoryGuard` inside the
+launched task. The task body should capture pointers and scalar launch
+parameters rather than tensors:
+
+```cpp
+scalar_t* out_ptr = out.data_ptr<scalar_t>();
+const float* scale_ptr = scale.data_ptr<float>();
+
+at::mcpu::launch_timed_kernel(
+    "mcpu::my_pointer_kernel",
+    [out_ptr, scale_ptr, n](at::mcpu::kernel_timing::Event* timing_event) {
+      MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::my_pointer_kernel", timing_event);
+      at::mcpu::KernelPointerMemoryGuard guard({out_ptr, scale_ptr});
+      my_pointer_kernel(out_ptr, scale_ptr, n);
+    });
+```
+
+When `TORCH_MCPU_ENABLE_MEMORY_PROTECTION=OFF`, `KernelPointerMemoryGuard`
+compiles to an empty object. Hot benchmark paths should keep direct
+`orLaunchKernel(function, args...)` calls behind the disabled-protection branch
+if an extra lambda would affect the measurement.
 
 ## External torch extensions
 
