@@ -100,11 +100,11 @@ def test_copied_grouped_topk_eager_mcpu_matches_cpu():
     torch.testing.assert_close(actual_ids.to("cpu"), expected_ids)
 
 
-@pytest.mark.xfail(
-    strict=True,
+@pytest.mark.skip(
     reason=(
         "mcpu Inductor currently cannot compile the dynamic grouped_topk "
-        "reduction/topk pattern copied from vLLM."
+        "reduction/topk pattern copied from vLLM; running the generated "
+        "cpp_fused softmax loop can access page-protected mcpu memory."
     ),
 )
 def test_copied_grouped_topk_compile_mcpu_dynamic_shapes():

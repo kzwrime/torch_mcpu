@@ -164,11 +164,11 @@ class TestGetCpuViewFromMcpuTensor(TestCase):
     def test_rejects_non_mcpu_tensor(self):
         cpu = torch.zeros(4)
         with self.assertRaises(Exception):
-            torch.mcpu.get_cpu_view_from_mcpu_tensor(cpu)
+            torch.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(cpu)
 
     def test_rejects_non_tensor(self):
         with self.assertRaises(Exception):
-            torch.mcpu.get_cpu_view_from_mcpu_tensor(42)  # type: ignore[arg-type]
+            torch.mcpu.get_unprotected_cpu_view_from_mcpu_tensor(42)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

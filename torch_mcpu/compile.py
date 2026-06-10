@@ -1,10 +1,14 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch._inductor.config as inductor_config
 from torch._dynamo.device_interface import (
-    CpuInterface,
+    DeviceInterface,
+    caching_worker_current_devices,
+    caching_worker_device_properties,
     register_interface_for_device,
 )
 from torch._inductor.codegen import cpp_utils
@@ -14,6 +18,7 @@ import torch_mcpu._C  # type: ignore[misc]
 import torch_mcpu.openreg
 from torch_mcpu.inductor.extension_codegen_backend import (
     McpuCppWrapperCodegen,
+    McpuDisableComputeFusionPass,
     McpuScheduling,
     McpuWrapperCodegen,
 )
@@ -46,52 +51,68 @@ def _setup_aoti_link_flags() -> None:
     )
 
 
-def _disable_inductor_compute_kernels() -> None:
-    """Force every elementwise/reduction aten op to use its eager kernel.
-
-    mcpu runs ops asynchronously via ``launch_kernel`` on a worker thread and its
-    device memory is not host-accessible. Inductor's generated C++ loop kernels
-    (``cpp_fused_*``) read tensor data pointers directly on the host thread, which
-    bypasses that model and segfaults. Inductor only emits such loop kernels for
-    ``pointwise``/``reduction`` tagged ops, so registering an aten fallback for
-    each of them disables fused-kernel generation generically while leaving view,
-    factory and matmul ops to Inductor's normal (data-free) handling.
-    """
-    from torch._inductor import lowering
-
-    for op in list(lowering.lowerings):
-        if (
-            isinstance(op, torch._ops.OpOverload)
-            and op.namespace == "aten"
-            and op not in lowering.fallbacks
-            and (torch.Tag.pointwise in op.tags or torch.Tag.reduction in op.tags)
-        ):
-            lowering.make_fallback(op, warn=False, override_decomp=True)
-
-
 def _register_mcpu_aoti_fallback_shims() -> None:
     from torchgen.aoti.fallback_ops import inductor_fallback_ops
 
     inductor_fallback_ops.setdefault("aten.sigmoid.default", {})
 
 
-class McpuInterface(CpuInterface):
+@dataclass(frozen=True)
+class McpuDeviceProperties:
+    name: str
+    major: int
+    minor: int
+    multi_processor_count: int
+    total_memory: int
+
+
+def _normalize_mcpu_device_index(device: torch.types.Device = None) -> int:
+    if device is None:
+        return McpuInterface.Worker.current_device()
+    if isinstance(device, str):
+        device = torch.device(device)
+    if isinstance(device, torch.device):
+        if device.type not in {"mcpu", "privateuseone"}:
+            raise ValueError(f"Expected an mcpu device, got {device}")
+        if device.index is None:
+            return McpuInterface.Worker.current_device()
+        return device.index
+    return int(device)
+
+
+class McpuInterface(DeviceInterface):
     """Dynamo device interface for the mcpu PrivateUse1 backend."""
 
-    class device(torch_mcpu.openreg.device):
-        pass
+    device = torch_mcpu.openreg.device
+    Event = torch_mcpu.openreg.Event
+    Stream = torch_mcpu.openreg.Stream
 
-    class Stream(torch_mcpu.openreg.Stream):
-        pass
-
-    class Worker(CpuInterface.Worker):
+    class Worker:
         @staticmethod
         def set_device(device: int) -> None:
-            torch_mcpu.openreg.set_device(device)
+            caching_worker_current_devices["mcpu"] = device
 
         @staticmethod
         def current_device() -> int:
+            if "mcpu" in caching_worker_current_devices:
+                return caching_worker_current_devices["mcpu"]
             return torch_mcpu.openreg.current_device()
+
+        @staticmethod
+        def get_device_properties(device: torch.types.Device = None) -> Any:
+            device_index = _normalize_mcpu_device_index(device)
+            if "mcpu" not in caching_worker_device_properties:
+                caching_worker_device_properties["mcpu"] = [
+                    McpuDeviceProperties(
+                        name=f"mcpu:{idx}",
+                        major=0,
+                        minor=0,
+                        multi_processor_count=1,
+                        total_memory=0,
+                    )
+                    for idx in range(torch_mcpu.openreg.device_count())
+                ]
+            return caching_worker_device_properties["mcpu"][device_index]
 
     @staticmethod
     def current_device() -> int:
@@ -103,6 +124,8 @@ class McpuInterface(CpuInterface):
 
     @staticmethod
     def maybe_exchange_device(device: int) -> int:
+        if device < 0:
+            return -1
         return torch_mcpu._C._exchangeDevice(device)
 
     @staticmethod
@@ -134,12 +157,39 @@ class McpuInterface(CpuInterface):
         torch_mcpu.openreg.set_stream(stream)
 
     @staticmethod
+    def _set_stream_by_id(stream_id: int, device_index: int, device_type: int) -> None:
+        stream = torch.Stream(
+            stream_id=stream_id,
+            device_index=device_index,
+            device_type=device_type,
+        )
+        torch_mcpu.openreg.set_stream(stream)
+
+    @staticmethod
+    def get_raw_stream(device_idx: int) -> int:
+        return torch_mcpu.openreg.current_stream(device_idx).stream_id
+
+    @staticmethod
     def synchronize(device: torch.types.Device = None) -> None:
         torch_mcpu.openreg.synchronize(device)
+
+    get_device_properties = staticmethod(Worker.get_device_properties)
+
+    @staticmethod
+    def get_compute_capability(device: torch.types.Device = None) -> str:
+        return "mcpu"
+
+    @staticmethod
+    def is_bf16_supported(including_emulation: bool = False) -> bool:
+        return torch.bfloat16 in torch_mcpu.openreg.get_amp_supported_dtype()
 
     @staticmethod
     def memory_allocated(device: torch.types.Device = None) -> int:
         return torch_mcpu.openreg.memory_allocated(device)
+
+    @staticmethod
+    def is_triton_capable(device: torch.types.Device = None) -> bool:
+        return False
 
     @staticmethod
     def memory_reserved(device: torch.types.Device = None) -> int:
@@ -157,7 +207,6 @@ class McpuInterface(CpuInterface):
 def setup_mcpu_compile() -> None:
     """Register mcpu with Dynamo and Inductor."""
     _setup_aoti_link_flags()
-    _disable_inductor_compute_kernels()
     _register_mcpu_aoti_fallback_shims()
     if _env_flag("TORCH_MCPU_ENABLE_TORCH_XCPU_FUSIONS", True):
         inductor_config.post_grad_custom_post_pass = append_post_grad_pass(
@@ -171,5 +220,6 @@ def setup_mcpu_compile() -> None:
         McpuScheduling,
         McpuWrapperCodegen,
         McpuCppWrapperCodegen,
+        device_custom_pass=McpuDisableComputeFusionPass(),
     )
     cpp_utils.DEVICE_TO_ATEN["mcpu"] = "at::kPrivateUse1"

@@ -25,64 +25,145 @@ Usage::
 """
 import os
 from pathlib import Path
+from textwrap import dedent
+
+import torch
 
 from torch._inductor.codegen import cpp, cpp_wrapper_cpu, wrapper
+from torch._inductor.codegen import cpu_device_op_overrides as _cpu_device_op_overrides  # noqa: F401
 from torch._inductor.codegen.common import (
     DeviceOpOverrides,
     register_device_op_overrides,
 )
-from torch._inductor.codegen.cpu_device_op_overrides import CpuDeviceOpOverrides
+from torch._inductor.custom_graph_pass import (
+    CustomGraphModulePass,
+    get_hash_for_files,
+)
 from torch._inductor.scheduler import BaseScheduling
 from torch._inductor.virtualized import V
 
-# ---------------------------------------------------------------------------
-# Patch get_current_backend so that the 'mcpu' device is treated as a CPU
-# (cpp) backend instead of falling through to the cuda/triton default.
-#
-# torch._inductor.utils.get_current_backend() only knows about "cpu", "mps",
-# and "xpu"; everything else returns config.cuda_backend ("triton").  mcpu is
-# CPU-emulated hardware and must use the "cpp" backend; otherwise the masked-
-# operation codegen in common.py incorrectly calls value.dtype on a string.
-#
-# We must patch the name in every module that imported it via
-# "from ... import get_current_backend", not just the source module.
-# ---------------------------------------------------------------------------
-def _patch_get_current_backend() -> None:
-    from torch._inductor import config as _inductor_config
-    from torch._inductor import utils as _inductor_utils
-
-    _orig = _inductor_utils.get_current_backend
-
-    def _patched(device_type=None):
-        if not device_type:
-            from torch._inductor.virtualized import V as _V
-            try:
-                device_type = _V.graph.get_current_device_or_throw().type
-            except Exception:
-                return _orig(device_type)
-        if device_type == "mcpu":
-            return _inductor_config.cpu_backend
-        return _orig(device_type)
-
-    # Patch the source module so future importers get the fixed version.
-    _inductor_utils.get_current_backend = _patched
-
-    # Patch every already-imported module that bound the name directly via
-    # "from torch._inductor.utils import get_current_backend".
-    import sys
-    for mod in list(sys.modules.values()):
-        if getattr(mod, "get_current_backend", None) is _orig:
-            mod.get_current_backend = _patched
-
-_patch_get_current_backend()
+def _meta_uses_mcpu(value) -> bool:
+    if isinstance(value, torch.Tensor):
+        return value.device.type == "mcpu"
+    if isinstance(value, (list, tuple)):
+        return any(_meta_uses_mcpu(item) for item in value)
+    if isinstance(value, dict):
+        return any(_meta_uses_mcpu(item) for item in value.values())
+    return False
 
 
-class McpuDeviceOpOverrides(CpuDeviceOpOverrides):
+def _graph_uses_mcpu(gm) -> bool:
+    for node in gm.graph.nodes:
+        if _meta_uses_mcpu(node.meta.get("val")) or _meta_uses_mcpu(
+            node.meta.get("example_value")
+        ):
+            return True
+    return False
+
+
+def _is_mcpu_compute_op(node) -> bool:
+    target = node.target
+    return (
+        node.op == "call_function"
+        and isinstance(target, torch._ops.OpOverload)
+        and target.namespace == "aten"
+        and (
+            torch.Tag.pointwise in target.tags
+            or torch.Tag.reduction in target.tags
+        )
+        and (
+            _meta_uses_mcpu(node.meta.get("val"))
+            or _meta_uses_mcpu(node.meta.get("example_value"))
+        )
+    )
+
+
+class McpuDisableComputeFusionPass(CustomGraphModulePass):
+    """Selectively lower mcpu compute ops through ATen fallback.
+
+    mcpu is used to model an accelerator with device memory that is not directly
+    host-accessible. Inductor's generated ``cpp_fused_*`` kernels execute raw
+    loops on the host thread over tensor data pointers, so they bypass the
+    launch-kernel/page-protection model. Marking pointwise and reduction ATen
+    nodes with ``should_fallback`` uses Inductor's selective lowering mechanism
+    to keep graph compilation and AOTI wrapper generation while avoiding CPU
+    fused-loop codegen for mcpu compute.
+    """
+
+    def __call__(self, gm: torch.fx.GraphModule) -> None:
+        if not _graph_uses_mcpu(gm):
+            return
+        for node in gm.graph.nodes:
+            if _is_mcpu_compute_op(node):
+                node.meta["should_fallback"] = True
+
+    def uuid(self):
+        return get_hash_for_files((__file__,), extra=self.__class__.__name__)
+
+
+class McpuDeviceOpOverrides(DeviceOpOverrides):
     """Device-op overrides for mcpu.
 
-    mcpu is a CPU-emulated device so the CPU overrides apply directly
-    (set_device / synchronize / device_guard are all no-ops).
+    mcpu is a PrivateUse1 accelerator simulation. Generated wrappers should use
+    mcpu device/stream APIs instead of inheriting CPU no-op behavior.
     """
+
+    def import_get_raw_stream_as(self, name: str) -> str:
+        return dedent(
+            f"""
+            def {name}(device_idx):
+                import torch
+                return torch.mcpu.current_stream(device_idx).stream_id
+            """
+        )
+
+    def set_device(self, device_idx: int) -> str:
+        return f"torch.mcpu.set_device({device_idx})"
+
+    def synchronize(self) -> str:
+        return "torch.mcpu.synchronize()"
+
+    def device_guard(self, device_idx: int) -> str:
+        return f"torch.mcpu.device({device_idx})"
+
+    def cpp_device_guard(self) -> str:
+        return "at::DeviceGuard"
+
+    def cpp_aoti_device_guard(self) -> str:
+        return "AOTIMcpuGuard"
+
+    def cpp_stream_guard(self) -> str:
+        return "c10::OptionalStreamGuard"
+
+    def cpp_aoti_stream_guard(self) -> str:
+        return "AOTIMcpuStreamGuard"
+
+    def cpp_getStreamFromExternal(self) -> str:
+        return "c10::mcpu::getStreamFromExternal"
+
+    def kernel_header(self) -> str:
+        return ""
+
+    def kernel_driver(self) -> str:
+        return ""
+
+    def cpp_stream_type(self) -> str:
+        return "orStream_t"
+
+    def aoti_get_stream(self) -> str:
+        return "aoti_torch_mcpu_get_current_stream"
+
+    def cpp_kernel_type(self) -> str:
+        return "void*"
+
+    def cpp_device_ptr(self) -> str:
+        return "void*"
+
+    def tma_descriptor_helpers(self) -> str:
+        return ""
+
+    def cpp_scratch(self, idx: int, workspace, prefix=None):
+        return None
 
 
 class McpuWrapperCodegen(wrapper.PythonWrapperCodegen):
@@ -136,10 +217,24 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
     @staticmethod
     def get_device_include_path(device: str) -> str:
         base_dir = Path(__file__).resolve().parent
+        package_dir = base_dir.parent
         header = base_dir.parent / "include" / "cpp_wrapper" / "mcpu.h"
         
         if not header.exists():
             raise FileNotFoundError(f"Failed to find header file: {header}")
+
+        aoti_flags = [
+            f"-I{package_dir}",
+            "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION=1",
+            "-DTORCH_MCPU_KERNEL_TIMING_USE_TSC=0",
+        ]
+        extra_cflags = os.environ.get("AOTI_EXTRA_CFLAGS", "")
+        existing_flags = extra_cflags.split()
+        missing_flags = [flag for flag in aoti_flags if flag not in existing_flags]
+        if missing_flags:
+            os.environ["AOTI_EXTRA_CFLAGS"] = " ".join(
+                [*missing_flags, *existing_flags]
+            )
 
         return f'#include "{header}"'
 

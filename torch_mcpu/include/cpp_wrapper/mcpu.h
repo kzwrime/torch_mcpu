@@ -3,6 +3,7 @@
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/core/TensorBody.h>
+#include <torch/csrc/inductor/cpp_wrapper/common.h>
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <torch/csrc/inductor/aoti_torch/utils.h>
 
@@ -38,8 +39,37 @@
 #include <torch/csrc/autograd/custom_function.h>
 #include <torch/csrc/autograd/function_hook.h>
 
+#include <c10/core/DeviceGuard.h>
+#include <c10/core/StreamGuard.h>
+
 #include "../aten/McpuTensorView.hpp"
 #include "../runtime/McpuKernelLaunch.h"
+
+namespace torch::aot_inductor {
+
+class AOTIMcpuGuard {
+ public:
+  explicit AOTIMcpuGuard(int32_t device_index)
+      : guard_(c10::Device(c10::DeviceType::PrivateUse1, device_index)) {}
+
+  void set_index(int32_t device_index) {
+    guard_.set_index(device_index);
+  }
+
+ private:
+  c10::DeviceGuard guard_;
+};
+
+class AOTIMcpuStreamGuard {
+ public:
+  AOTIMcpuStreamGuard(orStream_t stream, int32_t device_index)
+      : guard_(c10::mcpu::getStreamFromExternal(stream, device_index).unwrap()) {}
+
+ private:
+  c10::OptionalStreamGuard guard_;
+};
+
+} // namespace torch::aot_inductor
 
 using namespace torch::aot_inductor;
 

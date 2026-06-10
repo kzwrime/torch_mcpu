@@ -344,22 +344,24 @@ def get_mcpu_view_from_cpu_tensor(cpu_tensor: "torch.Tensor") -> "torch.Tensor":
     return torch.ops.mcpu.get_mcpu_view_from_cpu_tensor(cpu_tensor)
 
 
-# def get_cpu_view_from_mcpu_tensor(mcpu_tensor: "torch.Tensor") -> "torch.Tensor":
-#     """Return a CPU tensor that is a view of *mcpu_tensor*'s memory.
-#
-#     Unlike the CPU->mcpu direction, this path does not require pinned memory.
-#
-#     Args:
-#         mcpu_tensor: An mcpu tensor.
-#
-#     Returns:
-#         A CPU tensor backed by the same memory.
-#     """
-#     if not isinstance(mcpu_tensor, torch.Tensor):
-#         raise TypeError("Expected mcpu_tensor to be a torch.Tensor")
-#     if mcpu_tensor.device.type != "mcpu":
-#         raise ValueError("Expected mcpu_tensor to be on mcpu")
-#     return torch.ops.mcpu.get_cpu_view_from_mcpu_tensor(mcpu_tensor)
+def get_cpu_view_from_mcpu_tensor(mcpu_tensor: "torch.Tensor") -> "torch.Tensor":
+    """Return a protected CPU tensor that views *mcpu_tensor*'s memory.
+
+    This keeps mcpu page protection intact. Direct host reads or writes through
+    the returned tensor are expected to fault unless the access happens inside
+    the runtime's guarded kernel-launch path.
+    """
+
+    raise RuntimeError(
+        "get_cpu_view_from_mcpu_tensor is not supported in this build. "
+        "Please use get_unprotected_cpu_view_from_mcpu_tensor instead."
+    )
+
+    if not isinstance(mcpu_tensor, torch.Tensor):
+        raise TypeError("Expected mcpu_tensor to be a torch.Tensor")
+    if mcpu_tensor.device.type != "mcpu":
+        raise ValueError("Expected mcpu_tensor to be on mcpu")
+    return torch.ops.mcpu.get_cpu_view_from_mcpu_tensor(mcpu_tensor)
 
 
 def get_unprotected_cpu_view_from_mcpu_tensor(

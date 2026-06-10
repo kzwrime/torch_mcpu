@@ -17,11 +17,9 @@ import torch
 import torch._dynamo
 import torch._inductor.config as inductor_config
 from torch.utils._ordered_set import OrderedSet
-from torch._inductor.codegen import cpp_utils
 from torch._inductor.codegen.common import (
     get_scheduling_for_device,
     get_wrapper_codegen_for_device,
-    register_backend_for_device,
 )
 from torch._inductor.utils import (
     add_scheduler_init_hook,
@@ -41,16 +39,6 @@ from torch_mcpu.inductor.extension_codegen_backend import (
 )
 from torch_mcpu.inductor.torch_xcpu_fusion import McpuTorchXcpuFusionPass
 
-
-def _setup_mcpu_inductor():
-    """Register mcpu with torch.inductor (idempotent)."""
-    register_backend_for_device(
-        "mcpu",
-        McpuScheduling,
-        McpuWrapperCodegen,
-        McpuCppWrapperCodegen,
-    )
-    cpp_utils.DEVICE_TO_ATEN["mcpu"] = "at::kPrivateUse1"
 
 
 def _torch_xcpu_aoti_env():
@@ -78,7 +66,6 @@ class TestMcpuInductorRegistration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        _setup_mcpu_inductor()
 
     def test_scheduling_registered(self):
         self.assertIs(get_scheduling_for_device("mcpu"), McpuScheduling)
@@ -135,7 +122,6 @@ class TestMcpuCompile(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        _setup_mcpu_inductor()
 
     def setUp(self):
         torch._dynamo.reset()
@@ -164,12 +150,18 @@ class TestMcpuCompile(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_compile_python_wrapper(self):
-        """Basic torch.compile with Python wrapper (default mode)."""
+        """Basic torch.compile with Python wrapper (cpp_wrapper=False)."""
         x, y, z, ref = self._make_tensors()
-        opt_fn = torch.compile(self.fn)
-        res = opt_fn(x, y, z)
+        with inductor_config.patch({
+            "cpp_wrapper": False,
+            "fallback_by_default": True,
+        }):
+            opt_fn = torch.compile(self.fn)
+            res, code = run_and_get_code(opt_fn, x, y, z)
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
         self.assertEqual(res.device.type, "mcpu")
         self.assertTrue(torch.allclose(ref, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
 
     def test_compile_cpp_wrapper(self):
         """torch.compile with cpp_wrapper=True (AOT C++ code generation)."""

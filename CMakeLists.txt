@@ -55,6 +55,17 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/
     PATTERN "*.hpp"
 )
 
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/csrc/runtime/
+    DESTINATION include/runtime
+    FILES_MATCHING PATTERN "*.h"
+)
+
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/openreg/include/
+    DESTINATION include
+    FILES_MATCHING PATTERN "*.h"
+    PATTERN "*.inl"
+)
+
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/openreg/include/
     DESTINATION include/openreg
     FILES_MATCHING PATTERN "*.h"
