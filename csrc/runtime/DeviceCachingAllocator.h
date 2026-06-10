@@ -14,7 +14,7 @@
 
 #include <c10/core/AllocatorConfig.h>
 #include <c10/core/CachingDeviceAllocator.h>
-#include <include/Macros.h> // [4] provides MCPU_EXPORT
+#include <Macros.h> // [4] provides MCPU_EXPORT
 #include "OpenRegStream.h" // [5] provides McpuStream
 
 namespace c10::mcpu { // [1]

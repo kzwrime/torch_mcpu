@@ -6,7 +6,7 @@
 #include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
 
-#include <include/openreg.h>
+#include <openreg.h>
 
 #include "DeviceCachingAllocator.h"
 #include "OpenRegFunctions.h"

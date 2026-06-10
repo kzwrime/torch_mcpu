@@ -1,6 +1,6 @@
 #pragma once
 
-#include <include/openreg.h>
+#include <openreg.h>
 
 #include "OpenRegException.h"
 #include "OpenRegFunctions.h"

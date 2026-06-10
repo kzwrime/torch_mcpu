@@ -1,4 +1,5 @@
 import multiprocessing
+import json
 import os
 import platform
 import shutil
@@ -16,6 +17,47 @@ IS_WINDOWS = platform.system() == "Windows"
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 RUN_BUILD_DEPS = any(arg in {"clean", "dist_info"} for arg in sys.argv)
+COMPILE_FLAGS_FILE = os.path.join(BASE_DIR, "torch_mcpu", "_compile_flags.json")
+
+
+def cmake_bool(value):
+    normalized = str(value).strip().upper()
+    if normalized in {"1", "ON", "TRUE", "YES", "Y"}:
+        return "ON"
+    if normalized in {"0", "OFF", "FALSE", "NO", "N"}:
+        return "OFF"
+    raise ValueError(f"Invalid CMake boolean value: {value!r}")
+
+
+def cpp_bool(value):
+    return "1" if cmake_bool(value) == "ON" else "0"
+
+
+def get_mcpu_build_options():
+    return {
+        "TORCH_MCPU_ENABLE_MEMORY_PROTECTION": cmake_bool(
+            os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "ON")
+        ),
+        "TORCH_MCPU_KERNEL_TIMING_USE_TSC": cmake_bool(
+            os.getenv("TORCH_MCPU_KERNEL_TIMING_USE_TSC", "OFF")
+        ),
+    }
+
+
+def write_compile_flags_file(build_options):
+    definitions = {
+        name: cpp_bool(value) for name, value in build_options.items()
+    }
+    payload = {
+        "cmake_options": build_options,
+        "definitions": definitions,
+        "compile_flags": [
+            f"-D{name}={value}" for name, value in definitions.items()
+        ],
+    }
+    with open(COMPILE_FLAGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
 
 
 def make_relative_rpath_args(path):
@@ -42,6 +84,8 @@ def get_pytorch_dir():
 def build_deps():
     build_dir = os.path.join(BASE_DIR, "build")
     os.makedirs(build_dir, exist_ok=True)
+    build_options = get_mcpu_build_options()
+    write_compile_flags_file(build_options)
 
     cmake_args = [
         "-DCMAKE_INSTALL_PREFIX="
@@ -49,9 +93,9 @@ def build_deps():
         "-DPYTHON_INCLUDE_DIR=" + sysconfig.get_paths().get("include"),
         "-DPYTORCH_INSTALL_DIR=" + get_pytorch_dir(),
         "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION="
-        + os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "ON"),
+        + build_options["TORCH_MCPU_ENABLE_MEMORY_PROTECTION"],
         "-DTORCH_MCPU_KERNEL_TIMING_USE_TSC="
-        + os.getenv("TORCH_MCPU_KERNEL_TIMING_USE_TSC", "OFF"),
+        + build_options["TORCH_MCPU_KERNEL_TIMING_USE_TSC"],
     ]
 
     subprocess.check_call(
@@ -91,6 +135,8 @@ class BuildClean(clean):
 
 
 def main():
+    write_compile_flags_file(get_mcpu_build_options())
+
     if not RUN_BUILD_DEPS:
         build_deps()
 
@@ -137,6 +183,7 @@ def main():
             "include/**/*.h",
             "include/**/*.hpp",
             "include/**/*.inl",
+            "_compile_flags.json",
         ]
     }
 

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <include/Macros.h>
-#include <include/openreg.h>
+#include <Macros.h>
+#include <openreg.h>
 
 #include <c10/util/Exception.h>
 

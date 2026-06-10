@@ -224,7 +224,7 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
             raise FileNotFoundError(f"Failed to find header file: {header}")
 
         aoti_flags = [
-            f"-I{package_dir}",
+            f"-I{package_dir / 'include'}",
             "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION=1",
             "-DTORCH_MCPU_KERNEL_TIMING_USE_TSC=0",
         ]

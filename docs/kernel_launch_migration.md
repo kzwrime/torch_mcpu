@@ -5,6 +5,15 @@ This document describes the migration rule for `torch_mcpu`.
 For allocator lifetime and stream-reuse rules behind pointer-only kernels, see
 [`mcpu_stream_memory_lifetime.md`](mcpu_stream_memory_lifetime.md).
 
+## Contents
+
+- [Runtime model](#runtime-model)
+- [Operator structure](#operator-structure)
+- [Fallback-style ATen operators](#fallback-style-aten-operators)
+- [Hand-written kernels](#hand-written-kernels)
+- [External torch extensions](#external-torch-extensions)
+  - [`torch_xcpu` migration example](#torch_xcpu-migration-example)
+
 ## Runtime model
 
 MCPU device memory is page protected by default. A tensor allocation is readable
@@ -110,3 +119,34 @@ Some operators are registered from external projects and are not located under
 - take `data_ptr` and compute launch parameters before enqueueing;
 - keep tensors captured by the task so storage lifetime is correct;
 - do not create CPU views and access MCPU storage outside a launched task.
+
+### `torch_xcpu` migration example
+
+`torch_xcpu` is an important external-project example for the new `torch_mcpu`
+launch and memory-protection model. Its custom ops are registered outside
+`torch_mcpu`, but their kernels still run against MCPU allocations and must obey
+the same launch boundary.
+
+For hand-written pointer kernels in `torch_xcpu_impl`, the intended pattern is
+the pointer-only form shown above:
+
+- compile the implementation with `TORCH_MCPU_ENABLE_MEMORY_PROTECTION=1` so
+  `KernelPointerMemoryGuard` is active. External projects should prefer
+  reading `torch_mcpu.get_compile_flags()` from the installed package and
+  appending those flags to their extension build, so memory-protection and
+  timing settings stay aligned with the installed runtime;
+- include the installed `torch_mcpu` runtime headers needed for
+  `runtime/McpuKernelLaunch.h`;
+- link the extension against `libtorch_mcpu.so` so `launch_timed_kernel`,
+  stream, timing, and memory-guard symbols resolve normally;
+- extract pointers, shape, and stride metadata before enqueueing;
+- enqueue memory work with `at::mcpu::launch_timed_kernel`;
+- use `KernelPointerMemoryGuard` inside the launched task before dereferencing
+  raw pointers;
+- keep Python tests from reading protected storage directly. If a test needs
+  results, synchronize explicitly and copy with `tensor.to("cpu")` rather than
+  using a CPU view helper.
+
+This keeps the external kernel code close to the in-tree
+`torch_mcpu/csrc/aten/vllm_kernels` style while avoiding direct CPU access to
+MCPU storage outside the stream task.

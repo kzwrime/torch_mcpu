@@ -6,7 +6,7 @@
 #if __has_include("../openreg/openreg.h")
 #include "../openreg/openreg.h"
 #else
-#include <include/openreg.h>
+#include <openreg.h>
 #endif
 
 #include "runtime/McpuKernelTiming.h"

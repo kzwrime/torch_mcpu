@@ -9,7 +9,7 @@ add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
 target_link_libraries(${LIBRARY_NAME} PRIVATE torch_cpu_library openreg)
 target_include_directories(${LIBRARY_NAME} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+    ${PROJECT_SOURCE_DIR}/third_party/openreg/include
 )
 target_compile_definitions(${LIBRARY_NAME} PUBLIC
     TORCH_MCPU_ENABLE_MEMORY_PROTECTION=$<BOOL:${TORCH_MCPU_ENABLE_MEMORY_PROTECTION}>

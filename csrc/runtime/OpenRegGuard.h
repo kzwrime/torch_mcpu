@@ -4,7 +4,7 @@
 #include <c10/core/DeviceCapability.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 
-#include <include/openreg.h>
+#include <openreg.h>
 
 #include "OpenRegEvent.h"
 #include "OpenRegFunctions.h"

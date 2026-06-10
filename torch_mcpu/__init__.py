@@ -14,6 +14,11 @@ import torch_mcpu.dlpack
 import torch_mcpu.distributed
 import torch_mcpu.openreg
 from torch_mcpu.compile import setup_mcpu_compile
+from torch_mcpu.compile_flags import (
+    get_compile_config,
+    get_compile_definitions,
+    get_compile_flags,
+)
 
 torch.utils.rename_privateuse1_backend("mcpu")
 torch._register_device_module("mcpu", torch_mcpu.openreg)
