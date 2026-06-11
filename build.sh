@@ -1,3 +1,11 @@
 #!/bin/bash
 # export TORCH_MCPU_ENABLE_MEMORY_PROTECTION="${TORCH_MCPU_ENABLE_MEMORY_PROTECTION:-OFF}"
+# Set TORCH_MCPU_KERNEL_TIMING_USE_TSC=ON to use x86 rdtscp timing.
+
+case "$(uname -m)" in
+  x86_64|amd64|i386|i686)
+    export TORCH_MCPU_ENABLE_MEMORY_PROTECTION="ON"
+    ;;
+esac
+export TORCH_MCPU_KERNEL_TIMING_USE_TSC="${TORCH_MCPU_KERNEL_TIMING_USE_TSC:-OFF}"
 python -m pip install --no-build-isolation .

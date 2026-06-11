@@ -18,7 +18,7 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 
 option(TORCH_MCPU_ENABLE_MEMORY_PROTECTION
-       "Enable page-level protection for simulated mcpu device memory" ON)
+       "Enable page-level protection for simulated mcpu device memory" OFF)
 option(TORCH_MCPU_KERNEL_TIMING_USE_TSC
        "Use x86 rdtscp for MCPU kernel timing instead of c10::getTime" OFF)
 

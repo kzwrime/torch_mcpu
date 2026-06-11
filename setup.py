@@ -36,7 +36,7 @@ def cpp_bool(value):
 def get_mcpu_build_options():
     return {
         "TORCH_MCPU_ENABLE_MEMORY_PROTECTION": cmake_bool(
-            os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "ON")
+            os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "OFF")
         ),
         "TORCH_MCPU_KERNEL_TIMING_USE_TSC": cmake_bool(
             os.getenv("TORCH_MCPU_KERNEL_TIMING_USE_TSC", "OFF")
