@@ -35,6 +35,8 @@ MCPU_KERNEL_LAUNCH_EXPORT void unprotect_memory(
 MCPU_KERNEL_LAUNCH_EXPORT void unprotect_tensor_memory(
     const at::TensorBase& tensor,
     std::unordered_set<void*>& unprotected_pointers);
+MCPU_KERNEL_LAUNCH_EXPORT void unprotect_all_device_memory(
+    std::unordered_set<void*>& unprotected_pointers);
 MCPU_KERNEL_LAUNCH_EXPORT orStream_t
 get_kernel_launch_stream(const at::Tensor& stream_tensor);
 [[deprecated("use launch_kernel(tensor, lambda) or launch_kernel_on_stream(stream, lambda) instead")]]
@@ -90,6 +92,32 @@ class KernelPointerMemoryGuard {
 
   KernelPointerMemoryGuard(const KernelPointerMemoryGuard&) = delete;
   KernelPointerMemoryGuard& operator=(const KernelPointerMemoryGuard&) = delete;
+
+ private:
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  std::unordered_set<void*> unprotected_pointers_;
+#endif
+};
+
+class KernelAllMemoryGuard {
+ public:
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  KernelAllMemoryGuard() {
+    detail::unprotect_all_device_memory(unprotected_pointers_);
+  }
+
+  ~KernelAllMemoryGuard() noexcept {
+    for (void* ptr : unprotected_pointers_) {
+      detail::protect_memory(ptr);
+    }
+  }
+#else
+  KernelAllMemoryGuard() noexcept = default;
+  ~KernelAllMemoryGuard() noexcept = default;
+#endif
+
+  KernelAllMemoryGuard(const KernelAllMemoryGuard&) = delete;
+  KernelAllMemoryGuard& operator=(const KernelAllMemoryGuard&) = delete;
 
  private:
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION

@@ -1,5 +1,6 @@
 #include <ATen/ATen.h>
 #include <torch/library.h>
+#include "common.h"
 
 #include <algorithm>
 #include <cstring>
@@ -95,36 +96,66 @@ void prepare_eagle_inputs_kernel_impl(
   check_1d_integral_capacity(num_rejected, num_reqs, "num_rejected");
   check_1d_integral_capacity(query_start_loc, num_reqs + 1, "query_start_loc");
 
+  at::mcpu::launch_timed_kernel(
+      "mcpu::prepare_eagle_inputs_kernel_impl",
+      [last_token_indices,
+       eagle_input_ids,
+       eagle_positions,
+       target_input_ids,
+       target_positions,
+       idx_mapping,
+       last_sampled,
+       next_prefill_tokens,
+       num_sampled,
+       num_rejected,
+       query_start_loc,
+       num_reqs](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::prepare_eagle_inputs_kernel_impl", timing_event);
+        at::mcpu::KernelMemoryGuard guard(
+            last_token_indices,
+            eagle_input_ids,
+            eagle_positions,
+            target_input_ids,
+            target_positions,
+            idx_mapping,
+            last_sampled,
+            next_prefill_tokens,
+            num_sampled,
+            num_rejected,
+            query_start_loc);
 #pragma omp parallel for
-  for (int64_t batch_idx = 0; batch_idx < num_reqs; ++batch_idx) {
-    const int64_t req_state_idx = load_integral(idx_mapping, batch_idx);
-    const int64_t query_start = load_integral(query_start_loc, batch_idx);
-    const int64_t query_end = load_integral(query_start_loc, batch_idx + 1);
-    int64_t query_len =
-        query_end - query_start - load_integral(num_rejected, batch_idx);
+        for (int64_t batch_idx = 0; batch_idx < num_reqs; ++batch_idx) {
+          const int64_t req_state_idx = load_integral(idx_mapping, batch_idx);
+          const int64_t query_start = load_integral(query_start_loc, batch_idx);
+          const int64_t query_end =
+              load_integral(query_start_loc, batch_idx + 1);
+          int64_t query_len =
+              query_end - query_start - load_integral(num_rejected, batch_idx);
 
-    const int64_t next_token = load_integral(num_sampled, batch_idx) > 0
-        ? load_integral(last_sampled, req_state_idx)
-        : load_integral(next_prefill_tokens, req_state_idx);
+          const int64_t next_token = load_integral(num_sampled, batch_idx) > 0
+              ? load_integral(last_sampled, req_state_idx)
+              : load_integral(next_prefill_tokens, req_state_idx);
 
-    for (int64_t i = 1; i < query_len; ++i) {
-      store_integral(
-          eagle_input_ids,
-          query_start + i - 1,
-          load_integral(target_input_ids, query_start + i));
-    }
+          for (int64_t i = 1; i < query_len; ++i) {
+            store_integral(
+                eagle_input_ids,
+                query_start + i - 1,
+                load_integral(target_input_ids, query_start + i));
+          }
 
-    const int64_t last_token_index = query_start + query_len - 1;
-    last_token_indices.data_ptr<int64_t>()[batch_idx] = last_token_index;
-    store_integral(eagle_input_ids, last_token_index, next_token);
+          const int64_t last_token_index = query_start + query_len - 1;
+          last_token_indices.data_ptr<int64_t>()[batch_idx] = last_token_index;
+          store_integral(eagle_input_ids, last_token_index, next_token);
 
-    for (int64_t i = 0; i < query_len; ++i) {
-      store_integral(
-          eagle_positions,
-          query_start + i,
-          load_integral(target_positions, query_start + i));
-    }
-  }
+          for (int64_t i = 0; i < query_len; ++i) {
+            store_integral(
+                eagle_positions,
+                query_start + i,
+                load_integral(target_positions, query_start + i));
+          }
+        }
+      });
 }
 
 void prepare_eagle_decode_kernel_impl(
@@ -176,45 +207,80 @@ void prepare_eagle_decode_kernel_impl(
       input_hidden_states.size(0) >= num_reqs,
       "input_hidden_states has insufficient rows");
   const int64_t draft_tokens_stride = draft_tokens.stride(0);
-  const int64_t* last_token_indices_ptr =
-      last_token_indices.const_data_ptr<int64_t>();
+
+  at::mcpu::launch_timed_kernel(
+      "mcpu::prepare_eagle_decode_kernel_impl",
+      [draft_tokens,
+       output_hidden_states,
+       output_hidden_states_stride,
+       last_token_indices,
+       target_seq_lens,
+       num_rejected,
+       input_ids,
+       positions,
+       input_hidden_states,
+       input_hidden_states_stride,
+       query_start_loc,
+       seq_lens,
+       hidden_size,
+       max_model_len,
+       max_num_reqs,
+       num_reqs,
+       draft_tokens_stride](at::mcpu::kernel_timing::Event* timing_event)
+          mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::prepare_eagle_decode_kernel_impl", timing_event);
+        at::mcpu::KernelMemoryGuard guard(
+            draft_tokens,
+            output_hidden_states,
+            last_token_indices,
+            target_seq_lens,
+            num_rejected,
+            input_ids,
+            positions,
+            input_hidden_states,
+            query_start_loc,
+            seq_lens);
+        const int64_t* last_token_indices_ptr =
+            last_token_indices.const_data_ptr<int64_t>();
 
 #pragma omp parallel for
-  for (int64_t req_idx = 0; req_idx < num_reqs; ++req_idx) {
-    store_integral(
-        input_ids,
-        req_idx,
-        load_integral(draft_tokens, req_idx * draft_tokens_stride));
+        for (int64_t req_idx = 0; req_idx < num_reqs; ++req_idx) {
+          store_integral(
+              input_ids,
+              req_idx,
+              load_integral(draft_tokens, req_idx * draft_tokens_stride));
 
-    const int64_t src_idx = last_token_indices_ptr[req_idx];
-    copy_hidden_row(
-        input_hidden_states,
-        req_idx,
-        input_hidden_states_stride,
-        output_hidden_states,
-        src_idx,
-        output_hidden_states_stride,
-        hidden_size);
+          const int64_t src_idx = last_token_indices_ptr[req_idx];
+          copy_hidden_row(
+              input_hidden_states,
+              req_idx,
+              input_hidden_states_stride,
+              output_hidden_states,
+              src_idx,
+              output_hidden_states_stride,
+              hidden_size);
 
-    const int64_t position =
-        std::min(load_integral(positions, req_idx) + 1, max_model_len - 1);
-    store_integral(positions, req_idx, position);
+          const int64_t position =
+              std::min(load_integral(positions, req_idx) + 1, max_model_len - 1);
+          store_integral(positions, req_idx, position);
 
-    const int64_t seq_len = std::min(
-        load_integral(target_seq_lens, req_idx) -
-            load_integral(num_rejected, req_idx) + 1,
-        max_model_len);
-    store_integral(seq_lens, req_idx, seq_len);
-  }
+          const int64_t seq_len = std::min(
+              load_integral(target_seq_lens, req_idx) -
+                  load_integral(num_rejected, req_idx) + 1,
+              max_model_len);
+          store_integral(seq_lens, req_idx, seq_len);
+        }
 
 #pragma omp parallel for
-  for (int64_t i = 0; i < max_num_reqs + 1; ++i) {
-    store_integral(query_start_loc, i, std::min(i, num_reqs));
-  }
+        for (int64_t i = 0; i < max_num_reqs + 1; ++i) {
+          store_integral(query_start_loc, i, std::min(i, num_reqs));
+        }
 #pragma omp parallel for
-  for (int64_t i = num_reqs; i < max_num_reqs; ++i) {
-    store_integral(seq_lens, i, 0);
-  }
+        for (int64_t i = num_reqs; i < max_num_reqs; ++i) {
+          store_integral(seq_lens, i, 0);
+        }
+      });
 }
 
 void update_eagle_inputs_kernel_impl(
@@ -233,30 +299,55 @@ void update_eagle_inputs_kernel_impl(
   const int64_t num_reqs = draft_tokens.numel();
   const int64_t draft_tokens_stride = draft_tokens.stride(0);
 
+  at::mcpu::launch_timed_kernel(
+      "mcpu::update_eagle_inputs_kernel_impl",
+      [input_ids,
+       positions,
+       input_hidden_states,
+       input_hidden_states_stride,
+       seq_lens,
+       max_model_len,
+       draft_tokens,
+       output_hidden_states,
+       output_hidden_states_stride,
+       hidden_size,
+       num_reqs,
+       draft_tokens_stride](at::mcpu::kernel_timing::Event* timing_event)
+          mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::update_eagle_inputs_kernel_impl", timing_event);
+        at::mcpu::KernelMemoryGuard guard(
+            input_ids,
+            positions,
+            input_hidden_states,
+            seq_lens,
+            draft_tokens,
+            output_hidden_states);
 #pragma omp parallel for
-  for (int64_t req_idx = 0; req_idx < num_reqs; ++req_idx) {
-    store_integral(
-        input_ids,
-        req_idx,
-        load_integral(draft_tokens, req_idx * draft_tokens_stride));
-    copy_hidden_row(
-        input_hidden_states,
-        req_idx,
-        input_hidden_states_stride,
-        output_hidden_states,
-        req_idx,
-        output_hidden_states_stride,
-        hidden_size);
+        for (int64_t req_idx = 0; req_idx < num_reqs; ++req_idx) {
+          store_integral(
+              input_ids,
+              req_idx,
+              load_integral(draft_tokens, req_idx * draft_tokens_stride));
+          copy_hidden_row(
+              input_hidden_states,
+              req_idx,
+              input_hidden_states_stride,
+              output_hidden_states,
+              req_idx,
+              output_hidden_states_stride,
+              hidden_size);
 
-    store_integral(
-        positions,
-        req_idx,
-        std::min(load_integral(positions, req_idx) + 1, max_model_len - 1));
-    store_integral(
-        seq_lens,
-        req_idx,
-        std::min(load_integral(seq_lens, req_idx) + 1, max_model_len));
-  }
+          store_integral(
+              positions,
+              req_idx,
+              std::min(load_integral(positions, req_idx) + 1, max_model_len - 1));
+          store_integral(
+              seq_lens,
+              req_idx,
+              std::min(load_integral(seq_lens, req_idx) + 1, max_model_len));
+        }
+      });
 }
 
 void strict_rejection_sample_kernel_impl(
@@ -270,34 +361,55 @@ void strict_rejection_sample_kernel_impl(
   // _strict_rejection_sample_kernel.
   const int64_t num_reqs = cu_num_logits.numel() - 1;
 
+  at::mcpu::launch_timed_kernel(
+      "mcpu::strict_rejection_sample_kernel_impl",
+      [sampled,
+       sampled_stride,
+       num_sampled,
+       target_sampled,
+       draft_sampled,
+       cu_num_logits,
+       num_reqs](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::strict_rejection_sample_kernel_impl", timing_event);
+        at::mcpu::KernelMemoryGuard guard(
+            sampled,
+            num_sampled,
+            target_sampled,
+            draft_sampled,
+            cu_num_logits);
 #pragma omp parallel for
-  for (int64_t req_idx = 0; req_idx < num_reqs; ++req_idx) {
-    const int64_t start_idx = load_integral(cu_num_logits, req_idx);
-    const int64_t end_idx = load_integral(cu_num_logits, req_idx + 1);
-    const int64_t num_tokens = end_idx - start_idx;
+        for (int64_t req_idx = 0; req_idx < num_reqs; ++req_idx) {
+          const int64_t start_idx = load_integral(cu_num_logits, req_idx);
+          const int64_t end_idx = load_integral(cu_num_logits, req_idx + 1);
+          const int64_t num_tokens = end_idx - start_idx;
 
-    int64_t accepted = 0;
-    bool rejected = false;
-    for (int64_t i = 0; i < num_tokens - 1; ++i) {
-      if (!rejected) {
-        const int64_t target = load_integral(target_sampled, start_idx + i);
-        const int64_t draft = load_integral(draft_sampled, start_idx + i + 1);
-        store_integral(sampled, req_idx * sampled_stride + i, target);
-        ++accepted;
-        if (target != draft) {
-          rejected = true;
+          int64_t accepted = 0;
+          bool rejected = false;
+          for (int64_t i = 0; i < num_tokens - 1; ++i) {
+            if (!rejected) {
+              const int64_t target =
+                  load_integral(target_sampled, start_idx + i);
+              const int64_t draft =
+                  load_integral(draft_sampled, start_idx + i + 1);
+              store_integral(sampled, req_idx * sampled_stride + i, target);
+              ++accepted;
+              if (target != draft) {
+                rejected = true;
+              }
+            }
+          }
+          if (!rejected) {
+            const int64_t target =
+                load_integral(target_sampled, start_idx + num_tokens - 1);
+            store_integral(
+                sampled, req_idx * sampled_stride + num_tokens - 1, target);
+            ++accepted;
+          }
+          num_sampled.data_ptr<int32_t>()[req_idx] =
+              static_cast<int32_t>(accepted);
         }
-      }
-    }
-    if (!rejected) {
-      const int64_t target =
-          load_integral(target_sampled, start_idx + num_tokens - 1);
-      store_integral(
-          sampled, req_idx * sampled_stride + num_tokens - 1, target);
-      ++accepted;
-    }
-    num_sampled.data_ptr<int32_t>()[req_idx] = static_cast<int32_t>(accepted);
-  }
+      });
 }
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {

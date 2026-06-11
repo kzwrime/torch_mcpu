@@ -134,24 +134,59 @@ void vllm_bias_kernel_impl(
   const int32_t* stop_ptr = stop_token_ids.data_ptr<int32_t>();
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_bias_kernel", {
-    vllm_bias_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(),
-        num_tokens,
-        logits_stride,
-        vocab_size,
-        idx_ptr,
-        n_allowed_ptr,
-        allowed_ptr,
-        allowed_stride,
-        n_bias_ptr,
-        bias_ids_ptr,
-        bias_ids_stride,
-        bias_ptr,
-        pos_ptr,
-        min_lens_ptr,
-        n_stop_ptr,
-        stop_ptr,
-        stop_stride);
+    scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_bias_kernel",
+        [logits_ptr,
+         num_tokens,
+         logits_stride,
+         vocab_size,
+         idx_ptr,
+         n_allowed_ptr,
+         allowed_ptr,
+         allowed_stride,
+         n_bias_ptr,
+         bias_ids_ptr,
+         bias_ids_stride,
+         bias_ptr,
+         pos_ptr,
+         min_lens_ptr,
+         n_stop_ptr,
+         stop_ptr,
+         stop_stride](at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_bias_kernel", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {logits_ptr,
+               idx_ptr,
+               n_allowed_ptr,
+               allowed_ptr,
+               n_bias_ptr,
+               bias_ids_ptr,
+               bias_ptr,
+               pos_ptr,
+               min_lens_ptr,
+               n_stop_ptr,
+               stop_ptr});
+          vllm_bias_kernel_typed<scalar_t>(
+              logits_ptr,
+              num_tokens,
+              logits_stride,
+              vocab_size,
+              idx_ptr,
+              n_allowed_ptr,
+              allowed_ptr,
+              allowed_stride,
+              n_bias_ptr,
+              bias_ids_ptr,
+              bias_ids_stride,
+              bias_ptr,
+              pos_ptr,
+              min_lens_ptr,
+              n_stop_ptr,
+              stop_ptr,
+              stop_stride);
+        });
   });
 }
 

@@ -110,6 +110,27 @@ compiles to an empty object. Hot benchmark paths should keep direct
 `orLaunchKernel(function, args...)` calls behind the disabled-protection branch
 if an extra lambda would affect the measurement.
 
+For kernels with indirect memory access where the full pointer set is not known
+until after reading MCPU metadata inside the task, use `KernelAllMemoryGuard`.
+It snapshots the current MCPU allocator's active device allocations and
+unprotects them for the duration of the launched task:
+
+```cpp
+at::mcpu::launch_timed_kernel(
+    "mcpu::my_indirect_kernel",
+    [metadata_ptr, n](at::mcpu::kernel_timing::Event* timing_event) {
+      MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::my_indirect_kernel", timing_event);
+      at::mcpu::KernelAllMemoryGuard guard;
+      my_indirect_kernel(metadata_ptr, n);
+    });
+```
+
+Prefer `KernelPointerMemoryGuard` when the pointer set is statically available;
+`KernelAllMemoryGuard` is intended for kernels that need indirect pointers such
+as address tables. When `TORCH_MCPU_ENABLE_MEMORY_PROTECTION=OFF`,
+`KernelAllMemoryGuard` compiles to an empty object with no container member and
+no allocator scan.
+
 ## External torch extensions
 
 Some operators are registered from external projects and are not located under

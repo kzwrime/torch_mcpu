@@ -124,22 +124,53 @@ void vllm_penalties_kernel_impl(
   const int32_t* obc_ptr = output_bin_counts.data_ptr<int32_t>();
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_penalties_kernel", {
-    vllm_penalties_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(),
-        num_tokens,
-        logits_stride,
-        vocab_size,
-        idx_ptr,
-        tids_ptr,
-        lpos_ptr,
-        rep_ptr,
-        freq_ptr,
-        pres_ptr,
-        pbm_ptr,
-        pbm_stride,
-        obc_ptr,
-        obc_stride,
-        max_spec_len);
+    scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_penalties_kernel",
+        [logits_ptr,
+         num_tokens,
+         logits_stride,
+         vocab_size,
+         idx_ptr,
+         tids_ptr,
+         lpos_ptr,
+         rep_ptr,
+         freq_ptr,
+         pres_ptr,
+         pbm_ptr,
+         pbm_stride,
+         obc_ptr,
+         obc_stride,
+         max_spec_len](at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_penalties_kernel", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {logits_ptr,
+               idx_ptr,
+               tids_ptr,
+               lpos_ptr,
+               rep_ptr,
+               freq_ptr,
+               pres_ptr,
+               pbm_ptr,
+               obc_ptr});
+          vllm_penalties_kernel_typed<scalar_t>(
+              logits_ptr,
+              num_tokens,
+              logits_stride,
+              vocab_size,
+              idx_ptr,
+              tids_ptr,
+              lpos_ptr,
+              rep_ptr,
+              freq_ptr,
+              pres_ptr,
+              pbm_ptr,
+              pbm_stride,
+              obc_ptr,
+              obc_stride,
+              max_spec_len);
+        });
   });
 }
 
@@ -176,28 +207,47 @@ void vllm_bincount_kernel_impl(
   int64_t pbm_stride = prompt_bin_mask.stride(0);
   int64_t obc_stride = output_bin_counts.stride(0);
 
-  for (int64_t r = 0; r < num_reqs; r++) {
-    int32_t req = idx_ptr[r];
-    int32_t plen = plen_ptr[req];
-    int32_t flen = flen_ptr[req];
-    const int32_t* tids = atids_ptr + (int64_t)req * tids_stride;
-    int32_t* pbm_row = pbm_ptr + (int64_t)req * pbm_stride;
-    int32_t* obc_row = obc_ptr + (int64_t)req * obc_stride;
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_bincount_kernel",
+      [num_reqs,
+       tids_stride,
+       packed_cols,
+       vocab_size,
+       idx_ptr,
+       atids_ptr,
+       plen_ptr,
+       flen_ptr,
+       pbm_ptr,
+       obc_ptr,
+       pbm_stride,
+       obc_stride](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::vllm_bincount_kernel", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {idx_ptr, atids_ptr, plen_ptr, flen_ptr, pbm_ptr, obc_ptr});
+        for (int64_t r = 0; r < num_reqs; r++) {
+          int32_t req = idx_ptr[r];
+          int32_t plen = plen_ptr[req];
+          int32_t flen = flen_ptr[req];
+          const int32_t* tids = atids_ptr + (int64_t)req * tids_stride;
+          int32_t* pbm_row = pbm_ptr + (int64_t)req * pbm_stride;
+          int32_t* obc_row = obc_ptr + (int64_t)req * obc_stride;
 
-    for (int32_t pos = 0; pos < plen; pos++) {
-      int32_t tid = tids[pos];
-      int64_t word = tid / 32;
-      int bit = tid % 32;
-      if (word >= 0 && word < packed_cols)
-        pbm_row[word] |= (1 << bit);
-    }
+          for (int32_t pos = 0; pos < plen; pos++) {
+            int32_t tid = tids[pos];
+            int64_t word = tid / 32;
+            int bit = tid % 32;
+            if (word >= 0 && word < packed_cols)
+              pbm_row[word] |= (1 << bit);
+          }
 
-    for (int32_t pos = plen; pos < flen; pos++) {
-      int32_t tid = tids[pos];
-      if (tid >= 0 && tid < (int32_t)vocab_size)
-        obc_row[tid]++;
-    }
-  }
+          for (int32_t pos = plen; pos < flen; pos++) {
+            int32_t tid = tids[pos];
+            if (tid >= 0 && tid < (int32_t)vocab_size)
+              obc_row[tid]++;
+          }
+        }
+      });
 }
 
 } // namespace

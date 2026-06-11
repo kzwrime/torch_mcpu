@@ -5,6 +5,7 @@
 #pragma once
 #include <ATen/ATen.h>
 #include <torch/library.h>
+#include "runtime/McpuKernelLaunch.h"
 #include <cmath>
 #include <cstdint>
 #include <limits>

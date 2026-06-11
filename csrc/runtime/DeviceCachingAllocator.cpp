@@ -785,6 +785,9 @@ static void local_raw_delete(void* ptr);
 
 class NativeCachingAllocator : public McpuDeviceAllocator {
  private:
+  friend void unprotectAllAllocatedMemory(
+      std::unordered_set<void*>& unprotected_pointers);
+
   alignas(hardware_destructive_interference_size) std::mutex mutex;
   ska::flat_hash_map<void*, Block*> allocated_blocks;
 
@@ -804,6 +807,31 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
       allocated_blocks.erase(it);
     }
     return block;
+  }
+
+  void unprotectAllAllocatedMemory(
+      std::unordered_set<void*>& unprotected_pointers) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+    std::vector<void*> ptrs;
+    {
+      std::scoped_lock<std::mutex> lock(mutex);
+      ptrs.reserve(allocated_blocks.size());
+      for (const auto& entry : allocated_blocks) {
+        ptrs.push_back(entry.second->ptr);
+      }
+    }
+
+    for (void* ptr : ptrs) {
+      if (ptr == nullptr ||
+          unprotected_pointers.find(ptr) != unprotected_pointers.end()) {
+        continue;
+      }
+      MCPU_CHECK(orMemoryUnprotect(ptr));
+      unprotected_pointers.insert(ptr);
+    }
+#else
+    (void)unprotected_pointers;
+#endif
   }
 
   void assertValidDevice(DeviceIndex device) {
@@ -1042,6 +1070,11 @@ double getMemoryFraction(DeviceIndex device) {
 
 void setMemoryFraction(double fraction, DeviceIndex device) {
   return native_allocator.setMemoryFraction(fraction, device);
+}
+
+void unprotectAllAllocatedMemory(
+    std::unordered_set<void*>& unprotected_pointers) {
+  native_allocator.unprotectAllAllocatedMemory(unprotected_pointers);
 }
 
 // [MCPU-12-REMOVED] createOrIncrefPool — PrivatePool removed

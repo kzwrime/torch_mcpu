@@ -85,37 +85,54 @@ void vllm_gather_block_tables_impl(
     const int32_t* group_num_blocks_ptr =
         num_blocks_ptr + group_id * num_blocks_stride;
 
-    for (int64_t batch_idx = 0; batch_idx < num_reqs; ++batch_idx) {
-      const int32_t req_idx = idx_ptr[batch_idx];
-      VLLM_MCPU_CHECK(
-          0 <= req_idx && req_idx < max_num_reqs,
-          "idx_mapping contains out-of-range request index");
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_gather_block_tables",
+        [idx_ptr,
+         group_num_blocks_ptr,
+         src_ptr,
+         dst_ptr,
+         num_reqs,
+         num_reqs_padded,
+         max_num_reqs,
+         max_num_blocks,
+         src_stride0,
+         dst_stride0](at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_gather_block_tables", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {idx_ptr, group_num_blocks_ptr, src_ptr, dst_ptr});
+          for (int64_t batch_idx = 0; batch_idx < num_reqs; ++batch_idx) {
+            const int32_t req_idx = idx_ptr[batch_idx];
+            VLLM_MCPU_CHECK(
+                0 <= req_idx && req_idx < max_num_reqs,
+                "idx_mapping contains out-of-range request index");
 
-      const int32_t n = group_num_blocks_ptr[req_idx];
-      VLLM_MCPU_CHECK(
-          0 <= n && n <= max_num_blocks,
-          "num_blocks contains out-of-range block count");
+            const int32_t n = group_num_blocks_ptr[req_idx];
+            VLLM_MCPU_CHECK(
+                0 <= n && n <= max_num_blocks,
+                "num_blocks contains out-of-range block count");
 
-      const int32_t* src_row =
-          src_ptr + static_cast<int64_t>(req_idx) * src_stride0;
-      int32_t* dst_row = dst_ptr + batch_idx * dst_stride0;
+            const int32_t* src_row =
+                src_ptr + static_cast<int64_t>(req_idx) * src_stride0;
+            int32_t* dst_row = dst_ptr + batch_idx * dst_stride0;
 
-      int64_t j = 0;
-      for (; j < n; ++j) {
-        dst_row[j] = src_row[j];
-      }
-      for (; j < max_num_blocks; ++j) {
-        dst_row[j] = 0;
-      }
-    }
+            int64_t j = 0;
+            for (; j < n; ++j) {
+              dst_row[j] = src_row[j];
+            }
+            for (; j < max_num_blocks; ++j) {
+              dst_row[j] = 0;
+            }
+          }
 
-    for (int64_t batch_idx = num_reqs; batch_idx < num_reqs_padded;
-         ++batch_idx) {
-      int32_t* dst_row = dst_ptr + batch_idx * dst_stride0;
-      for (int64_t j = 0; j < max_num_blocks; ++j) {
-        dst_row[j] = 0;
-      }
-    }
+          for (int64_t batch_idx = num_reqs; batch_idx < num_reqs_padded;
+               ++batch_idx) {
+            int32_t* dst_row = dst_ptr + batch_idx * dst_stride0;
+            for (int64_t j = 0; j < max_num_blocks; ++j) {
+              dst_row[j] = 0;
+            }
+          }
+        });
   }
 }
 
@@ -173,14 +190,7 @@ void vllm_compute_slot_mappings_impl(
   const int32_t* block_sizes_ptr = block_sizes.data_ptr<int32_t>();
   int64_t* slot_ptr = slot_mappings.data_ptr<int64_t>();
   const int64_t slot_stride0 = slot_mappings.stride(0);
-
-  const int32_t actual_num_tokens = qsl_ptr[num_reqs];
-  VLLM_MCPU_CHECK(
-      0 <= actual_num_tokens && actual_num_tokens <= max_num_tokens,
-      "query_start_loc[num_reqs] must be within slot_mappings width");
-  VLLM_MCPU_CHECK(
-      positions.size(0) >= actual_num_tokens,
-      "positions must cover all actual tokens");
+  const int64_t positions_numel = positions.size(0);
 
   for (int64_t group_id = 0; group_id < num_groups; ++group_id) {
     const at::Tensor& block_table = block_tables[group_id];
@@ -189,63 +199,103 @@ void vllm_compute_slot_mappings_impl(
     VLLM_MCPU_CHECK(
         block_table.is_contiguous(), "block_table must be contiguous");
 
-    const int32_t block_size = block_sizes_ptr[group_id];
-    VLLM_MCPU_CHECK(block_size > 0, "block_size must be > 0");
-
     const int64_t max_num_reqs = block_table.size(0);
     const int64_t max_num_blocks = block_table.size(1);
     const int64_t block_table_stride0 = block_table.stride(0);
     const int32_t* block_table_ptr = block_table.data_ptr<int32_t>();
     int64_t* slot_row_ptr = slot_ptr + group_id * slot_stride0;
+    const int32_t* group_block_size_ptr = block_sizes_ptr + group_id;
 
-    for (int64_t batch_idx = 0; batch_idx < num_reqs; ++batch_idx) {
-      const int32_t req_idx = idx_ptr[batch_idx];
-      VLLM_MCPU_CHECK(
-          0 <= req_idx && req_idx < max_num_reqs,
-          "idx_mapping contains out-of-range request index");
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_compute_slot_mappings",
+        [idx_ptr,
+         qsl_ptr,
+         pos_ptr,
+         group_block_size_ptr,
+         block_table_ptr,
+         slot_row_ptr,
+         num_reqs,
+         max_num_tokens,
+         positions_numel,
+         max_num_reqs,
+         max_num_blocks,
+         block_table_stride0,
+         cp_size,
+         cp_rank,
+         cp_interleave,
+         pad_id](at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_compute_slot_mappings", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {idx_ptr,
+               qsl_ptr,
+               pos_ptr,
+               group_block_size_ptr,
+               block_table_ptr,
+               slot_row_ptr});
 
-      const int32_t start = qsl_ptr[batch_idx];
-      const int32_t end = qsl_ptr[batch_idx + 1];
-      VLLM_MCPU_CHECK(
-          0 <= start && start <= end && end <= actual_num_tokens,
-          "query_start_loc must be non-decreasing and within bounds");
+          const int32_t actual_num_tokens = qsl_ptr[num_reqs];
+          VLLM_MCPU_CHECK(
+              0 <= actual_num_tokens && actual_num_tokens <= max_num_tokens,
+              "query_start_loc[num_reqs] must be within slot_mappings width");
+          VLLM_MCPU_CHECK(
+              positions_numel >= actual_num_tokens,
+              "positions must cover all actual tokens");
 
-      const int32_t* req_block_table_ptr =
-          block_table_ptr + static_cast<int64_t>(req_idx) * block_table_stride0;
-      for (int32_t token_idx = start; token_idx < end; ++token_idx) {
-        const int64_t position = pos_ptr[token_idx];
-        VLLM_MCPU_CHECK(position >= 0, "positions must be non-negative");
+          const int32_t block_size = *group_block_size_ptr;
+          VLLM_MCPU_CHECK(block_size > 0, "block_size must be > 0");
 
-        const int64_t global_block_size =
-            static_cast<int64_t>(block_size) * cp_size;
-        const int64_t block_idx = position / global_block_size;
-        const int64_t block_off = position % global_block_size;
-        VLLM_MCPU_CHECK(
-            0 <= block_idx && block_idx < max_num_blocks,
-            "position maps to out-of-range block index");
+          for (int64_t batch_idx = 0; batch_idx < num_reqs; ++batch_idx) {
+            const int32_t req_idx = idx_ptr[batch_idx];
+            VLLM_MCPU_CHECK(
+                0 <= req_idx && req_idx < max_num_reqs,
+                "idx_mapping contains out-of-range request index");
 
-        const int64_t block_number = req_block_table_ptr[block_idx];
-        if (cp_size == 1) {
-          slot_row_ptr[token_idx] =
-              block_number * static_cast<int64_t>(block_size) + block_off;
-          continue;
-        }
+            const int32_t start = qsl_ptr[batch_idx];
+            const int32_t end = qsl_ptr[batch_idx + 1];
+            VLLM_MCPU_CHECK(
+                0 <= start && start <= end && end <= actual_num_tokens,
+                "query_start_loc must be non-decreasing and within bounds");
 
-        const bool is_local =
-            ((block_off / cp_interleave) % cp_size) == cp_rank;
-        const int64_t rounds = block_off / (cp_interleave * cp_size);
-        const int64_t remainder = block_off % cp_interleave;
-        const int64_t local_off = rounds * cp_interleave + remainder;
-        slot_row_ptr[token_idx] = is_local
-            ? block_number * static_cast<int64_t>(block_size) + local_off
-            : pad_id;
-      }
-    }
+            const int32_t* req_block_table_ptr = block_table_ptr +
+                static_cast<int64_t>(req_idx) * block_table_stride0;
+            for (int32_t token_idx = start; token_idx < end; ++token_idx) {
+              const int64_t position = pos_ptr[token_idx];
+              VLLM_MCPU_CHECK(position >= 0, "positions must be non-negative");
 
-    for (int64_t token_idx = actual_num_tokens; token_idx < max_num_tokens;
-         ++token_idx) {
-      slot_row_ptr[token_idx] = pad_id;
-    }
+              const int64_t global_block_size =
+                  static_cast<int64_t>(block_size) * cp_size;
+              const int64_t block_idx = position / global_block_size;
+              const int64_t block_off = position % global_block_size;
+              VLLM_MCPU_CHECK(
+                  0 <= block_idx && block_idx < max_num_blocks,
+                  "position maps to out-of-range block index");
+
+              const int64_t block_number = req_block_table_ptr[block_idx];
+              if (cp_size == 1) {
+                slot_row_ptr[token_idx] =
+                    block_number * static_cast<int64_t>(block_size) +
+                    block_off;
+                continue;
+              }
+
+              const bool is_local =
+                  ((block_off / cp_interleave) % cp_size) == cp_rank;
+              const int64_t rounds = block_off / (cp_interleave * cp_size);
+              const int64_t remainder = block_off % cp_interleave;
+              const int64_t local_off = rounds * cp_interleave + remainder;
+              slot_row_ptr[token_idx] = is_local
+                  ? block_number * static_cast<int64_t>(block_size) + local_off
+                  : pad_id;
+            }
+          }
+
+          for (int64_t token_idx = actual_num_tokens;
+               token_idx < max_num_tokens;
+               ++token_idx) {
+            slot_row_ptr[token_idx] = pad_id;
+          }
+        });
   }
 }
 
@@ -263,24 +313,38 @@ void compute_slot_mapping_kernel_impl(
   const int32_t* __restrict__ block_table_ptr = block_table.data_ptr<int32_t>();
   int64_t* __restrict__ slot_ptr = slot_mapping.data_ptr<int64_t>();
 
+  at::mcpu::launch_timed_kernel(
+      "mcpu::compute_slot_mapping_kernel_impl",
+      [req_num,
+       block_table_stride,
+       qsl_ptr,
+       pos_ptr,
+       block_table_ptr,
+       slot_ptr,
+       block_size](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::compute_slot_mapping_kernel_impl", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {qsl_ptr, pos_ptr, block_table_ptr, slot_ptr});
 #pragma omp parallel for
-  for (int32_t req_idx = 0; req_idx < req_num; ++req_idx) {
-    int32_t start = qsl_ptr[req_idx];
-    int32_t end = qsl_ptr[req_idx + 1];
-    int32_t token_num = end - start;
+        for (int32_t req_idx = 0; req_idx < req_num; ++req_idx) {
+          int32_t start = qsl_ptr[req_idx];
+          int32_t end = qsl_ptr[req_idx + 1];
+          int32_t token_num = end - start;
 
-    const int64_t* __restrict__ curr_position_ptr = pos_ptr + start;
-    int64_t* __restrict__ curr_slot_mapping_ptr = slot_ptr + start;
-    const int32_t* __restrict__ curr_block_table_ptr =
-        block_table_ptr + req_idx * block_table_stride;
+          const int64_t* __restrict__ curr_position_ptr = pos_ptr + start;
+          int64_t* __restrict__ curr_slot_mapping_ptr = slot_ptr + start;
+          const int32_t* __restrict__ curr_block_table_ptr =
+              block_table_ptr + req_idx * block_table_stride;
 
-    for (int32_t token_idx = 0; token_idx < token_num; ++token_idx) {
-      int64_t position = curr_position_ptr[token_idx];
-      int64_t block_number = curr_block_table_ptr[position / block_size];
-      curr_slot_mapping_ptr[token_idx] =
-          block_number * block_size + position % block_size;
-    }
-  }
+          for (int32_t token_idx = 0; token_idx < token_num; ++token_idx) {
+            int64_t position = curr_position_ptr[token_idx];
+            int64_t block_number = curr_block_table_ptr[position / block_size];
+            curr_slot_mapping_ptr[token_idx] =
+                block_number * block_size + position % block_size;
+          }
+        }
+      });
 }
 
 void zero_kv_blocks_kernel_impl(
@@ -305,16 +369,29 @@ void zero_kv_blocks_kernel_impl(
   const uint64_t* __restrict__ seg_addrs_ptr = seg_addrs.data_ptr<uint64_t>();
   const int64_t* __restrict__ block_ids_ptr = block_ids.data_ptr<int64_t>();
 
+  at::mcpu::launch_timed_kernel(
+      "mcpu::zero_kv_blocks_kernel_impl",
+      [seg_addrs_ptr,
+       block_ids_ptr,
+       n_blocks,
+       n_segs,
+       page_size_el](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::zero_kv_blocks_kernel_impl", timing_event);
+        at::mcpu::KernelAllMemoryGuard guard;
 #pragma omp parallel for collapse(2)
-  for (int64_t block_index = 0; block_index < n_blocks; ++block_index) {
-    for (int64_t seg_index = 0; seg_index < n_segs; ++seg_index) {
-      const int64_t block_id = block_ids_ptr[block_index];
-      int32_t* __restrict__ ptr =
-          reinterpret_cast<int32_t*>(seg_addrs_ptr[seg_index]);
-      std::memset(
-          ptr + block_id * page_size_el, 0, page_size_el * sizeof(int32_t));
-    }
-  }
+        for (int64_t block_index = 0; block_index < n_blocks; ++block_index) {
+          for (int64_t seg_index = 0; seg_index < n_segs; ++seg_index) {
+            const int64_t block_id = block_ids_ptr[block_index];
+            int32_t* __restrict__ ptr =
+                reinterpret_cast<int32_t*>(seg_addrs_ptr[seg_index]);
+            std::memset(
+                ptr + block_id * page_size_el,
+                0,
+                page_size_el * sizeof(int32_t));
+          }
+        }
+      });
 }
 
 } // namespace

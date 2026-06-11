@@ -42,26 +42,48 @@ void vllm_prepare_prefill_inputs_impl(
   const int32_t* plen_ptr = prefill_len.data_ptr<int32_t>();
   const int32_t* ncomp_ptr = num_computed_tokens.data_ptr<int32_t>();
 
-  for (int64_t r = 0; r < num_reqs; r++) {
-    int32_t req = idx_ptr[r];
-    int32_t plen = plen_ptr[req];
-    int32_t ncomp = ncomp_ptr[req];
-    if (ncomp >= plen)
-      continue;
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_prepare_prefill_inputs",
+      [num_reqs,
+       atids_stride,
+       iids_ptr,
+       npt_ptr,
+       idx_ptr,
+       qs_ptr,
+       atids_ptr,
+       plen_ptr,
+       ncomp_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::vllm_prepare_prefill_inputs", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {iids_ptr,
+             npt_ptr,
+             idx_ptr,
+             qs_ptr,
+             atids_ptr,
+             plen_ptr,
+             ncomp_ptr});
+        for (int64_t r = 0; r < num_reqs; r++) {
+          int32_t req = idx_ptr[r];
+          int32_t plen = plen_ptr[req];
+          int32_t ncomp = ncomp_ptr[req];
+          if (ncomp >= plen)
+            continue;
 
-    int32_t qstart = qs_ptr[r];
-    int32_t qend = qs_ptr[r + 1];
-    int32_t qlen = qend - qstart;
-    const int32_t* req_tids = atids_ptr + (int64_t)req * atids_stride;
+          int32_t qstart = qs_ptr[r];
+          int32_t qend = qs_ptr[r + 1];
+          int32_t qlen = qend - qstart;
+          const int32_t* req_tids = atids_ptr + (int64_t)req * atids_stride;
 
-    for (int32_t i = 0; i < qlen; i++) {
-      iids_ptr[qstart + i] = req_tids[ncomp + i];
-    }
-    int32_t next_pos = ncomp + qlen;
-    if (next_pos < plen) {
-      npt_ptr[req] = req_tids[next_pos];
-    }
-  }
+          for (int32_t i = 0; i < qlen; i++) {
+            iids_ptr[qstart + i] = req_tids[ncomp + i];
+          }
+          int32_t next_pos = ncomp + qlen;
+          if (next_pos < plen) {
+            npt_ptr[req] = req_tids[next_pos];
+          }
+        }
+      });
 }
 
 // ---------------------------------------------------------------------------
@@ -86,21 +108,35 @@ void vllm_prepare_pos_seq_lens_impl(
   int64_t* pos_ptr = pos.data_ptr<int64_t>();
   int32_t* sl_ptr = seq_lens.data_ptr<int32_t>();
 
-  for (int64_t r = 0; r < num_reqs; r++) {
-    int32_t req = idx_ptr[r];
-    int32_t ncomp = ncomp_ptr[req];
-    int32_t qstart = qs_ptr[r];
-    int32_t qend = qs_ptr[r + 1];
-    int32_t qlen = qend - qstart;
-    sl_ptr[r] = ncomp + qlen;
-    for (int32_t i = 0; i < qlen; i++) {
-      pos_ptr[qstart + i] = (int64_t)(ncomp + i);
-    }
-  }
-  // Pad unused entries for CUDA-graph compatibility
-  for (int64_t r = num_reqs; r < max_num_reqs; r++) {
-    sl_ptr[r] = 0;
-  }
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_prepare_pos_seq_lens",
+      [num_reqs,
+       max_num_reqs,
+       idx_ptr,
+       qs_ptr,
+       ncomp_ptr,
+       pos_ptr,
+       sl_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::vllm_prepare_pos_seq_lens", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {idx_ptr, qs_ptr, ncomp_ptr, pos_ptr, sl_ptr});
+        for (int64_t r = 0; r < num_reqs; r++) {
+          int32_t req = idx_ptr[r];
+          int32_t ncomp = ncomp_ptr[req];
+          int32_t qstart = qs_ptr[r];
+          int32_t qend = qs_ptr[r + 1];
+          int32_t qlen = qend - qstart;
+          sl_ptr[r] = ncomp + qlen;
+          for (int32_t i = 0; i < qlen; i++) {
+            pos_ptr[qstart + i] = (int64_t)(ncomp + i);
+          }
+        }
+        // Pad unused entries for CUDA-graph compatibility.
+        for (int64_t r = num_reqs; r < max_num_reqs; r++) {
+          sl_ptr[r] = 0;
+        }
+      });
 }
 
 // ---------------------------------------------------------------------------
@@ -145,32 +181,58 @@ void vllm_combine_sampled_and_draft_tokens_impl(
 
   int64_t* li_ptr = logits_indices.data_ptr<int64_t>();
 
-  for (int64_t r = 0; r < num_reqs; r++) {
-    int32_t req = idx_ptr[r];
-    int32_t ls = cunl_ptr[r];
-    int32_t le = cunl_ptr[r + 1];
-    int32_t n_logits = le - ls;
-    int32_t n_draft = n_logits - 1;
-    int32_t qend = qs_ptr[r + 1];
-    int32_t pos_start = qend - n_logits;
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_combine_sampled_and_draft_tokens",
+      [num_reqs,
+       iids_ptr,
+       idx_ptr,
+       lst_ptr,
+       qs_ptr,
+       sl_ptr,
+       plen_ptr,
+       draft_ptr,
+       cunl_ptr,
+       draft_stride,
+       li_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::vllm_combine_sampled_and_draft_tokens", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {iids_ptr,
+             idx_ptr,
+             lst_ptr,
+             qs_ptr,
+             sl_ptr,
+             plen_ptr,
+             draft_ptr,
+             cunl_ptr,
+             li_ptr});
+        for (int64_t r = 0; r < num_reqs; r++) {
+          int32_t req = idx_ptr[r];
+          int32_t ls = cunl_ptr[r];
+          int32_t le = cunl_ptr[r + 1];
+          int32_t n_logits = le - ls;
+          int32_t n_draft = n_logits - 1;
+          int32_t qend = qs_ptr[r + 1];
+          int32_t pos_start = qend - n_logits;
 
-    for (int32_t i = 0; i < n_logits; i++) {
-      li_ptr[ls + i] = (int64_t)(pos_start + i);
-    }
+          for (int32_t i = 0; i < n_logits; i++) {
+            li_ptr[ls + i] = (int64_t)(pos_start + i);
+          }
 
-    int32_t seq_len = sl_ptr[r];
-    int32_t plen = plen_ptr[req];
-    if (seq_len <= plen)
-      continue; // chunked prefill
+          int32_t seq_len = sl_ptr[r];
+          int32_t plen = plen_ptr[req];
+          if (seq_len <= plen)
+            continue; // chunked prefill
 
-    iids_ptr[qend - n_logits] = (int32_t)lst_ptr[req];
-    if (n_draft > 0) {
-      const int64_t* dr = draft_ptr + (int64_t)req * draft_stride;
-      for (int32_t i = 0; i < n_draft; i++) {
-        iids_ptr[qend - n_draft + i] = (int32_t)dr[i];
-      }
-    }
-  }
+          iids_ptr[qend - n_logits] = (int32_t)lst_ptr[req];
+          if (n_draft > 0) {
+            const int64_t* dr = draft_ptr + (int64_t)req * draft_stride;
+            for (int32_t i = 0; i < n_draft; i++) {
+              iids_ptr[qend - n_draft + i] = (int32_t)dr[i];
+            }
+          }
+        }
+      });
 }
 
 // ---------------------------------------------------------------------------
@@ -201,19 +263,33 @@ void vllm_get_num_sampled_and_rejected_impl(
   const int32_t* idx_ptr = idx_mapping.data_ptr<int32_t>();
   const int32_t* plen_ptr = prefill_len.data_ptr<int32_t>();
 
-  for (int64_t r = 0; r < num_reqs; r++) {
-    int32_t req = idx_ptr[r];
-    int32_t sl = sl_ptr[r];
-    int32_t plen = plen_ptr[req];
-    bool is_chunked = (sl < plen);
-    int32_t n_logits = cunl_ptr[r + 1] - cunl_ptr[r];
-    if (is_chunked) {
-      ns_ptr[r] = 0;
-      nr_ptr[r] = 0;
-    } else {
-      nr_ptr[r] = n_logits - ns_ptr[r];
-    }
-  }
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_get_num_sampled_and_rejected",
+      [num_reqs,
+       ns_ptr,
+       nr_ptr,
+       sl_ptr,
+       cunl_ptr,
+       idx_ptr,
+       plen_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::vllm_get_num_sampled_and_rejected", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {ns_ptr, nr_ptr, sl_ptr, cunl_ptr, idx_ptr, plen_ptr});
+        for (int64_t r = 0; r < num_reqs; r++) {
+          int32_t req = idx_ptr[r];
+          int32_t sl = sl_ptr[r];
+          int32_t plen = plen_ptr[req];
+          bool is_chunked = (sl < plen);
+          int32_t n_logits = cunl_ptr[r + 1] - cunl_ptr[r];
+          if (is_chunked) {
+            ns_ptr[r] = 0;
+            nr_ptr[r] = 0;
+          } else {
+            nr_ptr[r] = n_logits - ns_ptr[r];
+          }
+        }
+      });
 }
 
 // ---------------------------------------------------------------------------
@@ -261,33 +337,64 @@ void vllm_post_update_impl(
       ? output_bin_counts->size(1)
       : 0;
 
-  for (int64_t r = 0; r < num_reqs; r++) {
-    int32_t req = idx_ptr[r];
-    int32_t n = ns_ptr[r];
-    int32_t tlen = tlen_ptr[req];
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_post_update",
+      [num_reqs,
+       atids_stride,
+       st_stride,
+       lst_stride,
+       idx_ptr,
+       ncomp_ptr,
+       lst_ptr,
+       st_ptr,
+       ns_ptr,
+       nr_ptr,
+       qs_ptr,
+       atids_ptr,
+       tlen_ptr,
+       obc_ptr,
+       obc_stride,
+       obc_vocab](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::vllm_post_update", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {idx_ptr,
+             ncomp_ptr,
+             lst_ptr,
+             st_ptr,
+             ns_ptr,
+             nr_ptr,
+             qs_ptr,
+             atids_ptr,
+             tlen_ptr,
+             obc_ptr});
+        for (int64_t r = 0; r < num_reqs; r++) {
+          int32_t req = idx_ptr[r];
+          int32_t n = ns_ptr[r];
+          int32_t tlen = tlen_ptr[req];
 
-    if (n > 0) {
-      const int64_t* st_row = st_ptr + r * st_stride;
-      lst_ptr[(int64_t)req * lst_stride] = st_row[n - 1];
-      tlen_ptr[req] = tlen + n;
-      int32_t* dst = atids_ptr + (int64_t)req * atids_stride + tlen;
-      for (int32_t i = 0; i < n; i++) {
-        dst[i] = (int32_t)st_row[i]; // cast int64 → int32 for all_token_ids
-        if (obc_ptr != nullptr) {
-          int32_t tok = (int32_t)st_row[i];
-          if (tok >= 0 && tok < (int32_t)obc_vocab) {
-            obc_ptr[(int64_t)req * obc_stride + tok]++;
+          if (n > 0) {
+            const int64_t* st_row = st_ptr + r * st_stride;
+            lst_ptr[(int64_t)req * lst_stride] = st_row[n - 1];
+            tlen_ptr[req] = tlen + n;
+            int32_t* dst = atids_ptr + (int64_t)req * atids_stride + tlen;
+            for (int32_t i = 0; i < n; i++) {
+              dst[i] = (int32_t)st_row[i];
+              if (obc_ptr != nullptr) {
+                int32_t tok = (int32_t)st_row[i];
+                if (tok >= 0 && tok < (int32_t)obc_vocab) {
+                  obc_ptr[(int64_t)req * obc_stride + tok]++;
+                }
+              }
+            }
           }
-        }
-      }
-    }
 
-    int32_t qstart = qs_ptr[r];
-    int32_t qend = qs_ptr[r + 1];
-    int32_t qlen = qend - qstart;
-    int32_t nr = nr_ptr[r];
-    ncomp_ptr[req] = ncomp_ptr[req] + qlen - nr;
-  }
+          int32_t qstart = qs_ptr[r];
+          int32_t qend = qs_ptr[r + 1];
+          int32_t qlen = qend - qstart;
+          int32_t nr = nr_ptr[r];
+          ncomp_ptr[req] = ncomp_ptr[req] + qlen - nr;
+        }
+      });
 }
 
 // ---------------------------------------------------------------------------
@@ -303,11 +410,20 @@ void vllm_post_update_pool_impl(
   int32_t* ncomp_ptr = num_computed_tokens.data_ptr<int32_t>();
   const int32_t* qs_ptr = query_start_loc.data_ptr<int32_t>();
 
-  for (int64_t r = 0; r < num_reqs; r++) {
-    int32_t req = idx_ptr[r];
-    int32_t qlen = qs_ptr[r + 1] - qs_ptr[r];
-    ncomp_ptr[req] += qlen;
-  }
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_post_update_pool",
+      [num_reqs, idx_ptr, ncomp_ptr, qs_ptr](
+          at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::vllm_post_update_pool", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {idx_ptr, ncomp_ptr, qs_ptr});
+        for (int64_t r = 0; r < num_reqs; r++) {
+          int32_t req = idx_ptr[r];
+          int32_t qlen = qs_ptr[r + 1] - qs_ptr[r];
+          ncomp_ptr[req] += qlen;
+        }
+      });
 }
 
 // ---------------------------------------------------------------------------
@@ -343,16 +459,25 @@ void vllm_expand_idx_mapping_impl(
   int32_t* exp_ptr = expanded_idx_mapping.data_ptr<int32_t>();
   int32_t* lp_ptr = expanded_local_pos.data_ptr<int32_t>();
 
-  for (int64_t r = 0; r < num_reqs; r++) {
-    int32_t start = cunl_ptr[r];
-    int32_t end = cunl_ptr[r + 1];
-    int32_t n = end - start;
-    int32_t req = idx_ptr[r];
-    for (int32_t i = 0; i < n; i++) {
-      exp_ptr[start + i] = req;
-      lp_ptr[start + i] = i;
-    }
-  }
+  at::mcpu::launch_timed_kernel(
+      "mcpu::vllm_expand_idx_mapping",
+      [num_reqs, idx_ptr, cunl_ptr, exp_ptr, lp_ptr](
+          at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::vllm_expand_idx_mapping", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard(
+            {idx_ptr, cunl_ptr, exp_ptr, lp_ptr});
+        for (int64_t r = 0; r < num_reqs; r++) {
+          int32_t start = cunl_ptr[r];
+          int32_t end = cunl_ptr[r + 1];
+          int32_t n = end - start;
+          int32_t req = idx_ptr[r];
+          for (int32_t i = 0; i < n; i++) {
+            exp_ptr[start + i] = req;
+            lp_ptr[start + i] = i;
+          }
+        }
+      });
 }
 
 } // namespace

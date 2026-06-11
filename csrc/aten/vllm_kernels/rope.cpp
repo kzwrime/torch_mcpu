@@ -125,23 +125,59 @@ void prepare_rope_positions_kernel_impl(
               prefill_len_t, prefill_lens, "prefill_lens", {
                 VLLM_MCPU_DISPATCH_INT_TENSOR(
                     computed_t, num_computed_tokens, "num_computed_tokens", {
-                      prepare_rope_positions_kernel_typed<
-                          idx_t,
-                          query_loc_t,
-                          prefill_len_t,
-                          computed_t>(
-                          positions_ptr,
-                          positions_stride,
-                          prefill_positions_ptr,
-                          prefill_positions_stride0,
-                          prefill_positions_stride1,
-                          prefill_delta_ptr,
-                          idx_mapping.data_ptr<idx_t>(),
-                          query_start_loc.data_ptr<query_loc_t>(),
-                          prefill_lens.data_ptr<prefill_len_t>(),
-                          num_computed_tokens.data_ptr<computed_t>(),
-                          num_reqs,
-                          num_dims);
+                      const idx_t* idx_mapping_ptr =
+                          idx_mapping.data_ptr<idx_t>();
+                      const query_loc_t* query_start_loc_ptr =
+                          query_start_loc.data_ptr<query_loc_t>();
+                      const prefill_len_t* prefill_lens_ptr =
+                          prefill_lens.data_ptr<prefill_len_t>();
+                      const computed_t* num_computed_tokens_ptr =
+                          num_computed_tokens.data_ptr<computed_t>();
+                      at::mcpu::launch_timed_kernel(
+                          "mcpu::prepare_rope_positions_kernel",
+                          [positions_ptr,
+                           positions_stride,
+                           prefill_positions_ptr,
+                           prefill_positions_stride0,
+                           prefill_positions_stride1,
+                           prefill_delta_ptr,
+                           idx_mapping_ptr,
+                           query_start_loc_ptr,
+                           prefill_lens_ptr,
+                           num_computed_tokens_ptr,
+                           num_reqs,
+                           num_dims](
+                              at::mcpu::kernel_timing::Event*
+                                  timing_event) mutable {
+                            MCPU_KERNEL_TIMING_SCOPE_EVENT(
+                                "mcpu::prepare_rope_positions_kernel",
+                                timing_event);
+                            at::mcpu::KernelPointerMemoryGuard guard(
+                                {positions_ptr,
+                                 prefill_positions_ptr,
+                                 prefill_delta_ptr,
+                                 idx_mapping_ptr,
+                                 query_start_loc_ptr,
+                                 prefill_lens_ptr,
+                                 num_computed_tokens_ptr});
+                            prepare_rope_positions_kernel_typed<
+                                idx_t,
+                                query_loc_t,
+                                prefill_len_t,
+                                computed_t>(
+                                positions_ptr,
+                                positions_stride,
+                                prefill_positions_ptr,
+                                prefill_positions_stride0,
+                                prefill_positions_stride1,
+                                prefill_delta_ptr,
+                                idx_mapping_ptr,
+                                query_start_loc_ptr,
+                                prefill_lens_ptr,
+                                num_computed_tokens_ptr,
+                                num_reqs,
+                                num_dims);
+                          });
                     });
               });
         });

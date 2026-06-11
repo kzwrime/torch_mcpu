@@ -1,5 +1,6 @@
 #include <runtime/McpuKernelLaunch.h>
 
+#include "DeviceCachingAllocator.h"
 #include "OpenRegException.h"
 #include "OpenRegStream.h"
 
@@ -71,6 +72,18 @@ void unprotect_tensor_memory(
   unprotect_memory(tensor.data_ptr(), unprotected_pointers);
 #else
   (void)tensor;
+  (void)unprotected_pointers;
+#endif
+}
+
+void unprotect_all_device_memory(
+    std::unordered_set<void*>& unprotected_pointers) {
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  TORCH_CHECK(
+      openreg::isInKernelTask(),
+      "mcpu memory may only be accessed from a launched kernel task");
+  c10::mcpu::unprotectAllAllocatedMemory(unprotected_pointers);
+#else
   (void)unprotected_pointers;
 #endif
 }

@@ -89,15 +89,31 @@ void vllm_topk_log_softmax_kernel_impl(
   float* out_ptr = output.data_ptr<float>();
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_topk_log_softmax_kernel", {
-    vllm_topk_log_softmax_kernel_typed<scalar_t>(
-        out_ptr,
-        logits.data_ptr<scalar_t>(),
-        batch,
-        logits_stride,
-        ids_ptr,
-        topk_ids_stride,
-        topk,
-        vocab_size);
+    const scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_topk_log_softmax_kernel",
+        [out_ptr,
+         logits_ptr,
+         batch,
+         logits_stride,
+         ids_ptr,
+         topk_ids_stride,
+         topk,
+         vocab_size](at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_topk_log_softmax_kernel", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {out_ptr, logits_ptr, ids_ptr});
+          vllm_topk_log_softmax_kernel_typed<scalar_t>(
+              out_ptr,
+              logits_ptr,
+              batch,
+              logits_stride,
+              ids_ptr,
+              topk_ids_stride,
+              topk,
+              vocab_size);
+        });
   });
 }
 
@@ -152,13 +168,18 @@ void vllm_ranks_kernel_impl(
   int64_t* out_ptr = output.data_ptr<int64_t>();
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_ranks_kernel", {
-    vllm_ranks_kernel_typed<scalar_t>(
-        out_ptr,
-        logits.data_ptr<scalar_t>(),
-        batch,
-        logits_stride,
-        ids_ptr,
-        vocab_size);
+    const scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_ranks_kernel",
+        [out_ptr, logits_ptr, batch, logits_stride, ids_ptr, vocab_size](
+            at::mcpu::kernel_timing::Event* timing_event) {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_ranks_kernel", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {out_ptr, logits_ptr, ids_ptr});
+          vllm_ranks_kernel_typed<scalar_t>(
+              out_ptr, logits_ptr, batch, logits_stride, ids_ptr, vocab_size);
+        });
   });
 }
 

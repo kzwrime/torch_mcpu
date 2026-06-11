@@ -126,23 +126,56 @@ void vllm_bad_words_kernel_impl(
   const int32_t* local_pos_ptr = expanded_local_pos.data_ptr<int32_t>();
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_bad_words_kernel", {
-    vllm_bad_words_kernel_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(),
-        num_tokens,
-        logits_stride,
-        vocab_size,
-        idx_ptr,
-        bw_ids_ptr,
-        bw_off_ptr,
-        bw_ids_stride,
-        bw_off_stride,
-        n_bw_ptr,
-        atids_ptr,
-        token_ids_stride,
-        plen_ptr,
-        tlen_ptr,
-        input_ids_ptr,
-        local_pos_ptr);
+    scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_bad_words_kernel",
+        [logits_ptr,
+         num_tokens,
+         logits_stride,
+         vocab_size,
+         idx_ptr,
+         bw_ids_ptr,
+         bw_off_ptr,
+         bw_ids_stride,
+         bw_off_stride,
+         n_bw_ptr,
+         atids_ptr,
+         token_ids_stride,
+         plen_ptr,
+         tlen_ptr,
+         input_ids_ptr,
+         local_pos_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_bad_words_kernel", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {logits_ptr,
+               idx_ptr,
+               bw_ids_ptr,
+               bw_off_ptr,
+               n_bw_ptr,
+               atids_ptr,
+               plen_ptr,
+               tlen_ptr,
+               input_ids_ptr,
+               local_pos_ptr});
+          vllm_bad_words_kernel_typed<scalar_t>(
+              logits_ptr,
+              num_tokens,
+              logits_stride,
+              vocab_size,
+              idx_ptr,
+              bw_ids_ptr,
+              bw_off_ptr,
+              bw_ids_stride,
+              bw_off_stride,
+              n_bw_ptr,
+              atids_ptr,
+              token_ids_stride,
+              plen_ptr,
+              tlen_ptr,
+              input_ids_ptr,
+              local_pos_ptr);
+        });
   });
 }
 

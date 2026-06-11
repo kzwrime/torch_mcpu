@@ -59,14 +59,29 @@ void vllm_apply_grammar_bitmask_impl(
   int64_t bitmask_stride = bitmask.stride(0);
 
   VLLM_MCPU_DISPATCH_FLOAT(logits, "vllm_apply_grammar_bitmask", {
-    vllm_apply_grammar_bitmask_typed<scalar_t>(
-        logits.data_ptr<scalar_t>(),
-        num_masks,
-        logits_stride,
-        idx_ptr,
-        bitmask_ptr,
-        bitmask_stride,
-        vocab_size);
+    scalar_t* logits_ptr = logits.data_ptr<scalar_t>();
+    at::mcpu::launch_timed_kernel(
+        "mcpu::vllm_apply_grammar_bitmask",
+        [logits_ptr,
+         num_masks,
+         logits_stride,
+         idx_ptr,
+         bitmask_ptr,
+         bitmask_stride,
+         vocab_size](at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::vllm_apply_grammar_bitmask", timing_event);
+          at::mcpu::KernelPointerMemoryGuard guard(
+              {logits_ptr, idx_ptr, bitmask_ptr});
+          vllm_apply_grammar_bitmask_typed<scalar_t>(
+              logits_ptr,
+              num_masks,
+              logits_stride,
+              idx_ptr,
+              bitmask_ptr,
+              bitmask_stride,
+              vocab_size);
+        });
   });
 }
 

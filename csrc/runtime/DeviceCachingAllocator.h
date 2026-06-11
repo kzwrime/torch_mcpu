@@ -16,6 +16,7 @@
 #include <c10/core/CachingDeviceAllocator.h>
 #include <Macros.h> // [4] provides MCPU_EXPORT
 #include "OpenRegStream.h" // [5] provides McpuStream
+#include <unordered_set>
 
 namespace c10::mcpu { // [1]
 
@@ -42,6 +43,8 @@ MCPU_EXPORT void resetPeakStats(DeviceIndex device);
 MCPU_EXPORT void resetAccumulatedStats(DeviceIndex device);
 MCPU_EXPORT c10::CachingDeviceAllocator::DeviceStats getDeviceStats(
     DeviceIndex device);
+MCPU_EXPORT void unprotectAllAllocatedMemory(
+    std::unordered_set<void*>& unprotected_pointers);
 
 inline void* raw_alloc(size_t size) {
   return get()->raw_alloc(size);
