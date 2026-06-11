@@ -1,5 +1,6 @@
 #include "Minimal.h"
 #include "MCPUFallback.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/WrapDimUtils.h>
 
@@ -87,6 +88,32 @@ at::Tensor _copy_from(
     bool non_blocking) {
   TORCH_CHECK(self.defined(), "Source tensor (self) is not defined.");
   TORCH_CHECK(dst.defined(), "Destination tensor (dst) is not defined.");
+
+  if (self.device().type() == c10::DeviceType::PrivateUse1 &&
+      dst.device().type() == c10::DeviceType::PrivateUse1 &&
+      self.device() == dst.device()) {
+    at::mcpu::launch_timed_kernel(
+        "mcpu::_copy_from.same_device",
+        [self, dst, non_blocking](
+            at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::_copy_from.same_device", timing_event);
+          at::mcpu::KernelMemoryGuard guard(self, dst);
+          at::Tensor dst_as_cpu = at::from_blob(
+              dst.data_ptr(),
+              dst.sizes(),
+              dst.strides(),
+              dst.options().device(at::kCPU));
+          const at::Tensor self_as_cpu = at::from_blob(
+              self.data_ptr(),
+              self.sizes(),
+              self.strides(),
+              self.options().device(at::kCPU));
+          at::native::copy_(
+              const_cast<at::Tensor&>(dst_as_cpu), self_as_cpu, non_blocking);
+        });
+    return dst;
+  }
 
   synchronize_if_mcpu(self);
   synchronize_if_mcpu(dst);

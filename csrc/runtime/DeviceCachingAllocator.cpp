@@ -21,6 +21,8 @@
 #include "OpenRegEvent.h"
 #include "OpenRegFunctions.h"
 #include "OpenRegStream.h"
+#include "runtime/McpuKernelLaunch.h"
+#include "runtime/McpuKernelTiming.h"
 
 #include <algorithm>
 #include <cstring>
@@ -719,6 +721,28 @@ class DeviceCachingAllocator {
     release_cached_blocks(mempool_id);
   }
 
+  void appendKnownBlockPointers(std::vector<void*>& ptrs) const {
+    std::scoped_lock<std::recursive_mutex> lock(mutex);
+    ptrs.reserve(
+        ptrs.size() + active_blocks.size() + large_blocks.blocks.size() +
+        small_blocks.blocks.size());
+    for (Block* block : active_blocks) {
+      if (block && block->ptr) {
+        ptrs.push_back(block->ptr);
+      }
+    }
+    for (Block* block : large_blocks.blocks) {
+      if (block && block->ptr) {
+        ptrs.push_back(block->ptr);
+      }
+    }
+    for (Block* block : small_blocks.blocks) {
+      if (block && block->ptr) {
+        ptrs.push_back(block->ptr);
+      }
+    }
+  }
+
   DeviceStats getStats() {
     std::scoped_lock<std::recursive_mutex> lock(mutex);
     return stats;
@@ -820,14 +844,26 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
         ptrs.push_back(entry.second->ptr);
       }
     }
+    for (const auto& device_allocator : device_allocators) {
+      if (device_allocator) {
+        device_allocator->appendKnownBlockPointers(ptrs);
+      }
+    }
 
     for (void* ptr : ptrs) {
-      if (ptr == nullptr ||
-          unprotected_pointers.find(ptr) != unprotected_pointers.end()) {
+      if (ptr == nullptr) {
         continue;
       }
-      MCPU_CHECK(orMemoryUnprotect(ptr));
-      unprotected_pointers.insert(ptr);
+
+      orPointerAttributes attr;
+      if (orPointerGetAttributes(&attr, ptr) != orSuccess ||
+          attr.type != orMemoryTypeDevice || attr.pointer == nullptr) {
+        continue;
+      }
+      auto [_, inserted] = unprotected_pointers.insert(attr.pointer);
+      if (inserted) {
+        MCPU_CHECK(orMemoryUnprotect(attr.pointer));
+      }
     }
 #else
     (void)unprotected_pointers;
@@ -949,7 +985,6 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
   }
 
   void copy_data(void* dest, const void* src, std::size_t count) const final {
-#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
     orPointerAttributes dest_attr;
     orPointerAttributes src_attr;
     const bool dest_is_device =
@@ -959,26 +994,39 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
         orPointerGetAttributes(&src_attr, src) == orSuccess &&
         src_attr.type == orMemoryTypeDevice;
 
-    if (dest_is_device) {
-      MCPU_CHECK(orMemoryUnprotect(dest_attr.pointer));
-    }
-    if (src_is_device &&
-        (!dest_is_device || src_attr.pointer != dest_attr.pointer)) {
-      MCPU_CHECK(orMemoryUnprotect(src_attr.pointer));
+    if (dest_is_device || src_is_device) {
+      const DeviceIndex device =
+          dest_is_device ? dest_attr.device : src_attr.device;
+      McpuStream stream = getCurrentMcpuStream(device);
+      at::mcpu::launch_timed_kernel_on_stream(
+          stream,
+          "mcpu::allocator.copy_data",
+          [dest,
+           src,
+           count,
+           dest_is_device,
+           src_is_device](
+              at::mcpu::kernel_timing::Event* timing_event) mutable {
+            MCPU_KERNEL_TIMING_SCOPE_EVENT(
+                "mcpu::allocator.copy_data", timing_event);
+            if (dest_is_device && src_is_device) {
+              at::mcpu::KernelPointerMemoryGuard guard({dest, src});
+              std::memcpy(dest, src, count);
+            } else if (dest_is_device) {
+              at::mcpu::KernelPointerMemoryGuard guard({dest});
+              std::memcpy(dest, src, count);
+            } else {
+              at::mcpu::KernelPointerMemoryGuard guard({src});
+              std::memcpy(dest, src, count);
+            }
+          });
+      if (!(dest_is_device && src_is_device)) {
+        stream.synchronize();
+      }
+      return;
     }
 
     std::memcpy(dest, src, count); // [1] SYCL queue memcpy → std::memcpy
-
-    if (src_is_device &&
-        (!dest_is_device || src_attr.pointer != dest_attr.pointer)) {
-      MCPU_CHECK(orMemoryProtect(src_attr.pointer));
-    }
-    if (dest_is_device) {
-      MCPU_CHECK(orMemoryProtect(dest_attr.pointer));
-    }
-#else
-    std::memcpy(dest, src, count); // [1] SYCL queue memcpy → std::memcpy
-#endif
   }
 
   DeviceStats getDeviceStats(DeviceIndex device) override {
