@@ -2,8 +2,13 @@
 
 #include <runtime/DeviceCachingAllocator.h>
 
+#include <ATen/core/dispatch/Dispatcher.h>
+#include <ATen/core/stack.h>
+
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
 #include <ATen/native/CPUFallback.h>
 #include <ATen/native/DispatchStub.h>
+#endif
 
 #include <torch/library.h>
 
@@ -116,6 +121,7 @@ void wrapper_record_stream(at::Tensor& self, c10::Stream stream) {
       self.storage().data_ptr(), c10::mcpu::McpuStream{stream});
 }
 
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
 // LITERALINCLUDE START: FALLBACK WRAPPER
 void wrapper_cpu_fallback(
     const c10::OperatorHandle& op,
@@ -123,6 +129,20 @@ void wrapper_cpu_fallback(
   at::native::mcpu::cpu_fallback(op, stack);
 }
 // LITERALINCLUDE END: FALLBACK WRAPPER
+#else
+void wrapper_missing_mcpu_kernel(
+    const c10::OperatorHandle& op,
+    torch::jit::Stack*) {
+  const auto& op_name = op.schema().operator_name();
+  TORCH_CHECK(
+      false,
+      "Operator '",
+      op_name,
+      "' is not implemented for torch_mcpu. CPU fallback is disabled because ",
+      "it is incompatible with mcpu stream execution. Please migrate this ATen ",
+      "operator into torch_mcpu following docs/how_to_impl_aten_ops.md.");
+}
+#endif
 
 } // namespace
 
@@ -147,6 +167,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
 }
 // LITERALINCLUDE END: TORCH_LIBRARY_IMPL DEFAULT
 
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
 // LITERALINCLUDE START: FALLBACK GLOBAL
 TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
   m.fallback(
@@ -161,5 +182,11 @@ TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
 //       torch::CppFunction::makeFromBoxedFunction<&wrapper_cpu_fallback>());
 // }
 // LITERALINCLUDE END: FALLBACK SINGLE
+#else
+TORCH_LIBRARY_IMPL(_, PrivateUse1, m) {
+  m.fallback(torch::CppFunction::makeFromBoxedFunction<
+             &wrapper_missing_mcpu_kernel>());
+}
+#endif
 
 } // namespace at::mcpu

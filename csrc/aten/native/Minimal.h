@@ -62,6 +62,8 @@ at::Tensor unfold(
     int64_t size,
     int64_t step);
 
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
 void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack);
+#endif
 
 } // namespace at::native::mcpu

@@ -1,12 +1,4 @@
-"""
-Test suite for inplace fallback operations and memory optimization validation.
-
-This test suite validates:
-1. Inplace operations work correctly with fallback
-2. Memory sharing and aliasing behavior
-3. Copy detection and performance validation
-4. Memory safety (no leaks, proper allocation)
-"""
+"""Test suite for inplace mcpu operations and memory behavior."""
 
 import torch
 import unittest
@@ -14,26 +6,32 @@ import gc
 import time
 
 
-class TestInplaceFallback(unittest.TestCase):
-    """Test inplace operations with fallback mechanism."""
+def make_mcpu_tensor(*shape):
+    numel = 1
+    for dim in shape:
+        numel *= dim
+    return (torch.arange(numel, dtype=torch.float32).reshape(shape) / 10).to("mcpu")
+
+
+class TestInplaceOps(unittest.TestCase):
+    """Test inplace operations implemented by mcpu kernels."""
 
     def test_inplace_no_copy(self):
         """Verify inplace operations don't copy memory."""
         x = torch.ones(100, device="mcpu")
         original_ptr = x.data_ptr()
 
-        # This should use fallback but not copy
         x.add_(1)
 
         # Verify no copy occurred
         self.assertEqual(x.data_ptr(), original_ptr,
                         "Inplace operation should not change data pointer")
-        self.assertTrue(torch.all(x == 2),
+        self.assertTrue(torch.all(x.cpu() == 2),
                        "Inplace operation should modify values correctly")
 
     def test_inplace_storage_sharing(self):
         """Verify inplace operations correctly share storage."""
-        x = torch.randn(10, device="mcpu")
+        x = make_mcpu_tensor(10)
         y = x.view(5, 2)  # Create a view
 
         original_x_ptr = x.data_ptr()
@@ -47,18 +45,16 @@ class TestInplaceFallback(unittest.TestCase):
                         "View data_ptr should remain constant")
         self.assertEqual(x.data_ptr(), original_x_ptr,
                         "Original tensor data_ptr should remain constant")
-        self.assertTrue(torch.allclose(y, x.view(5, 2)),
+        self.assertTrue(torch.allclose(y.cpu(), x.view(5, 2).cpu()),
                        "View should reflect changes to original tensor")
 
-    def test_inplace_with_fallback(self):
-        """Test inplace operation that uses fallback."""
+    def test_inplace_with_explicit_kernel(self):
+        """Test inplace operation implemented by mcpu."""
         x = torch.zeros(5, device="mcpu")
 
-        # Inplace operation via fallback
         x.add_(1)
 
-        # Should modify in place
-        self.assertTrue(torch.all(x == 1),
+        self.assertTrue(torch.all(x.cpu() == 1),
                        "Inplace operation should modify tensor correctly")
         self.assertEqual(x.device.type, "mcpu",
                         "Tensor should remain on mcpu device")
@@ -81,11 +77,11 @@ class TestInplaceFallback(unittest.TestCase):
         # Verify final result
         # Calculation: ((1 + 1) * 2) - 1 = 3
         expected = torch.ones(50) * 3
-        self.assertTrue(torch.allclose(x, expected.to("mcpu")))
+        self.assertTrue(torch.allclose(x.cpu(), expected))
 
     def test_inplace_with_views(self):
         """Test inplace operations on view tensors."""
-        x = torch.randn(20, device="mcpu")
+        x = make_mcpu_tensor(20)
         y = x.view(4, 5)  # Create a view
 
         original_x_ptr = x.data_ptr()
@@ -99,11 +95,11 @@ class TestInplaceFallback(unittest.TestCase):
         self.assertEqual(y.data_ptr(), original_y_ptr)
 
         # Changes should be visible in both
-        self.assertTrue(torch.allclose(x, y.view(20)))
+        self.assertTrue(torch.allclose(x.cpu(), y.view(20).cpu()))
 
     def test_inplace_preserves_device(self):
         """Test that inplace operations preserve device type."""
-        x = torch.randn(10, device="mcpu")
+        x = make_mcpu_tensor(10)
 
         # Various inplace operations
         x.add_(1)
@@ -117,17 +113,16 @@ class TestInplaceFallback(unittest.TestCase):
 
 
 class TestFallbackMemoryBehavior(unittest.TestCase):
-    """Test memory behavior of fallback operations."""
+    """Test memory behavior of explicit mcpu operations."""
 
-    def test_fallback_creates_new_tensor(self):
-        """Test that non-inplace fallback creates new tensors."""
-        x = torch.randn(10, device="mcpu")
-        y = torch.randn(10, device="mcpu")
+    def test_binary_op_creates_new_tensor(self):
+        """Test that non-inplace binary ops create new tensors."""
+        x = make_mcpu_tensor(10)
+        y = make_mcpu_tensor(10) + 1.0
 
         x_ptr = x.data_ptr()
         y_ptr = y.data_ptr()
 
-        # Non-inplace operation (uses fallback)
         z = torch.add(x, y)
 
         # z should be a new tensor
@@ -138,48 +133,48 @@ class TestFallbackMemoryBehavior(unittest.TestCase):
         self.assertEqual(z.device.type, "mcpu",
                         "Result should be on mcpu device")
 
-    def test_fallback_with_scalars(self):
-        """Test fallback operations with scalar operands."""
-        x = torch.randn(10, device="mcpu")
+    def test_binary_op_with_scalars(self):
+        """Test binary operations with scalar operands."""
+        x = make_mcpu_tensor(10)
 
         # Operations with scalars
         y = x + 1.0
-        self.assertTrue(torch.allclose(y, x + 1.0))
+        self.assertTrue(torch.allclose(y.cpu(), x.cpu() + 1.0))
         self.assertEqual(y.device.type, "mcpu")
 
-        z = x * 2.0
-        self.assertTrue(torch.allclose(z, x * 2.0))
+        z = x - 2.0
+        self.assertTrue(torch.allclose(z.cpu(), x.cpu() - 2.0))
         self.assertEqual(z.device.type, "mcpu")
 
-    def test_fallback_device_consistency(self):
-        """Test that fallback maintains device consistency."""
-        x = torch.randn(10, device="mcpu")
-        y = torch.randn(10, device="mcpu")
+    def test_binary_op_device_consistency(self):
+        """Test that explicit binary ops maintain device consistency."""
+        x = make_mcpu_tensor(10)
+        y = make_mcpu_tensor(10) + 1.0
 
         # All results should be on mcpu
         z1 = torch.add(x, y)
         z2 = torch.sub(x, y)
-        z3 = torch.mul(x, y)
-        z4 = torch.div(x, y)
+        z3 = x + 1.0
+        z4 = x - 1.0
 
         for z in [z1, z2, z3, z4]:
             self.assertEqual(z.device.type, "mcpu",
-                           f"Result {z} should be on mcpu device")
+                           "Result should be on mcpu device")
 
 
 class TestMemorySafety(unittest.TestCase):
-    """Test memory safety of fallback operations."""
+    """Test memory safety of explicit mcpu operations."""
 
     def test_no_memory_leaks(self):
-        """Ensure fallback doesn't introduce memory leaks."""
+        """Ensure repeated explicit operations do not leak memory."""
         # Get baseline memory
         gc.collect()
 
         # Perform many fallback operations
         for _ in range(100):
-            x = torch.randn(100, device="mcpu")
-            y = torch.randn(100, device="mcpu")
-            z = torch.add(x, y)  # Uses fallback
+            x = make_mcpu_tensor(100)
+            y = make_mcpu_tensor(100) + 1.0
+            z = torch.add(x, y)
             del x, y, z
 
         gc.collect()
@@ -191,19 +186,16 @@ class TestMemorySafety(unittest.TestCase):
         """Ensure mutable aliasing still works correctly."""
         x = torch.zeros(5, device="mcpu")
 
-        # Inplace operation via fallback
         x.add_(1)
 
-        # Should modify in place
-        self.assertTrue(torch.all(x == 1),
+        self.assertTrue(torch.all(x.cpu() == 1),
                        "Inplace operation should work correctly")
 
     def test_tensor_lifetime(self):
         """Test that tensor lifetimes are managed correctly."""
-        x = torch.randn(10, device="mcpu")
+        x = make_mcpu_tensor(10)
         x_ptr = x.data_ptr()
 
-        # Create result using fallback
         y = torch.add(x, 1.0)
 
         # Original tensor should still be valid
@@ -212,7 +204,7 @@ class TestMemorySafety(unittest.TestCase):
 
         # Result should be independent
         y.fill_(0.0)
-        self.assertFalse(torch.all(x == 0.0),
+        self.assertFalse(torch.all(x.cpu() == 0.0),
                         "Modifying result should not affect input")
 
 
@@ -232,15 +224,14 @@ class TestCopyDetection(unittest.TestCase):
             self.fail(f"Inplace operation copied memory! "
                      f"Original ptr: {original_ptr}, New ptr: {x.data_ptr()}")
 
-    def test_fallback_copy_detection(self):
-        """Detect memory copies in fallback operations."""
-        x = torch.randn(1000, device="mcpu")
-        y = torch.randn(1000, device="mcpu")
+    def test_binary_op_copy_detection(self):
+        """Detect memory copies in explicit binary operations."""
+        x = make_mcpu_tensor(1000)
+        y = make_mcpu_tensor(1000) + 1.0
 
         x_ptr = x.data_ptr()
         y_ptr = y.data_ptr()
 
-        # Perform fallback operation
         z = torch.add(x, y)
 
         # Result should be a new allocation (not sharing with inputs)
@@ -251,7 +242,7 @@ class TestCopyDetection(unittest.TestCase):
 
     def test_view_no_copy(self):
         """Verify view operations don't copy memory."""
-        x = torch.randn(100, device="mcpu")
+        x = make_mcpu_tensor(100)
         y = x.view(10, 10)
 
         # Views should share the same underlying storage
@@ -260,7 +251,7 @@ class TestCopyDetection(unittest.TestCase):
 
     def test_slice_copy_behavior(self):
         """Test memory behavior of slice operations."""
-        x = torch.randn(100, device="mcpu")
+        x = make_mcpu_tensor(100)
         y = x[10:20]
 
         # Slices might have different data_ptr but should share storage

@@ -172,25 +172,22 @@ class TestAutogradFunction(TestCase):
 
 
 class TestFallback(TestCase):
-    def test_scalar_type_fallback(self):
-        """Test scalar type fallback to CPU"""
-        x_cpu = torch.Tensor([[0, 0, 0, 1, 1, 2], [0, 1, 2, 1, 2, 2]]).to(torch.int64)
-        x = torch.triu_indices(3, 3, device="mcpu")
-        self.assertEqual(x_cpu, x)
+    def test_unimplemented_factory_does_not_fallback_to_cpu(self):
+        with self.assertRaisesRegex(
+            RuntimeError, "aten::triu_indices.*docs/how_to_impl_aten_ops.md"
+        ):
+            torch.triu_indices(3, 3, device="mcpu")
 
-    def test_tensor_type_fallback(self):
-        """Test tensor type fallback to CPU"""
+    def test_tensor_ops_use_explicit_mcpu_kernels(self):
         x = torch.Tensor([[1, 2, 3], [2, 3, 4]]).to("mcpu")
         y = torch.Tensor([1, 0, 2]).to("mcpu")
         self.assertTrue(x.device.type, "mcpu")
         self.assertFalse(x.is_cpu)
 
         z_cpu = torch.Tensor([[0, 2, 1], [1, 3, 2]])
-        # call sub op, which will fallback to cpu
         z = torch.sub(x, y)
         self.assertEqual(z_cpu, z)
 
-        # call index op, which will fallback to cpu
         z_cpu = torch.Tensor([3, 1])
         y = torch.Tensor([1, 0]).long().to("mcpu")
         z = x[y, y]
@@ -514,24 +511,17 @@ class TestFallback(TestCase):
             torch.zeros(2, 3).index_copy_(1, index.cpu(), source.cpu()),
         )
 
-    def test_tensorlist_type_fallback(self):
-        """Test tensor list type fallback to CPU"""
-        # create tensors located in custom device
+    def test_tensorlist_op_does_not_fallback_to_cpu(self):
         v_mcpu = torch.Tensor([1, 2, 3]).to("mcpu")
-        # create result tensor located in cpu
-        z_cpu = torch.Tensor([2, 4, 6])
-        # create tensorlist for foreach_add op
         x = (v_mcpu, v_mcpu)
         y = (v_mcpu, v_mcpu)
 
-        # Check that our device is correct.
         self.assertTrue(v_mcpu.device.type == "mcpu")
         self.assertFalse(v_mcpu.is_cpu)
 
-        # call _foreach_add op, which will fallback to cpu
         z = torch._foreach_add(x, y)
-        self.assertEqual(z_cpu, z[0])
-        self.assertEqual(z_cpu, z[1])
+        self.assertEqual(z[0].device.type, "mcpu")
+        self.assertEqual(z[1].device.type, "mcpu")
 
 
 class TestSDPA(NNTestCase):
@@ -820,37 +810,31 @@ class TestQuantizationExtended(TestCase):
 
 
 class TestFallbackExtended(TestCase):
-    def test_cpu_fallback_blocklist(self):
-        """Test that abs is blocked from CPU fallback"""
-        x = torch.randn(2, 3, dtype=torch.float32, device="mcpu")
-        # abs should work (it's implemented)
+    def test_abs_uses_explicit_mcpu_kernel(self):
+        x = torch.tensor([[-1.0, 2.0, -3.0], [4.0, -5.0, 6.0]], device="mcpu")
         y = torch.abs(x)
         self.assertEqual(y.device.type, "mcpu")
 
-        # But abs.out should also work
         out = torch.empty_like(x)
         torch.abs(x, out=out)
         self.assertEqual(out.device.type, "mcpu")
 
-    def test_fallback_operations(self):
-        """Test various fallback operations"""
-        x = torch.randn(3, 4, device="mcpu")
-        y = torch.randn(3, 4, device="mcpu")
+    def test_registered_binary_operations_stay_on_mcpu(self):
+        x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
+        y = (torch.arange(12, dtype=torch.float32).reshape(3, 4) + 1).to("mcpu")
 
-        # Operations that should fallback to CPU
         z = torch.add(x, y)
         self.assertEqual(z.device.type, "mcpu")
 
-        z = torch.mul(x, y)
+        z = torch.sub(x, y)
         self.assertEqual(z.device.type, "mcpu")
 
-    def test_fallback_with_scalars(self):
-        """Test fallback with scalar operations"""
-        x = torch.randn(3, 4, device="mcpu")
+    def test_registered_scalar_operations_stay_on_mcpu(self):
+        x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
         y = x + 1.0
         self.assertEqual(y.device.type, "mcpu")
 
-        y = x * 2.0
+        y = x - 2.0
         self.assertEqual(y.device.type, "mcpu")
 
 

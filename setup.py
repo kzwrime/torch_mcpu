@@ -41,6 +41,9 @@ def get_mcpu_build_options():
         "TORCH_MCPU_KERNEL_TIMING_USE_TSC": cmake_bool(
             os.getenv("TORCH_MCPU_KERNEL_TIMING_USE_TSC", "OFF")
         ),
+        "TORCH_MCPU_ENABLE_CPU_FALLBACK": cmake_bool(
+            os.getenv("TORCH_MCPU_ENABLE_CPU_FALLBACK", "OFF")
+        ),
     }
 
 
@@ -96,6 +99,8 @@ def build_deps():
         + build_options["TORCH_MCPU_ENABLE_MEMORY_PROTECTION"],
         "-DTORCH_MCPU_KERNEL_TIMING_USE_TSC="
         + build_options["TORCH_MCPU_KERNEL_TIMING_USE_TSC"],
+        "-DTORCH_MCPU_ENABLE_CPU_FALLBACK="
+        + build_options["TORCH_MCPU_ENABLE_CPU_FALLBACK"],
     ]
 
     subprocess.check_call(

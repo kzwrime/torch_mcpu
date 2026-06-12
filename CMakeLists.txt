@@ -21,6 +21,8 @@ option(TORCH_MCPU_ENABLE_MEMORY_PROTECTION
        "Enable page-level protection for simulated mcpu device memory" OFF)
 option(TORCH_MCPU_KERNEL_TIMING_USE_TSC
        "Use x86 rdtscp for MCPU kernel timing instead of c10::getTime" OFF)
+option(TORCH_MCPU_ENABLE_CPU_FALLBACK
+       "Enable boxed CPU fallback for unimplemented mcpu operators" OFF)
 
 if(APPLE)
   set(CMAKE_INSTALL_RPATH "@loader_path/lib;@loader_path;${PYTORCH_INSTALL_DIR}/lib")

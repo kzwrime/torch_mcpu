@@ -1,10 +1,14 @@
 #include "Minimal.h"
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
 #include "MCPUFallback.h"
+#endif
 #include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/WrapDimUtils.h>
 
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
 #include <unordered_set>
+#endif
 
 namespace at::native::mcpu {
 
@@ -274,6 +278,7 @@ at::Tensor unfold(
       std::nullopt);
 }
 
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
 // LITERALINCLUDE START: FALLBACK IMPL
 void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
   static const std::unordered_set<c10::OperatorName> cpu_fallback_blocklist = {
@@ -291,5 +296,6 @@ void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
   }
 }
 // LITERALINCLUDE END: FALLBACK IMPL
+#endif
 
 } // namespace at::native::mcpu
