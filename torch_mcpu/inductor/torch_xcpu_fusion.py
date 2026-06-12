@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 from torch import fx
+from torch._inductor.custom_graph_pass import CustomGraphPass
 from torch._higher_order_ops.auto_functionalize import auto_functionalized
 from torch._ops import OpOverload
 
@@ -208,7 +209,7 @@ def _fuse_sigmoid_and_mul(graph: fx.Graph, skip_nodes: set[fx.Node]) -> int:
     return count
 
 
-class McpuTorchXcpuFusionPass:
+class McpuTorchXcpuFusionPass(CustomGraphPass):
     """Replace small mcpu pointwise chains with torch_xcpu fused ops."""
 
     def __call__(self, graph: fx.Graph) -> None:
@@ -236,7 +237,7 @@ class McpuTorchXcpuFusionPass:
         return hasher.hexdigest()
 
 
-class ChainedPostGradPass:
+class ChainedPostGradPass(CustomGraphPass):
     def __init__(self, *passes: Callable[[fx.Graph], None]) -> None:
         self.passes = passes
 
