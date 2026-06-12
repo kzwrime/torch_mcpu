@@ -112,19 +112,20 @@ class TestKernelLaunchProtection(TestCase):
                 pressure_allocations=16,
             )
 
-    def test_host_to_mcpu_copy_is_stream_ordered_and_blocking(self):
+    def test_host_to_mcpu_non_blocking_copy_is_stream_ordered_and_async(self):
         stream = torch.Stream(device="mcpu:0")
         cpu = torch.arange(16, dtype=torch.float32)
 
         with stream:
             blocker = torch.empty(1, dtype=torch.int64, device="mcpu")
             torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 100)
-            device = cpu.to("mcpu")
+            device = cpu.to("mcpu", non_blocking=True)
 
-        self.assertTrue(stream.query())
+        self.assertFalse(stream.query())
+        stream.synchronize()
         self.assertTrue(torch.equal(device.cpu(), cpu))
 
-    def test_mcpu_to_host_copy_is_stream_ordered_and_blocking(self):
+    def test_mcpu_to_host_non_blocking_copy_is_stream_ordered_and_async(self):
         stream = torch.Stream(device="mcpu:0")
         device = torch.zeros(16, dtype=torch.float32, device="mcpu")
 
@@ -132,9 +133,10 @@ class TestKernelLaunchProtection(TestCase):
             blocker = torch.empty(1, dtype=torch.int64, device="mcpu")
             torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 100)
             device.fill_(5)
-            host = device.cpu()
+            host = device.to("cpu", non_blocking=True)
 
-        self.assertTrue(stream.query())
+        self.assertFalse(stream.query())
+        stream.synchronize()
         self.assertTrue(torch.equal(host, torch.full_like(host, 5)))
 
     def test_mcpu_to_mcpu_copy_is_stream_ordered_and_async(self):

@@ -8,6 +8,52 @@
 
 namespace at::native::mcpu {
 
+namespace {
+
+bool is_mcpu_tensor(const at::Tensor& tensor) {
+  return tensor.device().type() == c10::DeviceType::PrivateUse1;
+}
+
+bool is_host_device_copy(const at::Tensor& self, const at::Tensor& dst) {
+  return (self.is_cpu() && is_mcpu_tensor(dst)) ||
+      (is_mcpu_tensor(self) && dst.is_cpu());
+}
+
+at::Tensor make_mcpu_tensor_cpu_view(const at::Tensor& tensor) {
+  return at::from_blob(
+      tensor.data_ptr(),
+      tensor.sizes(),
+      tensor.strides(),
+      tensor.options().device(at::kCPU));
+}
+
+void launch_async_host_device_copy(
+    const at::Tensor& self,
+    const at::Tensor& dst) {
+  const at::Tensor& mcpu_tensor = self.is_cpu() ? dst : self;
+  auto stream = c10::mcpu::getCurrentMcpuStream(mcpu_tensor.device().index());
+
+  at::mcpu::launch_timed_kernel_on_stream(
+      stream,
+      "mcpu::_copy_from.host_device",
+      [self, dst](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::_copy_from.host_device", timing_event);
+
+        if (self.is_cpu()) {
+          at::mcpu::KernelMemoryGuard guard(dst);
+          at::Tensor dst_as_cpu = make_mcpu_tensor_cpu_view(dst);
+          at::native::copy_(const_cast<at::Tensor&>(dst_as_cpu), self, true);
+        } else {
+          at::mcpu::KernelMemoryGuard guard(self);
+          at::Tensor self_as_cpu = make_mcpu_tensor_cpu_view(self);
+          at::native::copy_(const_cast<at::Tensor&>(dst), self_as_cpu, true);
+        }
+      });
+}
+
+} // namespace
+
 // LITERALINCLUDE START: EMPTY.MEMORY_FORMAT IMPL
 at::Tensor empty_memory_format(
     c10::IntArrayRef size,
@@ -89,8 +135,7 @@ at::Tensor _copy_from(
   TORCH_CHECK(self.defined(), "Source tensor (self) is not defined.");
   TORCH_CHECK(dst.defined(), "Destination tensor (dst) is not defined.");
 
-  if (self.device().type() == c10::DeviceType::PrivateUse1 &&
-      dst.device().type() == c10::DeviceType::PrivateUse1 &&
+  if (is_mcpu_tensor(self) && is_mcpu_tensor(dst) &&
       self.device() == dst.device()) {
     at::mcpu::launch_timed_kernel(
         "mcpu::_copy_from.same_device",
@@ -115,6 +160,11 @@ at::Tensor _copy_from(
     return dst;
   }
 
+  if (non_blocking && is_host_device_copy(self, dst)) {
+    launch_async_host_device_copy(self, dst);
+    return dst;
+  }
+
   synchronize_if_mcpu(self);
   synchronize_if_mcpu(dst);
   MemoryGuard guard(self, dst);
@@ -136,21 +186,13 @@ at::Tensor _copy_from(
 
   } else {
     if (self.is_cpu()) {
-      at::Tensor dst_as_cpu = at::from_blob(
-          dst.data_ptr(),
-          dst.sizes(),
-          dst.strides(),
-          dst.options().device(at::kCPU));
+      at::Tensor dst_as_cpu = make_mcpu_tensor_cpu_view(dst);
 
       at::native::copy_(
           const_cast<at::Tensor&>(dst_as_cpu), self, non_blocking);
 
     } else {
-      at::Tensor self_as_cpu = at::from_blob(
-          self.data_ptr(),
-          self.sizes(),
-          self.strides(),
-          self.options().device(at::kCPU));
+      at::Tensor self_as_cpu = make_mcpu_tensor_cpu_view(self);
 
       at::native::copy_(
           const_cast<at::Tensor&>(dst), self_as_cpu, non_blocking);
