@@ -3,6 +3,7 @@
 #include "runtime/McpuKernelTiming.h"
 
 #include <ATen/ExpandUtils.h>
+#include <ATen/ops/bitwise_not.h>
 #include <ATen/ops/clamp.h>
 #include <ATen/ops/cos.h>
 #include <ATen/ops/empty_like.h>
@@ -147,6 +148,33 @@ at::Tensor& neg_out(const at::Tensor& self, at::Tensor& out) {
     at::neg_out(cpu_out, cpu_self);
   });
   return out;
+}
+
+at::Tensor& bitwise_not_out(const at::Tensor& self, at::Tensor& out) {
+  ops::check_out_sizes("aten::bitwise_not.out", out, self.sizes());
+
+  launch_kernel(out, [self, out]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::bitwise_not_out(cpu_out, cpu_self);
+  });
+  return out;
+}
+
+at::Tensor bitwise_not(const at::Tensor& self) {
+  auto out = empty_unary_mcpu(self, self.scalar_type());
+  bitwise_not_out(self, out);
+  return out;
+}
+
+at::Tensor& bitwise_not_(at::Tensor& self) {
+  launch_kernel(self, [self]() mutable {
+    KernelMemoryGuard guard(self);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    cpu_self.bitwise_not_();
+  });
+  return self;
 }
 
 at::Tensor& clamp_out(
@@ -350,6 +378,9 @@ at::Tensor& sum_IntList_out(
 } // namespace
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+  m.impl("bitwise_not", &bitwise_not);
+  m.impl("bitwise_not.out", &bitwise_not_out);
+  m.impl("bitwise_not_", &bitwise_not_);
   m.impl("clamp.out", &clamp_out);
   m.impl("clamp.Tensor_out", &clamp_Tensor_out);
   m.impl("cos.out", &cos_out);

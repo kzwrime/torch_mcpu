@@ -391,6 +391,43 @@ class TestFallback(TestCase):
         torch.ne(x, 9.0, out=ne_out)
         self.assertEqual(ne_out.cpu(), torch.ne(x.cpu(), 9.0))
 
+        gt_scalar = torch.gt(x, 2.0)
+        self.assertEqual(gt_scalar.cpu(), torch.gt(x.cpu(), 2.0))
+
+        gt_scalar_out = torch.empty_like(x, dtype=torch.bool)
+        torch.gt(x, 2.0, out=gt_scalar_out)
+        self.assertEqual(gt_scalar_out.cpu(), torch.gt(x.cpu(), 2.0))
+
+        gt_other = torch.tensor([[8.0], [2.0]], device="mcpu")
+        gt_tensor = torch.gt(x, gt_other)
+        self.assertEqual(gt_tensor.cpu(), torch.gt(x.cpu(), gt_other.cpu()))
+
+        gt_tensor_out = torch.empty(2, 2, device="mcpu", dtype=torch.bool)
+        torch.gt(x, gt_other, out=gt_tensor_out)
+        self.assertEqual(gt_tensor_out.cpu(), torch.gt(x.cpu(), gt_other.cpu()))
+
+        bits = torch.tensor([[0, 1], [2, 3]], device="mcpu", dtype=torch.int32)
+        self.assertEqual(torch.bitwise_not(bits).cpu(), torch.bitwise_not(bits.cpu()))
+
+        bitwise_not_out = torch.empty_like(bits)
+        torch.bitwise_not(bits, out=bitwise_not_out)
+        self.assertEqual(bitwise_not_out.cpu(), torch.bitwise_not(bits.cpu()))
+
+        bitwise_not_inplace = bits.clone()
+        bitwise_not_inplace.bitwise_not_()
+        self.assertEqual(bitwise_not_inplace.cpu(), bits.cpu().bitwise_not_())
+
+        bad_binary_out = torch.empty(1, device="mcpu", dtype=torch.bool)
+        with self.assertRaisesRegex(RuntimeError, "aten::gt.Scalar_out"):
+            torch.gt(x, 2.0, out=bad_binary_out)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::gt.Tensor_out"):
+            torch.gt(x, gt_other, out=bad_binary_out)
+
+        bad_bitwise_not_out = torch.empty(1, device="mcpu", dtype=bits.dtype)
+        with self.assertRaisesRegex(RuntimeError, "aten::bitwise_not.out"):
+            torch.bitwise_not(bits, out=bad_bitwise_not_out)
+
         nz = torch.nonzero(x)
         self.assertEqual(nz.cpu(), torch.nonzero(x.cpu()))
 

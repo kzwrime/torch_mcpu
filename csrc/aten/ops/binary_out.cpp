@@ -5,6 +5,7 @@
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/add.h>
 #include <ATen/ops/div.h>
+#include <ATen/ops/gt.h>
 #include <ATen/ops/mul.h>
 #include <ATen/ops/pow.h>
 #include <ATen/ops/remainder.h>
@@ -25,6 +26,12 @@ at::Tensor empty_like_mcpu_result(
     const at::Scalar& other) {
   return at::empty(
       self.sizes(), self.options().dtype(at::result_type(self, other)));
+}
+
+at::Tensor empty_comparison_mcpu(
+    const at::Tensor& self,
+    at::IntArrayRef out_sizes) {
+  return at::empty(out_sizes, self.options().dtype(at::kBool));
 }
 
 at::Tensor& add_out(
@@ -111,6 +118,51 @@ at::Tensor& div_out(
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
     at::div_out(cpu_out, cpu_self, cpu_other);
   });
+  return out;
+}
+
+at::Tensor& gt_Tensor_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
+  ops::check_out_sizes("aten::gt.Tensor_out", out, expected_sizes);
+
+  launch_kernel(out, [self, other, out]() mutable {
+    KernelMemoryGuard guard(self, other, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_other = ops::get_cpu_tensor_view_if_needed(other);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::gt_out(cpu_out, cpu_self, cpu_other);
+  });
+  return out;
+}
+
+at::Tensor gt_Tensor(const at::Tensor& self, const at::Tensor& other) {
+  auto out_sizes = at::infer_size(self.sizes(), other.sizes());
+  auto out = empty_comparison_mcpu(self, out_sizes);
+  gt_Tensor_out(self, other, out);
+  return out;
+}
+
+at::Tensor& gt_Scalar_out(
+    const at::Tensor& self,
+    const at::Scalar& other,
+    at::Tensor& out) {
+  ops::check_out_sizes("aten::gt.Scalar_out", out, self.sizes());
+
+  launch_kernel(out, [self, other, out]() mutable {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::gt_out(cpu_out, cpu_self, other);
+  });
+  return out;
+}
+
+at::Tensor gt_Scalar(const at::Tensor& self, const at::Scalar& other) {
+  auto out = empty_comparison_mcpu(self, self.sizes());
+  gt_Scalar_out(self, other, out);
   return out;
 }
 
@@ -244,6 +296,10 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("add.Scalar", &add_Scalar);
   m.impl("add_.Scalar", &add_Scalar_);
   m.impl("div.out", &div_out);
+  m.impl("gt.Tensor", &gt_Tensor);
+  m.impl("gt.Tensor_out", &gt_Tensor_out);
+  m.impl("gt.Scalar", &gt_Scalar);
+  m.impl("gt.Scalar_out", &gt_Scalar_out);
   m.impl("mul.out", &mul_out);
   m.impl("sub.Tensor", &sub_Tensor);
   m.impl("sub.out", &sub_out);
