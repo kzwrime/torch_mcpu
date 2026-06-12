@@ -1,3 +1,4 @@
+import gzip
 import json
 import os
 import tempfile
@@ -208,6 +209,53 @@ def _append_mcpu_events(path):
     return injected
 
 
+def _append_mcpu_events_to_trace(path):
+    if not path.endswith(".gz"):
+        return _append_mcpu_events(path)
+
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    json_fd, json_path = tempfile.mkstemp(
+        prefix=".mcpu_trace.", suffix=".json", dir=directory
+    )
+    gz_path = None
+    try:
+        with os.fdopen(json_fd, "wb") as out, gzip.open(path, "rb") as src:
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+
+        injected = _append_mcpu_events(json_path)
+
+        gz_fd, gz_path = tempfile.mkstemp(
+            prefix=".mcpu_trace.", suffix=".json.gz", dir=directory
+        )
+        with os.fdopen(gz_fd, "wb") as raw_out:
+            with open(json_path, "rb") as src, gzip.GzipFile(
+                filename="", mode="wb", fileobj=raw_out
+            ) as out:
+                while True:
+                    chunk = src.read(1 << 20)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+        os.replace(gz_path, path)
+        return injected
+    except Exception:
+        if gz_path is not None:
+            try:
+                os.unlink(gz_path)
+            except OSError:
+                pass
+        raise
+    finally:
+        try:
+            os.unlink(json_path)
+        except OSError:
+            pass
+
+
 def _patch_export_chrome_trace():
     try:
         profile_cls = torch.profiler.profile
@@ -225,7 +273,7 @@ def _patch_export_chrome_trace():
             and os.environ.get("TORCH_MCPU_PATCH_PROFILER_TRACE", "1") != "0"
         ):
             try:
-                _append_mcpu_events(path)
+                _append_mcpu_events_to_trace(path)
             except Exception:
                 pass
         return result

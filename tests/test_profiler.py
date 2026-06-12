@@ -1,10 +1,14 @@
 # Owner(s): ["module: PrivateUse1"]
 
+import gzip
 import json
+import os
 import tempfile
+from unittest import mock
 
 import torch
 import torch.nn as nn
+import torch_mcpu.profiler as mcpu_profiler
 from torch.autograd.profiler import profile as autograd_profile
 from torch.profiler import record_function
 from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
@@ -169,6 +173,51 @@ class TestProfiler(TestCase):
         finally:
             import os
 
+            if os.path.exists(trace_file):
+                os.remove(trace_file)
+
+    def test_profiler_gzip_trace_postprocess_keeps_valid_gzip(self):
+        """Test mcpu trace injection into a gzip Chrome trace."""
+        trace = {
+            "schemaVersion": 1,
+            "traceEvents": [
+                {
+                    "ph": "X",
+                    "cat": "cpu_op",
+                    "name": "aten::empty",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": 100.0,
+                    "dur": 5.0,
+                    "args": {},
+                }
+            ],
+        }
+        fd, trace_file = tempfile.mkstemp(suffix=".pt.trace.json.gz")
+        os.close(fd)
+
+        try:
+            with gzip.open(trace_file, "wt", encoding="utf-8") as f:
+                json.dump(trace, f)
+
+            with mock.patch.object(
+                mcpu_profiler,
+                "_valid_kernel_events",
+                return_value=[(1000, 1300, "mcpu::unit_test_kernel", 0)],
+            ), mock.patch.object(
+                mcpu_profiler, "_calibrate_timer_ticks_per_ns", return_value=10.0
+            ):
+                injected = mcpu_profiler._append_mcpu_events_to_trace(trace_file)
+
+            self.assertEqual(injected, 1)
+            with gzip.open(trace_file, "rt", encoding="utf-8") as f:
+                trace_data = json.load(f)
+
+            events = trace_data["traceEvents"]
+            self.assertTrue(
+                any(event.get("cat") == "mcpu_kernel" for event in events)
+            )
+        finally:
             if os.path.exists(trace_file):
                 os.remove(trace_file)
 
