@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../native/Common.h"
+#include "runtime/McpuKernelLaunch.h"
 
 #include <aten/McpuTensorView.hpp>
 

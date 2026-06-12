@@ -1,6 +1,4 @@
 #include "Common.h"
-#include "runtime/McpuKernelLaunch.h"
-#include "runtime/McpuKernelTiming.h"
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/bitwise_not.h>
@@ -44,15 +42,12 @@ at::Tensor empty_unary_mcpu(
 at::Tensor& sigmoid_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::sigmoid.out", out, self.sizes());
 
-  launch_timed_kernel(
-      "aten::sigmoid_out",
-      [self, out](at::mcpu::kernel_timing::Event* timing_event) mutable {
-        MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::sigmoid", timing_event);
-        KernelMemoryGuard guard(self, out);
-        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-        at::sigmoid_out(cpu_out, cpu_self);
-      });
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::sigmoid", ([ self, out ]), {
+    KernelMemoryGuard guard(self, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::sigmoid_out(cpu_out, cpu_self);
+  });
   return out;
 }
 
@@ -67,7 +62,7 @@ at::Tensor sigmoid(const at::Tensor& self) {
 }
 
 at::Tensor& sigmoid_(at::Tensor& self) {
-  launch_kernel(self, [self]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::sigmoid_", ([self]), {
     KernelMemoryGuard guard(self);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     at::sigmoid_(cpu_self);
@@ -78,7 +73,7 @@ at::Tensor& sigmoid_(at::Tensor& self) {
 at::Tensor& silu_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::silu.out", out, self.sizes());
 
-  launch_kernel(out, [self, out]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::silu.out", ([ self, out ]), {
     KernelMemoryGuard guard(self, out);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
@@ -94,7 +89,7 @@ at::Tensor silu(const at::Tensor& self) {
 }
 
 at::Tensor& silu_(at::Tensor& self) {
-  launch_kernel(self, [self]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::silu_", ([self]), {
     KernelMemoryGuard guard(self);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     at::silu_(cpu_self);
@@ -105,7 +100,7 @@ at::Tensor& silu_(at::Tensor& self) {
 at::Tensor& cos_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::cos.out", out, self.sizes());
 
-  launch_kernel(out, [self, out]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::cos.out", ([ self, out ]), {
     KernelMemoryGuard guard(self, out);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
@@ -117,7 +112,7 @@ at::Tensor& cos_out(const at::Tensor& self, at::Tensor& out) {
 at::Tensor& sin_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::sin.out", out, self.sizes());
 
-  launch_kernel(out, [self, out]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::sin.out", ([ self, out ]), {
     KernelMemoryGuard guard(self, out);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
@@ -129,7 +124,7 @@ at::Tensor& sin_out(const at::Tensor& self, at::Tensor& out) {
 at::Tensor& reciprocal_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::reciprocal.out", out, self.sizes());
 
-  launch_kernel(out, [self, out]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::reciprocal.out", ([ self, out ]), {
     KernelMemoryGuard guard(self, out);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
@@ -141,7 +136,7 @@ at::Tensor& reciprocal_out(const at::Tensor& self, at::Tensor& out) {
 at::Tensor& neg_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::neg.out", out, self.sizes());
 
-  launch_kernel(out, [self, out]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::neg.out", ([ self, out ]), {
     KernelMemoryGuard guard(self, out);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
@@ -153,7 +148,7 @@ at::Tensor& neg_out(const at::Tensor& self, at::Tensor& out) {
 at::Tensor& bitwise_not_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::bitwise_not.out", out, self.sizes());
 
-  launch_kernel(out, [self, out]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::bitwise_not.out", ([ self, out ]), {
     KernelMemoryGuard guard(self, out);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
@@ -169,7 +164,7 @@ at::Tensor bitwise_not(const at::Tensor& self) {
 }
 
 at::Tensor& bitwise_not_(at::Tensor& self) {
-  launch_kernel(self, [self]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::bitwise_not_", ([self]), {
     KernelMemoryGuard guard(self);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     cpu_self.bitwise_not_();
@@ -184,7 +179,7 @@ at::Tensor& clamp_out(
     at::Tensor& out) {
   ops::check_out_sizes("aten::clamp.out", out, self.sizes());
 
-  launch_kernel(out, [self, out, min, max]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::clamp.out", ([ self, out, min, max ]), {
     KernelMemoryGuard guard(self, out);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
@@ -211,23 +206,26 @@ at::Tensor& clamp_Tensor_out(
       min.has_value() && min->defined() ? *min : at::Tensor();
   const at::Tensor max_guard =
       max.has_value() && max->defined() ? *max : at::Tensor();
-  launch_kernel(out, [self, min_guard, max_guard, min, max, out]() mutable {
-    KernelMemoryGuard guard(self, min_guard, max_guard, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_min = min.has_value() && min->defined()
-        ? std::make_optional(ops::get_cpu_tensor_view_if_needed(*min))
-        : std::nullopt;
-    auto cpu_max = max.has_value() && max->defined()
-        ? std::make_optional(ops::get_cpu_tensor_view_if_needed(*max))
-        : std::nullopt;
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    at::clamp_out(cpu_out, cpu_self, cpu_min, cpu_max);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::clamp.Tensor_out",
+      ([ self, min_guard, max_guard, min, max, out ]),
+      {
+        KernelMemoryGuard guard(self, min_guard, max_guard, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_min = min.has_value() && min->defined()
+            ? std::make_optional(ops::get_cpu_tensor_view_if_needed(*min))
+            : std::nullopt;
+        auto cpu_max = max.has_value() && max->defined()
+            ? std::make_optional(ops::get_cpu_tensor_view_if_needed(*max))
+            : std::nullopt;
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        at::clamp_out(cpu_out, cpu_self, cpu_min, cpu_max);
+      });
   return out;
 }
 
 at::Tensor& zero_(at::Tensor& self) {
-  launch_kernel(self, [self]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::zero_", ([self]), {
     KernelMemoryGuard guard(self);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     at::zero_(cpu_self);
@@ -239,12 +237,13 @@ at::Tensor& masked_fill__Scalar(
     at::Tensor& self,
     const at::Tensor& mask,
     const at::Scalar& value) {
-  launch_kernel(self, [self, mask, value]() mutable {
-    KernelMemoryGuard guard(self, mask);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_mask = ops::get_cpu_tensor_view_if_needed(mask);
-    at::cpu::masked_fill_(cpu_self, cpu_mask, value);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::masked_fill_.Scalar", ([ self, mask, value ]), {
+        KernelMemoryGuard guard(self, mask);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_mask = ops::get_cpu_tensor_view_if_needed(mask);
+        at::cpu::masked_fill_(cpu_self, cpu_mask, value);
+      });
   return self;
 }
 
@@ -254,12 +253,13 @@ at::Tensor& ne_Scalar_out(
     at::Tensor& out) {
   ops::check_out_sizes("aten::ne.Scalar_out", out, self.sizes());
 
-  launch_kernel(out, [self, out, other]() mutable {
-    KernelMemoryGuard guard(self, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    at::ne_out(cpu_out, cpu_self, other);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::ne.Scalar_out", ([ self, out, other ]), {
+        KernelMemoryGuard guard(self, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        at::ne_out(cpu_out, cpu_self, other);
+      });
   return out;
 }
 
@@ -270,83 +270,89 @@ at::Tensor nonzero(const at::Tensor& self) {
   const auto strides = self.strides().vec();
   auto count = at::empty(
       {}, self.options().device(c10::DeviceType::CPU).dtype(at::kLong));
-  launch_kernel(self, [self, count, ndim, numel, sizes, strides]() mutable {
-    KernelMemoryGuard guard(self);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    int64_t count_value = 0;
-    AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(
-        at::ScalarType::Half,
-        at::ScalarType::BFloat16,
-        at::ScalarType::Bool,
-        cpu_self.scalar_type(),
-        "mcpu_nonzero_count",
-        [&] {
-          const auto* data = cpu_self.const_data_ptr<scalar_t>();
-          std::vector<int64_t> index(ndim, 0);
-          for (int64_t linear = 0; linear < numel; ++linear) {
-            int64_t offset = 0;
-            for (int64_t d = 0; d < ndim; ++d) {
-              offset += index[d] * strides[d];
-            }
-            if (is_nonzero_value(data[offset])) {
-              ++count_value;
-            }
-            for (int64_t d = ndim - 1; d >= 0; --d) {
-              if (++index[d] < sizes[d]) {
-                break;
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::nonzero.count",
+      ([ self, count, ndim, numel, sizes, strides ]),
+      {
+        KernelMemoryGuard guard(self);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        int64_t count_value = 0;
+        AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(
+            at::ScalarType::Half,
+            at::ScalarType::BFloat16,
+            at::ScalarType::Bool,
+            cpu_self.scalar_type(),
+            "mcpu_nonzero_count",
+            [&] {
+              const auto* data = cpu_self.const_data_ptr<scalar_t>();
+              std::vector<int64_t> index(ndim, 0);
+              for (int64_t linear = 0; linear < numel; ++linear) {
+                int64_t offset = 0;
+                for (int64_t d = 0; d < ndim; ++d) {
+                  offset += index[d] * strides[d];
+                }
+                if (is_nonzero_value(data[offset])) {
+                  ++count_value;
+                }
+                for (int64_t d = ndim - 1; d >= 0; --d) {
+                  if (++index[d] < sizes[d]) {
+                    break;
+                  }
+                  index[d] = 0;
+                }
               }
-              index[d] = 0;
-            }
-          }
-        });
-    *count.mutable_data_ptr<int64_t>() = count_value;
-  });
+            });
+        *count.mutable_data_ptr<int64_t>() = count_value;
+      });
   at::native::mcpu::synchronize_if_mcpu(self);
   const auto count_value = count.item<int64_t>();
   auto out = at::empty(
       {count_value, ndim},
       self.options().device(c10::DeviceType::PrivateUse1).dtype(at::kLong));
 
-  launch_kernel(out, [self, out, ndim, numel, sizes, strides]() mutable {
-    KernelMemoryGuard guard(self, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self).clone();
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    const auto ndim = cpu_self.dim();
-    const auto numel = cpu_self.numel();
-    const auto sizes = cpu_self.sizes().vec();
-    const auto strides = cpu_self.strides().vec();
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::nonzero.write",
+      ([ self, out, ndim, numel, sizes, strides ]),
+      {
+        KernelMemoryGuard guard(self, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self).clone();
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        const auto ndim = cpu_self.dim();
+        const auto numel = cpu_self.numel();
+        const auto sizes = cpu_self.sizes().vec();
+        const auto strides = cpu_self.strides().vec();
 
-    int64_t row = 0;
-    AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(
-        at::ScalarType::Half,
-        at::ScalarType::BFloat16,
-        at::ScalarType::Bool,
-        cpu_self.scalar_type(),
-        "mcpu_nonzero_write",
-        [&] {
-          const auto* data = cpu_self.const_data_ptr<scalar_t>();
-          auto* out_ptr = cpu_out.mutable_data_ptr<int64_t>();
-          std::vector<int64_t> index(ndim, 0);
-          for (int64_t linear = 0; linear < numel; ++linear) {
-            int64_t offset = 0;
-            for (int64_t d = 0; d < ndim; ++d) {
-              offset += index[d] * strides[d];
-            }
-            if (is_nonzero_value(data[offset])) {
-              for (int64_t d = 0; d < ndim; ++d) {
-                out_ptr[row * ndim + d] = index[d];
+        int64_t row = 0;
+        AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(
+            at::ScalarType::Half,
+            at::ScalarType::BFloat16,
+            at::ScalarType::Bool,
+            cpu_self.scalar_type(),
+            "mcpu_nonzero_write",
+            [&] {
+              const auto* data = cpu_self.const_data_ptr<scalar_t>();
+              auto* out_ptr = cpu_out.mutable_data_ptr<int64_t>();
+              std::vector<int64_t> index(ndim, 0);
+              for (int64_t linear = 0; linear < numel; ++linear) {
+                int64_t offset = 0;
+                for (int64_t d = 0; d < ndim; ++d) {
+                  offset += index[d] * strides[d];
+                }
+                if (is_nonzero_value(data[offset])) {
+                  for (int64_t d = 0; d < ndim; ++d) {
+                    out_ptr[row * ndim + d] = index[d];
+                  }
+                  ++row;
+                }
+                for (int64_t d = ndim - 1; d >= 0; --d) {
+                  if (++index[d] < sizes[d]) {
+                    break;
+                  }
+                  index[d] = 0;
+                }
               }
-              ++row;
-            }
-            for (int64_t d = ndim - 1; d >= 0; --d) {
-              if (++index[d] < sizes[d]) {
-                break;
-              }
-              index[d] = 0;
-            }
-          }
-        });
-  });
+            });
+      });
   return out;
 }
 
@@ -364,14 +370,15 @@ at::Tensor& sum_IntList_out(
     dim_vec = std::vector<int64_t>(dim->begin(), dim->end());
   }
 
-  launch_kernel(out, [self, out, dim_vec, keepdim, dtype]() mutable {
-    KernelMemoryGuard guard(self, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    auto cpu_dim = dim_vec.has_value() ? at::OptionalIntArrayRef(*dim_vec)
-                                       : at::OptionalIntArrayRef();
-    at::sum_out(cpu_out, cpu_self, cpu_dim, keepdim, dtype);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::sum.IntList_out", ([ self, out, dim_vec, keepdim, dtype ]), {
+        KernelMemoryGuard guard(self, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        auto cpu_dim = dim_vec.has_value() ? at::OptionalIntArrayRef(*dim_vec)
+                                           : at::OptionalIntArrayRef();
+        at::sum_out(cpu_out, cpu_self, cpu_dim, keepdim, dtype);
+      });
   return out;
 }
 

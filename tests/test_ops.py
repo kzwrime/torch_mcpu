@@ -476,6 +476,54 @@ class TestFallback(TestCase):
         self.assertTrue(torch.isfinite(exp_sample.cpu()).all())
         self.assertTrue((exp_sample.cpu() >= 0).all())
 
+        normal_sample = torch.empty(8, device="mcpu")
+        normal_result = normal_sample.normal_(0.0, 1.0)
+        self.assertIs(normal_result, normal_sample)
+        self.assertEqual(normal_sample.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(normal_sample.cpu()).all())
+
+        normal_out = torch.empty_like(x)
+        torch.ops.aten.normal.out(x, 0.0, 1.0, out=normal_out)
+        self.assertEqual(normal_out.shape, x.shape)
+        self.assertEqual(normal_out.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(normal_out.cpu()).all())
+
+        normal_factory = torch.normal(0.0, 1.0, (2, 3), device="mcpu")
+        self.assertEqual(normal_factory.shape, torch.Size([2, 3]))
+        self.assertEqual(normal_factory.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(normal_factory.cpu()).all())
+
+        mean = torch.zeros(2, 1, device="mcpu")
+        std = torch.ones(1, 3, device="mcpu")
+        normal_mean = torch.normal(mean, 1.0)
+        self.assertEqual(normal_mean.shape, mean.shape)
+        self.assertEqual(normal_mean.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(normal_mean.cpu()).all())
+
+        normal_std = torch.normal(0.0, std)
+        self.assertEqual(normal_std.shape, std.shape)
+        self.assertEqual(normal_std.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(normal_std.cpu()).all())
+
+        normal_tensor = torch.normal(mean, std)
+        self.assertEqual(normal_tensor.shape, torch.Size([2, 3]))
+        self.assertEqual(normal_tensor.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(normal_tensor.cpu()).all())
+
+        normal_tensor_out = torch.empty(2, 3, device="mcpu")
+        torch.normal(mean, std, out=normal_tensor_out)
+        self.assertEqual(normal_tensor_out.shape, torch.Size([2, 3]))
+        self.assertEqual(normal_tensor_out.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(normal_tensor_out.cpu()).all())
+
+        normal_float_float_out = torch.empty(2, 3, device="mcpu")
+        torch.ops.aten.normal.float_float_out(
+            0.0, 1.0, [2, 3], out=normal_float_float_out
+        )
+        self.assertEqual(normal_float_float_out.shape, torch.Size([2, 3]))
+        self.assertEqual(normal_float_float_out.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(normal_float_float_out.cpu()).all())
+
         argmax_out = torch.empty(2, 1, device="mcpu", dtype=torch.long)
         torch.argmax(x, dim=1, keepdim=True, out=argmax_out)
         self.assertEqual(argmax_out.cpu(), torch.argmax(x.cpu(), dim=1, keepdim=True))
@@ -500,6 +548,13 @@ class TestFallback(TestCase):
         bad_argmax_out = torch.empty(1, device="mcpu", dtype=torch.long)
         with self.assertRaisesRegex(RuntimeError, "aten::argmax.out"):
             torch.argmax(x, dim=1, keepdim=True, out=bad_argmax_out)
+
+        bad_normal_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::normal.out"):
+            torch.ops.aten.normal.out(x, 0.0, 1.0, out=bad_normal_out)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::normal.Tensor_Tensor_out"):
+            torch.normal(mean, std, out=bad_normal_out)
 
     def test_explicit_gather_out(self):
         x = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], device="mcpu")

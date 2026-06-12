@@ -24,6 +24,16 @@
 #define MCPU_KERNEL_LAUNCH_EXPORT __attribute__((visibility("default")))
 #endif
 
+#define MCPU_LAUNCH_UNPAREN(...) __VA_ARGS__
+#define MCPU_LAUNCH_TIMED_KERNEL(name, captures, ...)                         \
+  ::at::mcpu::launch_timed_kernel(                                            \
+      name,                                                                   \
+      MCPU_LAUNCH_UNPAREN captures(                                           \
+          ::at::mcpu::kernel_timing::Event* timing_event) mutable {           \
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(name, timing_event);                   \
+        __VA_ARGS__                                                           \
+      })
+
 namespace at::mcpu::detail {
 
 MCPU_KERNEL_LAUNCH_EXPORT bool enter_kernel_task();
