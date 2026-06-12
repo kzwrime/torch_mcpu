@@ -32,8 +32,10 @@ static int choose_worker_core() {
   if (const char* env = std::getenv("TORCH_MCPU_STREAM_WORKER_CORE")) {
     return std::atoi(env);
   }
-  const int cores = static_cast<int>(std::thread::hardware_concurrency());
-  return cores > 1 ? cores - 1 : -1;
+  // Do not pin production stream workers by default. OpenMP kernels launched
+  // from the worker inherit the worker affinity mask, so single-core pinning
+  // collapses OMP_NUM_THREADS parallel regions onto one CPU.
+  return -1;
 }
 
 static void pin_this_thread_to_core(int core) {
