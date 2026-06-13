@@ -42,6 +42,25 @@ from torch._inductor.custom_graph_pass import (
 from torch._inductor.scheduler import BaseScheduling
 from torch._inductor.virtualized import V
 
+
+_MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
+    {
+        torch.ops.aten.fill.Scalar,
+        torch.ops.aten.fill.Tensor,
+        torch.ops.aten.full.default,
+        torch.ops.aten.full.names,
+        torch.ops.aten.full_like.default,
+        torch.ops.aten.ones.default,
+        torch.ops.aten.ones.names,
+        torch.ops.aten.ones_like.default,
+        torch.ops.aten.zero.default,
+        torch.ops.aten.zeros.default,
+        torch.ops.aten.zeros.names,
+        torch.ops.aten.zeros_like.default,
+    }
+)
+
+
 def _meta_uses_mcpu(value) -> bool:
     if isinstance(value, torch.Tensor):
         return value.device.type == "mcpu"
@@ -61,7 +80,7 @@ def _graph_uses_mcpu(gm) -> bool:
     return False
 
 
-def _is_mcpu_compute_op(node) -> bool:
+def _is_mcpu_host_loop_op(node) -> bool:
     target = node.target
     return (
         node.op == "call_function"
@@ -70,6 +89,7 @@ def _is_mcpu_compute_op(node) -> bool:
         and (
             torch.Tag.pointwise in target.tags
             or torch.Tag.reduction in target.tags
+            or target in _MCPU_HOST_LOOP_FALLBACK_OPS
         )
         and (
             _meta_uses_mcpu(node.meta.get("val"))
@@ -87,14 +107,14 @@ class McpuDisableComputeFusionPass(CustomGraphModulePass):
     launch-kernel/page-protection model. Marking pointwise and reduction ATen
     nodes with ``should_fallback`` uses Inductor's selective lowering mechanism
     to keep graph compilation and AOTI wrapper generation while avoiding CPU
-    fused-loop codegen for mcpu compute.
+    fused-loop codegen for mcpu compute and tensor factory fills.
     """
 
     def __call__(self, gm: torch.fx.GraphModule) -> None:
         if not _graph_uses_mcpu(gm):
             return
         for node in gm.graph.nodes:
-            if _is_mcpu_compute_op(node):
+            if _is_mcpu_host_loop_op(node):
                 node.meta["should_fallback"] = True
 
     def uuid(self):
