@@ -41,6 +41,8 @@ from torch._inductor.custom_graph_pass import (
 )
 from torch._inductor.scheduler import BaseScheduling
 from torch._inductor.virtualized import V
+from torch_mcpu.compile_flags import get_compile_flags
+from torch_mcpu.paths import get_include
 
 
 _MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
@@ -236,17 +238,15 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
 
     @staticmethod
     def get_device_include_path(device: str) -> str:
-        base_dir = Path(__file__).resolve().parent
-        package_dir = base_dir.parent
-        header = base_dir.parent / "include" / "cpp_wrapper" / "mcpu.h"
+        include_dir = Path(get_include())
+        header = include_dir / "cpp_wrapper" / "mcpu.h"
         
         if not header.exists():
             raise FileNotFoundError(f"Failed to find header file: {header}")
 
         aoti_flags = [
-            f"-I{package_dir / 'include'}",
-            "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION=1",
-            "-DTORCH_MCPU_KERNEL_TIMING_USE_TSC=0",
+            f"-I{include_dir}",
+            *get_compile_flags(),
         ]
         extra_cflags = os.environ.get("AOTI_EXTRA_CFLAGS", "")
         existing_flags = extra_cflags.split()

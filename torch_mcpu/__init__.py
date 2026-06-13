@@ -27,6 +27,7 @@ from torch_mcpu.compile_flags import (
     get_compile_definitions,
     get_compile_flags,
 )
+from torch_mcpu.paths import get_include, get_library_dir
 
 torch.utils.rename_privateuse1_backend("mcpu")
 torch._register_device_module("mcpu", torch_mcpu.openreg)

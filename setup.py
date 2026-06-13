@@ -9,6 +9,7 @@ import sysconfig
 from distutils.command.clean import clean
 
 from setuptools import Extension, find_packages, setup
+from setuptools.command.build_py import build_py
 
 
 # Env Variables
@@ -18,6 +19,8 @@ IS_WINDOWS = platform.system() == "Windows"
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 RUN_BUILD_DEPS = any(arg in {"clean", "dist_info"} for arg in sys.argv)
 COMPILE_FLAGS_FILE = os.path.join(BASE_DIR, "torch_mcpu", "_compile_flags.json")
+CMAKE_STAGING_PACKAGE_DIR = os.path.join(BASE_DIR, "build", "cmake_install", "torch_mcpu")
+IS_EDITABLE_BUILD = "editable_wheel" in sys.argv
 
 
 def cmake_bool(value):
@@ -87,12 +90,14 @@ def get_pytorch_dir():
 def build_deps():
     build_dir = os.path.join(BASE_DIR, "build")
     os.makedirs(build_dir, exist_ok=True)
+    if os.path.isdir(CMAKE_STAGING_PACKAGE_DIR):
+        shutil.rmtree(CMAKE_STAGING_PACKAGE_DIR)
     build_options = get_mcpu_build_options()
     write_compile_flags_file(build_options)
 
     cmake_args = [
         "-DCMAKE_INSTALL_PREFIX="
-        + os.path.realpath(os.path.join(BASE_DIR, "torch_mcpu")),
+        + os.path.realpath(CMAKE_STAGING_PACKAGE_DIR),
         "-DPYTHON_INCLUDE_DIR=" + sysconfig.get_paths().get("include"),
         "-DPYTORCH_INSTALL_DIR=" + get_pytorch_dir(),
         "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION="
@@ -126,6 +131,23 @@ def build_deps():
     subprocess.check_call(command, cwd=build_dir, env=os.environ)
 
 
+class BuildPy(build_py):
+    def run(self):
+        super().run()
+        self.copy_cmake_install_tree()
+
+    def copy_cmake_install_tree(self):
+        build_package_dir = os.path.join(self.build_lib, "torch_mcpu")
+        for name in ("include", "lib"):
+            src = os.path.join(CMAKE_STAGING_PACKAGE_DIR, name)
+            if os.path.isdir(src):
+                shutil.copytree(
+                    src,
+                    os.path.join(build_package_dir, name),
+                    dirs_exist_ok=True,
+                )
+
+
 class BuildClean(clean):
     def run(self):
         for i in ["build", "install", "torch_mcpu/lib"]:
@@ -157,6 +179,10 @@ def main():
         extra_compile_args: list[str] = ["/MD", "/FS", "/EHsc"]
     else:
         extra_link_args = [*make_relative_rpath_args("lib")]
+        if IS_EDITABLE_BUILD:
+            extra_link_args += [
+                "-Wl,-rpath," + os.path.join(CMAKE_STAGING_PACKAGE_DIR, "lib")
+            ]
         extra_compile_args = [
             "-Wall",
             "-Wextra",
@@ -174,7 +200,7 @@ def main():
             language="c",
             extra_compile_args=extra_compile_args,
             libraries=["torch_bindings"],
-            library_dirs=[os.path.join(BASE_DIR, "torch_mcpu/lib")],
+            library_dirs=[os.path.join(CMAKE_STAGING_PACKAGE_DIR, "lib")],
             extra_link_args=extra_link_args,
         )
     ]
@@ -198,6 +224,7 @@ def main():
         package_data=package_data,
         ext_modules=ext_modules,
         cmdclass={
+            "build_py": BuildPy,  # type: ignore[misc]
             "clean": BuildClean,  # type: ignore[misc]
         },
         include_package_data=False,

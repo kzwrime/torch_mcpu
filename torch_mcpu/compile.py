@@ -16,6 +16,7 @@ from torch._inductor.codegen.common import register_backend_for_device
 
 import torch_mcpu._C  # type: ignore[misc]
 import torch_mcpu.openreg
+from torch_mcpu.paths import get_library_dir
 from torch_mcpu.inductor.extension_codegen_backend import (
     McpuCppWrapperCodegen,
     McpuDisableComputeFusionPass,
@@ -44,7 +45,7 @@ def _append_env_flags(name: str, flags: str) -> None:
 
 
 def _setup_aoti_link_flags() -> None:
-    lib_dir = Path(__file__).resolve().parent / "lib"
+    lib_dir = Path(get_library_dir())
     _append_env_flags(
         "AOTI_EXTRA_LDFLAGS",
         f"-L{lib_dir} -Wl,-rpath,{lib_dir} -ltorch_mcpu -lopenreg",
