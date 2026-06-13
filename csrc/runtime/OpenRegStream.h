@@ -9,7 +9,51 @@
 #include <c10/core/Stream.h>
 #include <c10/util/Exception.h>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>
+#endif
+
 namespace c10::mcpu {
+
+namespace detail {
+
+class OptionalPythonGilRelease {
+ public:
+  OptionalPythonGilRelease() {
+#if defined(__unix__) || defined(__APPLE__)
+    auto* is_initialized =
+        reinterpret_cast<int (*)()>(dlsym(RTLD_DEFAULT, "Py_IsInitialized"));
+    auto* gil_state_check =
+        reinterpret_cast<int (*)()>(dlsym(RTLD_DEFAULT, "PyGILState_Check"));
+    save_thread_ =
+        reinterpret_cast<void* (*)()>(dlsym(RTLD_DEFAULT, "PyEval_SaveThread"));
+    restore_thread_ =
+        reinterpret_cast<void (*)(void*)>(
+            dlsym(RTLD_DEFAULT, "PyEval_RestoreThread"));
+
+    if (is_initialized && gil_state_check && save_thread_ && restore_thread_ &&
+        is_initialized() && gil_state_check()) {
+      state_ = save_thread_();
+    }
+#endif
+  }
+
+  ~OptionalPythonGilRelease() {
+    if (state_ && restore_thread_) {
+      restore_thread_(state_);
+    }
+  }
+
+  OptionalPythonGilRelease(const OptionalPythonGilRelease&) = delete;
+  OptionalPythonGilRelease& operator=(const OptionalPythonGilRelease&) = delete;
+
+ private:
+  void* state_ = nullptr;
+  void* (*save_thread_)() = nullptr;
+  void (*restore_thread_)(void*) = nullptr;
+};
+
+} // namespace detail
 
 // Derive compile-time priority count from shared mcpu backend constant.
 static constexpr int max_compile_time_stream_priorities = 2;
@@ -68,6 +112,7 @@ class MCPU_EXPORT McpuStream {
 
   void synchronize() const {
     DeviceGuard guard{stream_.device()};
+    detail::OptionalPythonGilRelease release_gil;
     MCPU_CHECK(orStreamSynchronize(stream()));
   }
 
