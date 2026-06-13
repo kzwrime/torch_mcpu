@@ -24,8 +24,10 @@ namespace {
   ops::check_out_sizes("aten::topk.values", "values", values, meta_values);
   ops::check_out_sizes("aten::topk.values", "indices", indices, meta_indices);
 
-  launch_kernel(
-      values, [self, values, indices, k, dim, largest, sorted]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::topk.values",
+      ([ self, values, indices, k, dim, largest, sorted ]),
+      {
         KernelMemoryGuard guard(self, values, indices);
         auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
         auto cpu_values = ops::get_cpu_view_from_mcpu_tensor(values);

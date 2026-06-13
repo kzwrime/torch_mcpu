@@ -26,7 +26,7 @@ at::Tensor arange(
   auto options = ops::build_mcpu_options(dtype, layout, device);
   auto cpu_result = at::arange(end, options.device(c10::DeviceType::CPU));
   auto out = empty_mcpu_like_cpu_result(cpu_result, options);
-  launch_kernel(out, [out, cpu_result]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::arange", ([ out, cpu_result ]), {
     KernelMemoryGuard guard(out);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
     cpu_out.copy_(cpu_result);
@@ -46,7 +46,7 @@ at::Tensor arange_start(
   auto cpu_result =
       at::arange(start, end, 1, options.device(c10::DeviceType::CPU));
   auto out = empty_mcpu_like_cpu_result(cpu_result, options);
-  launch_kernel(out, [out, cpu_result]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::arange.start", ([ out, cpu_result ]), {
     KernelMemoryGuard guard(out);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
     cpu_out.copy_(cpu_result);
@@ -67,11 +67,12 @@ at::Tensor arange_start_step(
   auto cpu_result =
       at::arange(start, end, step, options.device(c10::DeviceType::CPU));
   auto out = empty_mcpu_like_cpu_result(cpu_result, options);
-  launch_kernel(out, [out, cpu_result]() mutable {
-    KernelMemoryGuard guard(out);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    cpu_out.copy_(cpu_result);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::arange.start_step", ([ out, cpu_result ]), {
+        KernelMemoryGuard guard(out);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        cpu_out.copy_(cpu_result);
+      });
   return out;
 }
 
@@ -79,7 +80,7 @@ at::Tensor& arange_out(const at::Scalar& end, at::Tensor& out) {
   auto cpu_result = at::arange(end, out.options().device(c10::DeviceType::CPU));
   ops::check_out_sizes("aten::arange.out", out, cpu_result.sizes());
 
-  launch_kernel(out, [out, cpu_result]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::arange.out", ([ out, cpu_result ]), {
     KernelMemoryGuard guard(out);
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
     cpu_out.copy_(cpu_result);
@@ -96,11 +97,12 @@ at::Tensor& arange_start_out(
       at::arange(start, end, step, out.options().device(c10::DeviceType::CPU));
   ops::check_out_sizes("aten::arange.start_out", out, cpu_result.sizes());
 
-  launch_kernel(out, [out, cpu_result]() mutable {
-    KernelMemoryGuard guard(out);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    cpu_out.copy_(cpu_result);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::arange.start_out", ([ out, cpu_result ]), {
+        KernelMemoryGuard guard(out);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        cpu_out.copy_(cpu_result);
+      });
   return out;
 }
 

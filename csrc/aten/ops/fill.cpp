@@ -8,7 +8,7 @@ namespace at::mcpu {
 namespace {
 
 at::Tensor& fill__scalar(at::Tensor& self, const at::Scalar& value) {
-  launch_kernel(self, [self, value]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::fill_.Scalar", ([ self, value ]), {
     KernelMemoryGuard guard(self);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     at::fill_(cpu_self, value);
@@ -17,7 +17,7 @@ at::Tensor& fill__scalar(at::Tensor& self, const at::Scalar& value) {
 }
 
 at::Tensor& fill__tensor(at::Tensor& self, const at::Tensor& value) {
-  launch_kernel(self, [self, value]() mutable {
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::fill_.Tensor", ([ self, value ]), {
     KernelMemoryGuard guard(self, value);
     auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
     auto cpu_value = ops::get_cpu_tensor_view_if_needed(value);

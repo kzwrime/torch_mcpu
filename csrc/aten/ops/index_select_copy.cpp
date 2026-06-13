@@ -28,13 +28,14 @@ at::Tensor index_select(
   auto sizes = index_select_sizes(self, dim, index);
   auto out = at::empty(sizes, self.options());
 
-  launch_kernel(out, [self, index, out, dim]() mutable {
-    KernelMemoryGuard guard(self, index, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    at::index_select_out(cpu_out, cpu_self, dim, cpu_index);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::index_select", ([ self, index, out, dim ]), {
+        KernelMemoryGuard guard(self, index, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        at::index_select_out(cpu_out, cpu_self, dim, cpu_index);
+      });
   return out;
 }
 
@@ -46,13 +47,14 @@ at::Tensor& index_select_out(
   auto sizes = index_select_sizes(self, dim, index);
   ops::check_out_sizes("aten::index_select.out", out, sizes);
 
-  launch_kernel(out, [self, index, out, dim]() mutable {
-    KernelMemoryGuard guard(self, index, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    at::index_select_out(cpu_out, cpu_self, dim, cpu_index);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::index_select.out", ([ self, index, out, dim ]), {
+        KernelMemoryGuard guard(self, index, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        at::index_select_out(cpu_out, cpu_self, dim, cpu_index);
+      });
   return out;
 }
 
@@ -61,13 +63,14 @@ at::Tensor& index_copy_(
     int64_t dim,
     const at::Tensor& index,
     const at::Tensor& source) {
-  launch_kernel(self, [self, index, source, dim]() mutable {
-    KernelMemoryGuard guard(self, index, source);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
-    auto cpu_source = ops::get_cpu_tensor_view_if_needed(source);
-    at::_ops::index_copy_::call(cpu_self, dim, cpu_index, cpu_source);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::index_copy_", ([ self, index, source, dim ]), {
+        KernelMemoryGuard guard(self, index, source);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
+        auto cpu_source = ops::get_cpu_tensor_view_if_needed(source);
+        at::_ops::index_copy_::call(cpu_self, dim, cpu_index, cpu_source);
+      });
   return self;
 }
 

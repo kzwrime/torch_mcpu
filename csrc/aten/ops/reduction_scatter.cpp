@@ -25,13 +25,14 @@ namespace {
   ops::check_out_sizes(
       "aten::max.dim_max", "max_values", indices, meta_indices);
 
-  launch_kernel(values, [self, values, indices, dim, keepdim]() mutable {
-    KernelMemoryGuard guard(self, values, indices);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_values = ops::get_cpu_view_from_mcpu_tensor(values);
-    auto cpu_indices = ops::get_cpu_view_from_mcpu_tensor(indices);
-    at::max_out(cpu_values, cpu_indices, cpu_self, dim, keepdim);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::max.dim_max", ([ self, values, indices, dim, keepdim ]), {
+        KernelMemoryGuard guard(self, values, indices);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_values = ops::get_cpu_view_from_mcpu_tensor(values);
+        auto cpu_indices = ops::get_cpu_view_from_mcpu_tensor(indices);
+        at::max_out(cpu_values, cpu_indices, cpu_self, dim, keepdim);
+      });
   return std::forward_as_tuple(values, indices);
 }
 
@@ -49,14 +50,15 @@ at::Tensor& mean_out(
     dim_vec = std::vector<int64_t>(dim->begin(), dim->end());
   }
 
-  launch_kernel(out, [self, out, dim_vec, keepdim, dtype]() mutable {
-    KernelMemoryGuard guard(self, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    auto cpu_dim = dim_vec.has_value() ? at::OptionalIntArrayRef(*dim_vec)
-                                       : at::OptionalIntArrayRef();
-    at::mean_out(cpu_out, cpu_self, cpu_dim, keepdim, dtype);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::mean.out", ([ self, out, dim_vec, keepdim, dtype ]), {
+        KernelMemoryGuard guard(self, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        auto cpu_dim = dim_vec.has_value() ? at::OptionalIntArrayRef(*dim_vec)
+                                           : at::OptionalIntArrayRef();
+        at::mean_out(cpu_out, cpu_self, cpu_dim, keepdim, dtype);
+      });
   return out;
 }
 
@@ -73,14 +75,15 @@ at::Tensor& scatter_add_out(
   at::scatter_add_out(meta_out, meta_self, dim, meta_index, meta_src);
   ops::check_out_sizes("aten::scatter_add.out", out, meta_out);
 
-  launch_kernel(out, [self, index, src, out, dim]() mutable {
-    KernelMemoryGuard guard(self, index, src, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
-    auto cpu_src = ops::get_cpu_tensor_view_if_needed(src);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    at::scatter_add_out(cpu_out, cpu_self, dim, cpu_index, cpu_src);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::scatter_add.out", ([ self, index, src, out, dim ]), {
+        KernelMemoryGuard guard(self, index, src, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
+        auto cpu_src = ops::get_cpu_tensor_view_if_needed(src);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        at::scatter_add_out(cpu_out, cpu_self, dim, cpu_index, cpu_src);
+      });
   return out;
 }
 

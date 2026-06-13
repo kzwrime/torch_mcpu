@@ -13,13 +13,17 @@ at::Tensor& _index_put_impl_(
     const at::Tensor& values,
     bool accumulate,
     bool unsafe) {
-  launch_kernel(self, [self, indices, values, accumulate, unsafe]() mutable {
-    KernelMemoryGuard guard(self, values, c10::IValue(indices));
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_values = ops::get_cpu_tensor_view_if_needed(values);
-    auto cpu_indices = ops::to_cpu_indices(indices);
-    at::_index_put_impl_(cpu_self, cpu_indices, cpu_values, accumulate, unsafe);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::_index_put_impl_",
+      ([ self, indices, values, accumulate, unsafe ]),
+      {
+        KernelMemoryGuard guard(self, values, c10::IValue(indices));
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_values = ops::get_cpu_tensor_view_if_needed(values);
+        auto cpu_indices = ops::to_cpu_indices(indices);
+        at::_index_put_impl_(
+            cpu_self, cpu_indices, cpu_values, accumulate, unsafe);
+      });
   return self;
 }
 

@@ -19,13 +19,14 @@ at::Tensor& gather_out(
   at::gather_out(meta_out, meta_self, dim, meta_index, sparse_grad);
   ops::check_out_sizes("aten::gather.out", out, meta_out);
 
-  launch_kernel(out, [self, index, out, dim, sparse_grad]() mutable {
-    KernelMemoryGuard guard(self, index, out);
-    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-    auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
-    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-    at::gather_out(cpu_out, cpu_self, dim, cpu_index, sparse_grad);
-  });
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::gather.out", ([ self, index, out, dim, sparse_grad ]), {
+        KernelMemoryGuard guard(self, index, out);
+        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+        auto cpu_index = ops::get_cpu_tensor_view_if_needed(index);
+        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+        at::gather_out(cpu_out, cpu_self, dim, cpu_index, sparse_grad);
+      });
   return out;
 }
 

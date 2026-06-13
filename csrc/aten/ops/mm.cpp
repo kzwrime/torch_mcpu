@@ -1,6 +1,5 @@
 #include "Common.h"
 #include "runtime/McpuKernelLaunch.h"
-#include "runtime/McpuKernelTiming.h"
 
 #include <ATen/ops/addmm.h>
 #include <ATen/ops/mm.h>
@@ -19,16 +18,13 @@ at::Tensor& mm_out(
       self.size(1) == mat2.size(0), "mm: self.size(1) must match mat2.size(0)");
   ops::check_out_sizes("aten::mm.out", out, {self.size(0), mat2.size(1)});
 
-  launch_timed_kernel(
-      "aten::mm_out",
-      [self, mat2, out](at::mcpu::kernel_timing::Event* timing_event) mutable {
-        MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::mm_out", timing_event);
-        KernelMemoryGuard guard(self, mat2, out);
-        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-        auto cpu_mat2 = ops::get_cpu_tensor_view_if_needed(mat2);
-        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-        at::mm_out(cpu_out, cpu_self, cpu_mat2);
-      });
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::mm_out", ([ self, mat2, out ]), {
+    KernelMemoryGuard guard(self, mat2, out);
+    auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+    auto cpu_mat2 = ops::get_cpu_tensor_view_if_needed(mat2);
+    auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+    at::mm_out(cpu_out, cpu_self, cpu_mat2);
+  });
   return out;
 }
 
@@ -54,11 +50,8 @@ at::Tensor& addmm_out(
       "addmm: mat1.size(1) must match mat2.size(0)");
   ops::check_out_sizes("aten::addmm.out", out, {mat1.size(0), mat2.size(1)});
 
-  launch_timed_kernel(
-      "aten::addmm_out",
-      [beta, alpha, self, mat1, mat2, out](
-          at::mcpu::kernel_timing::Event* timing_event) mutable {
-        MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::aten::addmm_out", timing_event);
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::addmm_out", ([ beta, alpha, self, mat1, mat2, out ]), {
         KernelMemoryGuard guard(self, mat1, mat2, out);
         auto cpu_self = ops::get_cpu_tensor_view_if_needed(self);
         auto cpu_mat1 = ops::get_cpu_view_from_mcpu_tensor(mat1);
