@@ -5,7 +5,9 @@
 #include "runtime/OpenRegStream.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <memory>
 #include <thread>
 
 namespace at::native::mcpu {
@@ -26,6 +28,22 @@ void sleep_for_ms(int64_t sleep_ms) {
   TORCH_CHECK(sleep_ms >= 0, "sleep_ms must be non-negative");
   std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
 }
+
+std::atomic<int64_t> g_lifetime_payload_constructed{0};
+std::atomic<int64_t> g_lifetime_payload_destroyed{0};
+std::atomic<int64_t> g_lifetime_payload_ran{0};
+
+struct KernelLaunchLifetimePayload {
+  explicit KernelLaunchLifetimePayload(int64_t value) : value(value) {
+    g_lifetime_payload_constructed.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  ~KernelLaunchLifetimePayload() {
+    g_lifetime_payload_destroyed.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  int64_t value;
+};
 
 } // namespace
 
@@ -275,6 +293,71 @@ int64_t first_element_int(const at::Tensor& x) {
   check_stream_test_tensor(x);
   MemoryGuard guard(x);
   return x.data_ptr<int64_t>()[0];
+}
+
+std::tuple<int64_t, int64_t, int64_t> kernel_launch_lifetime_counts(
+    const at::Tensor& stream_selector,
+    int64_t launches) {
+  check_stream_test_tensor(stream_selector);
+  TORCH_CHECK(launches >= 0, "launches must be non-negative");
+
+  g_lifetime_payload_constructed.store(0, std::memory_order_relaxed);
+  g_lifetime_payload_destroyed.store(0, std::memory_order_relaxed);
+  g_lifetime_payload_ran.store(0, std::memory_order_relaxed);
+
+  for (int64_t i = 0; i < launches; ++i) {
+    auto payload = std::make_unique<KernelLaunchLifetimePayload>(i);
+    at::mcpu::launch_timed_kernel(
+        "mcpu::kernel_launch_lifetime_counts",
+        [payload = std::move(payload)](
+            at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::kernel_launch_lifetime_counts", timing_event);
+          TORCH_CHECK(payload != nullptr, "lifetime payload was not captured");
+          g_lifetime_payload_ran.fetch_add(1, std::memory_order_relaxed);
+          payload->value += 1;
+        });
+  }
+
+  c10::mcpu::getCurrentMcpuStream(stream_selector.device().index())
+      .synchronize();
+
+  return std::make_tuple(
+      g_lifetime_payload_constructed.load(std::memory_order_relaxed),
+      g_lifetime_payload_destroyed.load(std::memory_order_relaxed),
+      g_lifetime_payload_ran.load(std::memory_order_relaxed));
+}
+
+std::tuple<int64_t, int64_t, int64_t> kernel_launch_failed_lifetime_counts(
+    const at::Tensor& stream_selector) {
+  check_stream_test_tensor(stream_selector);
+
+  g_lifetime_payload_constructed.store(0, std::memory_order_relaxed);
+  g_lifetime_payload_destroyed.store(0, std::memory_order_relaxed);
+  g_lifetime_payload_ran.store(0, std::memory_order_relaxed);
+
+  bool caught_launch_failure = false;
+  try {
+    auto payload = std::make_unique<KernelLaunchLifetimePayload>(0);
+    at::mcpu::launch_timed_kernel_on_stream(
+        static_cast<orStream_t>(nullptr),
+        "mcpu::kernel_launch_failed_lifetime_counts",
+        [payload = std::move(payload)](
+            at::mcpu::kernel_timing::Event* timing_event) mutable {
+          MCPU_KERNEL_TIMING_SCOPE_EVENT(
+              "mcpu::kernel_launch_failed_lifetime_counts", timing_event);
+          g_lifetime_payload_ran.fetch_add(1, std::memory_order_relaxed);
+        });
+  } catch (const c10::Error&) {
+    caught_launch_failure = true;
+  }
+
+  TORCH_CHECK(caught_launch_failure, "expected null stream launch to fail");
+
+  return std::make_tuple(
+      g_lifetime_payload_constructed.load(std::memory_order_relaxed),
+      g_lifetime_payload_destroyed.load(std::memory_order_relaxed),
+      g_lifetime_payload_ran.load(std::memory_order_relaxed));
 }
 
 } // namespace at::native::mcpu

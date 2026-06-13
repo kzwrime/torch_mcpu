@@ -58,6 +58,30 @@ class TestKernelLaunchProtection(TestCase):
         stream.synchronize()
         self.assertTrue(torch.equal(x.cpu(), torch.full((8,), 23, dtype=torch.int64)))
 
+    def test_move_only_launch_payload_is_destroyed(self):
+        stream = torch.Stream(device="mcpu:0")
+        selector = torch.empty(1, dtype=torch.int64, device="mcpu")
+
+        with stream:
+            constructed, destroyed, ran = torch.ops.mcpu.kernel_launch_lifetime_counts(
+                selector, 1024
+            )
+
+        self.assertEqual(constructed, 1024)
+        self.assertEqual(ran, 1024)
+        self.assertEqual(destroyed, constructed)
+
+    def test_move_only_launch_payload_is_destroyed_on_launch_failure(self):
+        selector = torch.empty(1, dtype=torch.int64, device="mcpu")
+
+        constructed, destroyed, ran = (
+            torch.ops.mcpu.kernel_launch_failed_lifetime_counts(selector)
+        )
+
+        self.assertEqual(constructed, 1)
+        self.assertEqual(ran, 0)
+        self.assertEqual(destroyed, constructed)
+
     def _run_zero_kv_blocks_with_metadata_lifetime(
         self, *, keepalive: bool, pressure_allocations: int
     ):

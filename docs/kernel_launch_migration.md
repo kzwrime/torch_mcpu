@@ -65,6 +65,10 @@ path, check the following before considering the migration complete:
 - Prefer `KernelPointerMemoryGuard` whenever the pointer set is known before
   launch. Use `KernelAllMemoryGuard` only when the kernel discovers indirect
   MCPU allocation addresses from metadata inside the launched task.
+- If the captured launch arguments exceed the stream inline slot limit, put
+  copied scalar/pointer metadata in a heap args struct and move-capture a
+  `std::unique_ptr` to it. Borrowed tensor `data_ptr`s inside that struct must
+  not be freed.
 
 ## Launch Macro
 
@@ -80,6 +84,9 @@ The single name is used both as the launch record name and as the timing scope
 name. Wrap the capture list in parentheses, for example `([out_ptr, n])`, so
 commas in the capture list are parsed as part of one macro argument. Wrap the
 kernel body in `{ ... }` for readability.
+
+For oversized argument lists, capture one owning args object instead of many
+values: `([args = std::move(args)])`.
 
 ## Pointer-Capture Pattern
 

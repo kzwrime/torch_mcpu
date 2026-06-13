@@ -71,5 +71,10 @@ at::Tensor& stream_sleep_copy_(
     const at::Tensor& src,
     int64_t sleep_ms);
 int64_t first_element_int(const at::Tensor& x);
+std::tuple<int64_t, int64_t, int64_t> kernel_launch_lifetime_counts(
+    const at::Tensor& stream_selector,
+    int64_t launches);
+std::tuple<int64_t, int64_t, int64_t> kernel_launch_failed_lifetime_counts(
+    const at::Tensor& stream_selector);
 
 } // namespace at::native::mcpu
