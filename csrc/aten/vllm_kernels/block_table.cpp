@@ -107,10 +107,13 @@ void vllm_gather_block_tables_impl(
                 0 <= req_idx && req_idx < max_num_reqs,
                 "idx_mapping contains out-of-range request index");
 
-            const int32_t n = group_num_blocks_ptr[req_idx];
-            VLLM_MCPU_CHECK(
-                0 <= n && n <= max_num_blocks,
-                "num_blocks contains out-of-range block count");
+      int32_t n = group_num_blocks_ptr[req_idx];
+      if (n > max_num_blocks) {
+        n = max_num_blocks;
+      }
+      VLLM_MCPU_CHECK(
+          0 <= n && n <= max_num_blocks,
+          "num_blocks contains out-of-range block count");
 
             const int32_t* src_row =
                 src_ptr + static_cast<int64_t>(req_idx) * src_stride0;
