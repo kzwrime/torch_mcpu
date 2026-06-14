@@ -223,6 +223,45 @@ class TestFallback(TestCase):
         self.assertEqual(bool_cumsum.dtype, torch.int64)
         self.assertEqual(bool_cumsum, torch.tensor([1, 2, 2], dtype=torch.int64))
 
+        uniform_res = torch.empty(8, device="mcpu")
+        self.assertIs(uniform_res.uniform_(0.0, 1.0), uniform_res)
+        uniform_cpu = uniform_res.cpu()
+        self.assertTrue((uniform_cpu >= 0.0).all())
+        self.assertTrue((uniform_cpu < 1.0).all())
+
+        uniform_func = torch.ops.aten.uniform.default(uniform_res, 0.0, 1.0)
+        uniform_func_cpu = uniform_func.cpu()
+        self.assertEqual(uniform_func.device.type, "mcpu")
+        self.assertTrue((uniform_func_cpu >= 0.0).all())
+        self.assertTrue((uniform_func_cpu < 1.0).all())
+
+        uniform_out = torch.empty_like(uniform_res)
+        self.assertIs(
+            torch.ops.aten.uniform.out(uniform_res, 0.0, 1.0, out=uniform_out),
+            uniform_out,
+        )
+        uniform_out_cpu = uniform_out.cpu()
+        self.assertTrue((uniform_out_cpu >= 0.0).all())
+        self.assertTrue((uniform_out_cpu < 1.0).all())
+
+        rand_res = torch.rand(8, device="mcpu")
+        rand_cpu = rand_res.cpu()
+        self.assertEqual(rand_res.device.type, "mcpu")
+        self.assertTrue((rand_cpu >= 0.0).all())
+        self.assertTrue((rand_cpu < 1.0).all())
+
+        rand_out = torch.empty(8, device="mcpu")
+        self.assertIs(torch.rand(8, out=rand_out), rand_out)
+        rand_out_cpu = rand_out.cpu()
+        self.assertTrue((rand_out_cpu >= 0.0).all())
+        self.assertTrue((rand_out_cpu < 1.0).all())
+
+        rand_like = torch.rand_like(uniform_res)
+        rand_like_cpu = rand_like.cpu()
+        self.assertEqual(rand_like.device.type, "mcpu")
+        self.assertTrue((rand_like_cpu >= 0.0).all())
+        self.assertTrue((rand_like_cpu < 1.0).all())
+
         sigmoid_res = torch.sigmoid(x)
         self.assertEqual(sigmoid_res.cpu(), torch.sigmoid(x.cpu()))
         self.assertEqual(sigmoid_res.device.type, "mcpu")
@@ -475,6 +514,30 @@ class TestFallback(TestCase):
         self.assertEqual(exp_sample.device.type, "mcpu")
         self.assertTrue(torch.isfinite(exp_sample.cpu()).all())
         self.assertTrue((exp_sample.cpu() >= 0).all())
+
+        uniform_sample = torch.empty(16, device="mcpu")
+        uniform_result = uniform_sample.uniform_(-1.0, 2.0)
+        uniform_cpu = uniform_sample.cpu()
+        self.assertIs(uniform_result, uniform_sample)
+        self.assertEqual(uniform_sample.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(uniform_cpu).all())
+        self.assertTrue((uniform_cpu >= -1.0).all())
+        self.assertTrue((uniform_cpu < 2.0).all())
+
+        uniform_out = torch.empty_like(uniform_sample)
+        torch.ops.aten.uniform.out(uniform_sample, -1.0, 2.0, out=uniform_out)
+        uniform_out_cpu = uniform_out.cpu()
+        self.assertEqual(uniform_out.shape, uniform_sample.shape)
+        self.assertEqual(uniform_out.device.type, "mcpu")
+        self.assertTrue(torch.isfinite(uniform_out_cpu).all())
+        self.assertTrue((uniform_out_cpu >= -1.0).all())
+        self.assertTrue((uniform_out_cpu < 2.0).all())
+
+        bad_uniform_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::uniform.out"):
+            torch.ops.aten.uniform.out(
+                uniform_sample, -1.0, 2.0, out=bad_uniform_out
+            )
 
         normal_sample = torch.empty(8, device="mcpu")
         normal_result = normal_sample.normal_(0.0, 1.0)
