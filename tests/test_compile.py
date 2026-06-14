@@ -163,6 +163,50 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertTrue(torch.allclose(ref, res.to("cpu")))
         self.assertNotIn("cpp_fused", code_text)
 
+    def test_python_wrapper_keeps_mcpu_arange_as_iota_fallback(self):
+        """The MoE expert_map path creates mcpu int32 arange inside compile."""
+
+        def make_expert_map(x):
+            return torch.arange(x.shape[0], device=x.device, dtype=torch.int32)
+
+        x = torch.empty(256, device="mcpu")
+        expected = torch.arange(256, dtype=torch.int32)
+
+        with inductor_config.patch({
+            "cpp_wrapper": False,
+            "fallback_by_default": True,
+        }):
+            opt_fn = torch.compile(make_expert_map)
+            res, code = run_and_get_code(opt_fn, x)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertEqual(res.dtype, torch.int32)
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
+        self.assertIn("torch.ops.prims.iota.default", code_text)
+
+    def test_codegen_supports_mcpu_arange_iota_pointwise(self):
+        """Regression for Inductor ComputedBuffer(Pointwise iota) on mcpu."""
+
+        def make_expert_map(x):
+            return torch.arange(x.shape[0], device=x.device, dtype=torch.int32)
+
+        x = torch.empty(256, device="mcpu")
+        expected = torch.arange(256, dtype=torch.int32)
+
+        with inductor_config.patch({
+            "cpp_wrapper": False,
+            "fallback_by_default": False,
+        }):
+            opt_fn = torch.compile(make_expert_map)
+            res, code = run_and_get_code(opt_fn, x)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertEqual(res.dtype, torch.int32)
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
+
     def test_compile_cpp_wrapper(self):
         """torch.compile with cpp_wrapper=True (AOT C++ code generation)."""
         x, y, z, ref = self._make_tensors()
@@ -176,6 +220,28 @@ class TestMcpuCompile(unittest.TestCase):
         code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
         self.assertEqual(res.device.type, "mcpu")
         self.assertTrue(torch.allclose(ref, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
+
+    def test_cpp_wrapper_supports_mcpu_arange_iota_fallback(self):
+        """Regression for Qwen3.6 MoE compile expert_map creation."""
+
+        def make_expert_map(x):
+            return torch.arange(x.shape[0], device=x.device, dtype=torch.int32)
+
+        x = torch.empty(256, device="mcpu")
+        expected = torch.arange(256, dtype=torch.int32)
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "fallback_by_default": True,
+        }):
+            opt_fn = torch.compile(make_expert_map)
+            res, code = run_and_get_cpp_code(opt_fn, x)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertEqual(res.dtype, torch.int32)
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
         self.assertNotIn("cpp_fused", code_text)
 
     def test_cpp_wrapper_uses_mcpu_aten_fallback_not_cpp_fused_loop(self):

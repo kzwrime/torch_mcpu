@@ -47,6 +47,9 @@ from torch_mcpu.paths import get_include
 
 _MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
     {
+        torch.ops.aten.arange.default,
+        torch.ops.aten.arange.start,
+        torch.ops.aten.arange.start_step,
         torch.ops.aten.fill.Scalar,
         torch.ops.aten.fill.Tensor,
         torch.ops.aten.full.default,
@@ -59,6 +62,12 @@ _MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
         torch.ops.aten.zeros.default,
         torch.ops.aten.zeros.names,
         torch.ops.aten.zeros_like.default,
+    }
+)
+
+_MCPU_IOTA_FALLBACK_OPS = frozenset(
+    {
+        torch.ops.prims.iota.default,
     }
 )
 
@@ -87,11 +96,12 @@ def _is_mcpu_host_loop_op(node) -> bool:
     return (
         node.op == "call_function"
         and isinstance(target, torch._ops.OpOverload)
-        and target.namespace == "aten"
+        and target.namespace in {"aten", "prims"}
         and (
             torch.Tag.pointwise in target.tags
             or torch.Tag.reduction in target.tags
             or target in _MCPU_HOST_LOOP_FALLBACK_OPS
+            or target in _MCPU_IOTA_FALLBACK_OPS
         )
         and (
             _meta_uses_mcpu(node.meta.get("val"))
@@ -235,6 +245,16 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
         # The base-class create() hard-codes CppWrapperCpu(); override it
         # so the correct type (McpuCppWrapperCodegen) is instantiated.
         return McpuCppWrapperCodegen()
+
+    def val_to_arg_str_for_prim_type(self, val, type_) -> str:
+        if isinstance(val, torch.device):
+            device_type, device_idx = self.codegen_device(val).split(",")
+            return (
+                "torch::stable::Device("
+                f"static_cast<torch::stable::DeviceType>({device_type}),"
+                f"{device_idx})"
+            )
+        return super().val_to_arg_str_for_prim_type(val, type_)
 
     @staticmethod
     def get_device_include_path(device: str) -> str:
