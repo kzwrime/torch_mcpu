@@ -14,6 +14,9 @@
 
 namespace openreg {
 
+static constexpr std::size_t kQueueSlotStorageAlignment =
+    alignof(std::max_align_t) < 16 ? 16 : alignof(std::max_align_t);
+
 #if defined(__x86_64__) || defined(__i386__)
 inline void cpu_relax() {
   __builtin_ia32_pause();
@@ -34,7 +37,7 @@ struct QueueSlot {
 
   RunFn run = nullptr;
   DestroyFn destroy = nullptr;
-  alignas(std::max_align_t) unsigned char storage[256];
+  alignas(kQueueSlotStorageAlignment) unsigned char storage[256];
 };
 
 template <typename Func, typename... Args>
@@ -114,7 +117,7 @@ struct orStream {
         sizeof(Task) <= sizeof(openreg::QueueSlot::storage),
         "openreg queued task is too large for the inline tuple slot");
     static_assert(
-        alignof(Task) <= alignof(std::max_align_t),
+        alignof(Task) <= openreg::kQueueSlotStorageAlignment,
         "openreg queued task alignment exceeds the slot alignment");
 
     auto index = tail.load(std::memory_order_relaxed);
