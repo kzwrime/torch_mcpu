@@ -133,6 +133,13 @@ def build_deps():
 
 class BuildPy(build_py):
     def run(self):
+        # Setuptools may reuse build/lib.* between invocations.  That is cheap
+        # for unchanged pure-Python files, but dangerous here: users often run
+        # `python -m pip install .` after editing the mcpu Inductor backend, and
+        # stale Python files in build/lib.* can otherwise be packaged into the
+        # wheel.  Force only build_py's package-file copy; CMake outputs are
+        # still managed by build_deps/copy_cmake_install_tree.
+        self.force = True
         super().run()
         self.copy_cmake_install_tree()
 
