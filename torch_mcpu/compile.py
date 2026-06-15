@@ -1,6 +1,5 @@
 import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -16,7 +15,7 @@ from torch._inductor.codegen.common import register_backend_for_device
 
 import torch_mcpu._C  # type: ignore[misc]
 import torch_mcpu.openreg
-from torch_mcpu.compile_flags import get_compile_flags
+from torch_mcpu.compile_flags import get_compile_definitions
 from torch_mcpu.paths import get_include, get_library_dir
 from torch_mcpu.inductor.extension_codegen_backend import (
     McpuCppWrapperCodegen,
@@ -37,28 +36,58 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _append_env_flags(name: str, flags: str) -> None:
-    existing = os.environ.get(name, "")
-    parts = existing.split()
-    missing = [flag for flag in flags.split() if flag not in parts]
-    if missing:
-        os.environ[name] = " ".join([existing, *missing]).strip()
+def _setup_inductor_cpp_device_build_flags() -> None:
+    import torch._inductor.cpp_builder as cpp_builder
 
+    if getattr(cpp_builder, "_torch_mcpu_device_build_flags_registered", False):
+        return
 
-def _setup_aoti_link_flags() -> None:
-    lib_dir = Path(get_library_dir())
-    _append_env_flags(
-        "AOTI_EXTRA_LDFLAGS",
-        f"-L{lib_dir} -Wl,-rpath,{lib_dir} -ltorch_mcpu -lopenreg",
-    )
+    original = cpp_builder.get_cpp_torch_device_options
 
+    def get_cpp_torch_device_options_with_mcpu(*args, **kwargs):
+        device_type = kwargs.get("device_type")
+        if device_type is None and args:
+            device_type = args[0]
 
-def _setup_aoti_compile_flags() -> None:
-    include_dir = Path(get_include())
-    _append_env_flags(
-        "AOTI_EXTRA_CFLAGS",
-        " ".join([f"-I{include_dir}", *get_compile_flags()]),
-    )
+        result = original(*args, **kwargs)
+        if device_type not in {"cpu", "mcpu", "privateuseone"}:
+            return result
+
+        (
+            definitions,
+            include_dirs,
+            cflags,
+            ldflags,
+            libraries_dirs,
+            libraries,
+            passthrough_args,
+        ) = result
+
+        definitions = [
+            *definitions,
+            *(
+                f"{name}={value}"
+                for name, value in get_compile_definitions().items()
+            ),
+        ]
+        lib_dir = get_library_dir()
+        include_dirs = [*include_dirs, get_include()]
+        ldflags = [*ldflags, f"Wl,-rpath,{lib_dir}"]
+        libraries_dirs = [*libraries_dirs, lib_dir]
+        libraries = [*libraries, "torch_mcpu", "openreg"]
+
+        return (
+            definitions,
+            include_dirs,
+            cflags,
+            ldflags,
+            libraries_dirs,
+            libraries,
+            passthrough_args,
+        )
+
+    cpp_builder.get_cpp_torch_device_options = get_cpp_torch_device_options_with_mcpu
+    cpp_builder._torch_mcpu_device_build_flags_registered = True
 
 
 def _register_mcpu_aoti_fallback_shims() -> None:
@@ -216,8 +245,7 @@ class McpuInterface(DeviceInterface):
 
 def setup_mcpu_compile() -> None:
     """Register mcpu with Dynamo and Inductor."""
-    _setup_aoti_compile_flags()
-    _setup_aoti_link_flags()
+    _setup_inductor_cpp_device_build_flags()
     _register_mcpu_aoti_fallback_shims()
     if _env_flag("TORCH_MCPU_ENABLE_TORCH_XCPU_FUSIONS", True):
         inductor_config.post_grad_custom_post_pass = append_post_grad_pass(

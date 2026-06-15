@@ -16,6 +16,7 @@ from unittest.mock import patch
 import torch
 import torch._dynamo
 import torch._inductor.config as inductor_config
+import torch._inductor.cpp_builder as cpp_builder
 from torch.utils._ordered_set import OrderedSet
 from torch._inductor.codegen.common import (
     get_scheduling_for_device,
@@ -32,15 +33,14 @@ from torch._inductor.utils import (
 )
 
 import torch_mcpu  # noqa: F401 – registers the mcpu backend with PyTorch
-from torch_mcpu.compile import _setup_aoti_compile_flags
-from torch_mcpu.compile_flags import get_compile_flags
+from torch_mcpu.compile_flags import get_compile_definitions
 from torch_mcpu.inductor.extension_codegen_backend import (
     McpuCppWrapperCodegen,
     McpuScheduling,
     McpuWrapperCodegen,
 )
 from torch_mcpu.inductor.torch_xcpu_fusion import McpuTorchXcpuFusionPass
-from torch_mcpu.paths import get_include
+from torch_mcpu.paths import get_include, get_library_dir
 
 
 
@@ -82,16 +82,15 @@ class TestMcpuInductorRegistration(unittest.TestCase):
             McpuCppWrapperCodegen,
         )
 
-    def test_aoti_compile_flags_include_mcpu_headers(self):
-        with patch.dict(os.environ, {"AOTI_EXTRA_CFLAGS": "-DEXISTING=1"}):
-            _setup_aoti_compile_flags()
+    def test_cpp_device_build_options_include_mcpu_flags(self):
+        options = cpp_builder.CppTorchDeviceOptions(device_type="mcpu")
 
-            flags = os.environ["AOTI_EXTRA_CFLAGS"].split()
-
-        self.assertIn(f"-I{get_include()}", flags)
-        for flag in get_compile_flags():
-            self.assertIn(flag, flags)
-        self.assertIn("-DEXISTING=1", flags)
+        self.assertIn(get_include(), options.get_include_dirs())
+        self.assertIn(get_library_dir(), options.get_libraries_dirs())
+        self.assertIn("torch_mcpu", options.get_libraries())
+        self.assertIn("openreg", options.get_libraries())
+        for name, value in get_compile_definitions().items():
+            self.assertIn(f"{name}={value}", options.get_definitions())
 
     @staticmethod
     def _make_cpp_codegen_for_int_array_tests():
