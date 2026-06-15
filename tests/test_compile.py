@@ -32,12 +32,15 @@ from torch._inductor.utils import (
 )
 
 import torch_mcpu  # noqa: F401 – registers the mcpu backend with PyTorch
+from torch_mcpu.compile import _setup_aoti_compile_flags
+from torch_mcpu.compile_flags import get_compile_flags
 from torch_mcpu.inductor.extension_codegen_backend import (
     McpuCppWrapperCodegen,
     McpuScheduling,
     McpuWrapperCodegen,
 )
 from torch_mcpu.inductor.torch_xcpu_fusion import McpuTorchXcpuFusionPass
+from torch_mcpu.paths import get_include
 
 
 
@@ -78,6 +81,17 @@ class TestMcpuInductorRegistration(unittest.TestCase):
             get_wrapper_codegen_for_device("mcpu", cpp_wrapper=True),
             McpuCppWrapperCodegen,
         )
+
+    def test_aoti_compile_flags_include_mcpu_headers(self):
+        with patch.dict(os.environ, {"AOTI_EXTRA_CFLAGS": "-DEXISTING=1"}):
+            _setup_aoti_compile_flags()
+
+            flags = os.environ["AOTI_EXTRA_CFLAGS"].split()
+
+        self.assertIn(f"-I{get_include()}", flags)
+        for flag in get_compile_flags():
+            self.assertIn(flag, flags)
+        self.assertIn("-DEXISTING=1", flags)
 
     @staticmethod
     def _make_cpp_codegen_for_int_array_tests():

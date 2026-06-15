@@ -16,7 +16,8 @@ from torch._inductor.codegen.common import register_backend_for_device
 
 import torch_mcpu._C  # type: ignore[misc]
 import torch_mcpu.openreg
-from torch_mcpu.paths import get_library_dir
+from torch_mcpu.compile_flags import get_compile_flags
+from torch_mcpu.paths import get_include, get_library_dir
 from torch_mcpu.inductor.extension_codegen_backend import (
     McpuCppWrapperCodegen,
     McpuDisableComputeFusionPass,
@@ -49,6 +50,14 @@ def _setup_aoti_link_flags() -> None:
     _append_env_flags(
         "AOTI_EXTRA_LDFLAGS",
         f"-L{lib_dir} -Wl,-rpath,{lib_dir} -ltorch_mcpu -lopenreg",
+    )
+
+
+def _setup_aoti_compile_flags() -> None:
+    include_dir = Path(get_include())
+    _append_env_flags(
+        "AOTI_EXTRA_CFLAGS",
+        " ".join([f"-I{include_dir}", *get_compile_flags()]),
     )
 
 
@@ -207,6 +216,7 @@ class McpuInterface(DeviceInterface):
 
 def setup_mcpu_compile() -> None:
     """Register mcpu with Dynamo and Inductor."""
+    _setup_aoti_compile_flags()
     _setup_aoti_link_flags()
     _register_mcpu_aoti_fallback_shims()
     if _env_flag("TORCH_MCPU_ENABLE_TORCH_XCPU_FUSIONS", True):
