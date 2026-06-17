@@ -93,6 +93,7 @@ def _setup_inductor_cpp_device_build_flags() -> None:
 def _register_mcpu_aoti_fallback_shims() -> None:
     from torchgen.aoti.fallback_ops import inductor_fallback_ops
 
+    inductor_fallback_ops.setdefault("aten.cat.default", {})
     inductor_fallback_ops.setdefault("aten.sigmoid.default", {})
 
 

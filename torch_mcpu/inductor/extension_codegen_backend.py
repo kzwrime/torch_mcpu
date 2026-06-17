@@ -58,6 +58,7 @@ _MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
         torch.ops.aten.ones.default,
         torch.ops.aten.ones.names,
         torch.ops.aten.ones_like.default,
+        torch.ops.aten.cat.default,
         torch.ops.aten.zero.default,
         torch.ops.aten.zeros.default,
         torch.ops.aten.zeros.names,

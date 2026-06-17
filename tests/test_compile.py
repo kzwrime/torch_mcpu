@@ -82,8 +82,8 @@ class TestMcpuInductorRegistration(unittest.TestCase):
             McpuCppWrapperCodegen,
         )
 
-    def test_cpp_device_build_options_include_mcpu_flags(self):
-        options = cpp_builder.CppTorchDeviceOptions(device_type="mcpu")
+    def _assert_cpp_device_build_options_include_mcpu_flags(self, device_type):
+        options = cpp_builder.CppTorchDeviceOptions(device_type=device_type)
 
         self.assertIn(get_include(), options.get_include_dirs())
         self.assertIn(get_library_dir(), options.get_libraries_dirs())
@@ -91,6 +91,12 @@ class TestMcpuInductorRegistration(unittest.TestCase):
         self.assertIn("openreg", options.get_libraries())
         for name, value in get_compile_definitions().items():
             self.assertIn(f"{name}={value}", options.get_definitions())
+
+    def test_cpp_device_build_options_include_mcpu_flags(self):
+        self._assert_cpp_device_build_options_include_mcpu_flags("mcpu")
+
+    def test_cpu_cpp_device_build_options_include_mcpu_flags(self):
+        self._assert_cpp_device_build_options_include_mcpu_flags("cpu")
 
     @staticmethod
     def _make_cpp_codegen_for_int_array_tests():
@@ -219,6 +225,59 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertEqual(res.dtype, torch.int32)
         self.assertTrue(torch.equal(expected, res.to("cpu")))
         self.assertNotIn("cpp_fused", code_text)
+
+    def test_codegen_keeps_mcpu_cat_as_aten_fallback(self):
+        """Regression for MTP hidden/input embedding concat compilation."""
+
+        def concat_hidden_inputs(hidden_states, inputs_embeds):
+            return torch.cat([inputs_embeds, hidden_states], dim=-1)
+
+        hidden_states = torch.empty(
+            3, 1024, device="mcpu", dtype=torch.bfloat16
+        ).fill_(2)
+        inputs_embeds = torch.empty(
+            3, 1024, device="mcpu", dtype=torch.bfloat16
+        ).fill_(1)
+        expected = concat_hidden_inputs(hidden_states, inputs_embeds).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": False,
+            "fallback_by_default": False,
+        }):
+            opt_fn = torch.compile(concat_hidden_inputs)
+            res, code = run_and_get_code(opt_fn, hidden_states, inputs_embeds)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
+
+    def test_cpp_wrapper_supports_mcpu_cat_fallback(self):
+        """AOTI C++ wrapper needs an mcpu cat shim for MTP compilation."""
+
+        def concat_hidden_inputs(hidden_states, inputs_embeds):
+            return torch.cat([inputs_embeds, hidden_states], dim=-1)
+
+        hidden_states = torch.empty(
+            3, 1024, device="mcpu", dtype=torch.bfloat16
+        ).fill_(2)
+        inputs_embeds = torch.empty(
+            3, 1024, device="mcpu", dtype=torch.bfloat16
+        ).fill_(1)
+        expected = concat_hidden_inputs(hidden_states, inputs_embeds).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "fallback_by_default": False,
+        }):
+            opt_fn = torch.compile(concat_hidden_inputs)
+            res, code = run_and_get_cpp_code(opt_fn, hidden_states, inputs_embeds)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
+        self.assertIn("aoti_torch_mcpu_cat", code_text)
 
     def test_compile_cpp_wrapper(self):
         """torch.compile with cpp_wrapper=True (AOT C++ code generation)."""

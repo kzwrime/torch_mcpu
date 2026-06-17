@@ -25,6 +25,7 @@
 #include <ATen/ops/_reshape_alias_native.h>
 #include <ATen/ops/abs_native.h>
 #include <ATen/ops/as_strided_cpu_dispatch.h>
+#include <ATen/ops/cat.h>
 #include <ATen/ops/copy_native.h>
 #include <ATen/ops/empty_like.h>
 #include <ATen/ops/quantize_per_tensor_native.h>
@@ -101,6 +102,71 @@ inline at::Tensor empty_binary_mcpu_result(
   return at::empty(out_sizes, options.dtype(at::result_type(self, other)));
 }
 
+inline std::vector<int64_t> cat_mcpu_result_sizes(
+    const std::vector<at::Tensor>& tensors,
+    int64_t dim) {
+  TORCH_CHECK(!tensors.empty(), "aoti_torch_mcpu_cat: expected a non-empty tensor list");
+
+  auto is_skippable_empty = [](const at::Tensor& tensor) {
+    return tensor.dim() == 1 && tensor.numel() == 0;
+  };
+
+  auto first_nonempty = tensors.end();
+  for (auto it = tensors.begin(); it != tensors.end(); ++it) {
+    if (!is_skippable_empty(*it)) {
+      first_nonempty = it;
+      break;
+    }
+  }
+
+  if (first_nonempty == tensors.end()) {
+    return {0};
+  }
+
+  const auto ndim = first_nonempty->dim();
+  const auto wrapped_dim = at::maybe_wrap_dim(dim, ndim);
+  std::vector<int64_t> result(first_nonempty->sizes().begin(), first_nonempty->sizes().end());
+  result[wrapped_dim] = 0;
+
+  for (const auto i : c10::irange(tensors.size())) {
+    const auto& tensor = tensors[i];
+    if (is_skippable_empty(tensor)) {
+      continue;
+    }
+    TORCH_CHECK(
+        tensor.dim() == ndim,
+        "aoti_torch_mcpu_cat: expected all tensors to have the same number of dimensions");
+    for (const auto d : c10::irange(ndim)) {
+      if (d == static_cast<size_t>(wrapped_dim)) {
+        continue;
+      }
+      TORCH_CHECK(
+          tensor.size(d) == result[d],
+          "aoti_torch_mcpu_cat: expected tensor sizes to match except in dimension ",
+          wrapped_dim);
+    }
+    result[wrapped_dim] += tensor.size(wrapped_dim);
+  }
+  return result;
+}
+
+inline at::Tensor empty_cat_mcpu_result(
+    const std::vector<at::Tensor>& tensors,
+    int64_t dim) {
+  auto out_sizes = cat_mcpu_result_sizes(tensors, dim);
+  const auto* device_tensor = &tensors[0];
+  for (const auto& tensor : tensors) {
+    if (tensor.device().type() == c10::DeviceType::PrivateUse1) {
+      device_tensor = &tensor;
+      break;
+    }
+  }
+  auto options = device_tensor->device().type() == c10::DeviceType::PrivateUse1
+      ? device_tensor->options()
+      : device_tensor->options().device(c10::Device(c10::DeviceType::PrivateUse1, 0));
+  return at::empty(out_sizes, options);
+}
+
 // clang-format off
 inline AOTITorchError aoti_torch_mcpu_view_dtype(AtenTensorHandle self, int32_t dtype, AtenTensorHandle* ret0) {
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
@@ -173,6 +239,29 @@ inline AOTITorchError aoti_torch_mcpu_mul_Tensor(AtenTensorHandle self, AtenTens
             at::Tensor cpu_other = get_cpu_tensor_view_if_needed(other);
             at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
             at::mul_out(cpu_out, cpu_self, cpu_other);
+        });
+    });
+}
+
+inline AOTITorchError aoti_torch_mcpu_cat(const AtenTensorHandle* tensors, int64_t tensors_len_, int64_t dim, AtenTensorHandle* ret0) {
+    std::vector<at::Tensor> tensor_vec;
+    tensor_vec.reserve(tensors_len_);
+    for (int64_t i = 0; i < tensors_len_; ++i) {
+        tensor_vec.push_back(*tensor_handle_to_tensor_pointer(tensors[i]));
+    }
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        auto out = empty_cat_mcpu_result(tensor_vec, dim);
+        auto launch_out = out;
+        *ret0 = new_tensor_handle(std::move(out));
+        at::mcpu::launch_kernel(launch_out, [out = launch_out, tensor_vec, dim]() mutable {
+            at::mcpu::KernelMemoryGuard guard(out, c10::IValue(tensor_vec));
+            std::vector<at::Tensor> cpu_tensors;
+            cpu_tensors.reserve(tensor_vec.size());
+            for (const auto& tensor : tensor_vec) {
+                cpu_tensors.push_back(get_cpu_tensor_view_if_needed(tensor));
+            }
+            at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
+            at::cat_out(cpu_out, at::ITensorListRef(cpu_tensors), dim);
         });
     });
 }
