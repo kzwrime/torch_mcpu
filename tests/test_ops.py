@@ -50,7 +50,48 @@ class TestCopy(TestCase):
     def test_copy_same_device(self):
         """Test copy operation on same device"""
         a = torch.ones(10, device="mcpu").clone()
-        self.assertEqual(a, torch.ones(10, device="mcpu"))
+        self.assertEqual(a.cpu(), torch.ones(10))
+
+    def test_copy_same_device_last_dim_contiguous_views(self):
+        """Test same-device copy for views with contiguous innermost dim."""
+        src_cpu = torch.randn(3, 7, 5)
+        dst_cpu = torch.empty(3, 7, 5)
+        src = torch.empty(3, 14, 5, device="mcpu")
+        dst = torch.empty(3, 14, 5, device="mcpu")
+        src_view = src[:, ::2, :]
+        dst_view = dst[:, 1::2, :]
+        src_view.copy_(src_cpu.to("mcpu"))
+        dst_view.copy_(src_view)
+        dst_cpu.copy_(dst_view.cpu())
+        self.assertEqual(dst_cpu, src_cpu)
+
+    def test_copy_same_device_coalesces_inner_dims(self):
+        """Test copy where multiple trailing dims are contiguous."""
+        src_cpu = torch.randn(2, 3, 4)
+        src = torch.empty(2, 6, 4, device="mcpu")
+        dst = torch.empty(2, 6, 4, device="mcpu")
+        src_view = src[:, ::2, :]
+        dst_view = dst[:, ::2, :]
+        src_view.copy_(src_cpu.to("mcpu"))
+        dst_view.copy_(src_view)
+        self.assertEqual(dst_view.cpu(), src_cpu)
+
+    def test_copy_same_device_non_contiguous_last_dim_fallback(self):
+        """Test copy fallback still handles non-contiguous innermost dim."""
+        src_cpu = torch.randn(4, 3)
+        dst_cpu = torch.empty(4, 3)
+        src = src_cpu.t().contiguous().to("mcpu").t()
+        dst_base = torch.empty(3, 4, device="mcpu")
+        dst = dst_base.t()
+        dst.copy_(src)
+        dst_cpu.copy_(dst.cpu())
+        self.assertEqual(dst_cpu, src_cpu)
+
+    def test_copy_same_device_overlapping_view_fallback(self):
+        """Test same-storage overlapping views keep copy_ overlap semantics."""
+        base = torch.arange(6.0, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "single memory location"):
+            base[1:].copy_(base[:-1])
 
     def test_cross_device_copy(self):
         """Test copy operation across CPU and mcpu"""
@@ -66,13 +107,12 @@ class TestCopy(TestCase):
 
 class TestOps(TestCase):
     def test_masked_select(self):
-        """Test masked_select operation"""
+        """Test masked_select does not silently fallback to CPU."""
         tensor_cpu = torch.randn(10)
         tensor_mcpu = tensor_cpu.to(device="mcpu")
         mask = tensor_mcpu.gt(0)
-        out = torch.masked_select(tensor_mcpu, mask)
-
-        self.assertEqual(out, tensor_cpu.masked_select(tensor_cpu.gt(0)))
+        with self.assertRaisesRegex(RuntimeError, "aten::masked_select"):
+            torch.masked_select(tensor_mcpu, mask)
 
     def test_expand(self):
         """Test tensor expand operation"""
@@ -100,7 +140,7 @@ class TestOps(TestCase):
     def test_printing(self):
         """Test tensor printing"""
         a = torch.ones(20, device="mcpu")
-        print(a)
+        print(a.cpu())
 
 
 class TestSTUB(TestCase):
@@ -150,8 +190,8 @@ class TestAutogradFunction(TestCase):
         )(in_test)
         out_test.sum().backward()
 
-        self.assertEqual(out_ref, out_test)
-        self.assertEqual(in_ref.grad, in_test.grad)
+        self.assertEqual(out_ref.cpu(), out_test.cpu())
+        self.assertEqual(in_ref.grad.cpu(), in_test.grad.cpu())
 
     @skipIfTorchDynamo("Temporary disabled due to torch._ops.OpOverloadPacket")
     def test_compile_autograd_function_aliasing(self):
@@ -167,8 +207,8 @@ class TestAutogradFunction(TestCase):
         )(in_test)
         out_test.sum().backward()
 
-        self.assertEqual(out_ref, out_test)
-        self.assertEqual(in_ref.grad, in_test.grad)
+        self.assertEqual(out_ref.cpu(), out_test.cpu())
+        self.assertEqual(in_ref.grad.cpu(), in_test.grad.cpu())
 
 
 class TestFallback(TestCase):
@@ -186,12 +226,12 @@ class TestFallback(TestCase):
 
         z_cpu = torch.Tensor([[0, 2, 1], [1, 3, 2]])
         z = torch.sub(x, y)
-        self.assertEqual(z_cpu, z)
+        self.assertEqual(z_cpu, z.cpu())
 
         z_cpu = torch.Tensor([3, 1])
         y = torch.Tensor([1, 0]).long().to("mcpu")
         z = x[y, y]
-        self.assertEqual(z_cpu, z)
+        self.assertEqual(z_cpu, z.cpu())
 
     def test_explicit_forward_ops_do_not_fallback(self):
         x = torch.tensor([[1, 2, 3], [4, 5, 6]], device="mcpu", dtype=torch.float32)
@@ -199,12 +239,12 @@ class TestFallback(TestCase):
 
         arange_res = torch.arange(1, 7, 2, device="mcpu", dtype=torch.int64)
         torch.mcpu.synchronize()
-        self.assertEqual(arange_res, torch.tensor([1, 3, 5], dtype=torch.int64))
+        self.assertEqual(arange_res.cpu(), torch.tensor([1, 3, 5], dtype=torch.int64))
         self.assertEqual(arange_res.device.type, "mcpu")
 
         cumsum_res = torch.cumsum(x, dim=1)
         self.assertEqual(
-            cumsum_res,
+            cumsum_res.cpu(),
             torch.tensor([[1, 3, 6], [4, 9, 15]], dtype=torch.float32),
         )
         self.assertEqual(cumsum_res.device.type, "mcpu")
@@ -214,14 +254,14 @@ class TestFallback(TestCase):
             dim=0,
         )
         self.assertEqual(int_cumsum.dtype, torch.int64)
-        self.assertEqual(int_cumsum, torch.tensor([1, 2, 3], dtype=torch.int64))
+        self.assertEqual(int_cumsum.cpu(), torch.tensor([1, 2, 3], dtype=torch.int64))
 
         bool_cumsum = torch.cumsum(
             torch.tensor([True, True, False], device="mcpu"),
             dim=0,
         )
         self.assertEqual(bool_cumsum.dtype, torch.int64)
-        self.assertEqual(bool_cumsum, torch.tensor([1, 2, 2], dtype=torch.int64))
+        self.assertEqual(bool_cumsum.cpu(), torch.tensor([1, 2, 2], dtype=torch.int64))
 
         uniform_res = torch.empty(8, device="mcpu")
         self.assertIs(uniform_res.uniform_(0.0, 1.0), uniform_res)
@@ -282,11 +322,11 @@ class TestFallback(TestCase):
         filled = torch.empty(2, 3, device="mcpu", dtype=torch.float32)
         filled.fill_(7)
         torch.mcpu.synchronize()
-        self.assertEqual(filled, torch.full((2, 3), 7, dtype=torch.float32))
+        self.assertEqual(filled.cpu(), torch.full((2, 3), 7, dtype=torch.float32))
         self.assertEqual(filled.device.type, "mcpu")
 
         indexed = x[idx, idx]
-        self.assertEqual(indexed, torch.tensor([5, 1], dtype=torch.float32))
+        self.assertEqual(indexed.cpu(), torch.tensor([5, 1], dtype=torch.float32))
         self.assertEqual(indexed.device.type, "mcpu")
 
         bad_out = torch.empty(1, device="mcpu", dtype=torch.float32)
@@ -303,25 +343,28 @@ class TestFallback(TestCase):
 
         add_out = torch.empty_like(x)
         torch.add(x, y, out=add_out)
-        self.assertEqual(add_out, torch.tensor([[14.0, 26.0], [38.0, 46.0]]))
+        self.assertEqual(add_out.cpu(), torch.tensor([[14.0, 26.0], [38.0, 46.0]]))
 
         div_out = torch.empty_like(x)
         torch.div(y, x, out=div_out)
-        self.assertEqual(div_out, torch.tensor([[2.5, 20.0 / 6.0], [31.0 / 7.0, 8.2]]))
+        self.assertEqual(
+            div_out.cpu(),
+            torch.tensor([[2.5, 20.0 / 6.0], [31.0 / 7.0, 8.2]]),
+        )
 
         mul_out = torch.empty_like(x)
         torch.mul(x, y, out=mul_out)
-        self.assertEqual(mul_out, torch.tensor([[40.0, 120.0], [217.0, 205.0]]))
+        self.assertEqual(mul_out.cpu(), torch.tensor([[40.0, 120.0], [217.0, 205.0]]))
 
         remainder_out = torch.empty_like(y)
         torch.remainder(y, x, out=remainder_out)
         self.assertEqual(
-            remainder_out,
+            remainder_out.cpu(),
             torch.tensor([[2.0, 2.0], [3.0, 1.0]]),
         )
 
         sub_res = torch.sub(y, x)
-        self.assertEqual(sub_res, torch.tensor([[6.0, 14.0], [24.0, 36.0]]))
+        self.assertEqual(sub_res.cpu(), torch.tensor([[6.0, 14.0], [24.0, 36.0]]))
 
         cos_out = torch.empty_like(x)
         torch.cos(x, out=cos_out)
@@ -392,19 +435,19 @@ class TestFallback(TestCase):
 
         cat_out = torch.empty(4, 2, device="mcpu")
         torch.cat([x, y], dim=0, out=cat_out)
-        self.assertEqual(cat_out, torch.cat([x.cpu(), y.cpu()], dim=0))
+        self.assertEqual(cat_out.cpu(), torch.cat([x.cpu(), y.cpu()], dim=0))
 
         empty_1d = torch.empty(0, device="mcpu")
         cat_empty_out = torch.empty(2, 2, device="mcpu")
         torch.cat([empty_1d, x], dim=0, out=cat_empty_out)
-        self.assertEqual(cat_empty_out, x.cpu())
+        self.assertEqual(cat_empty_out.cpu(), x.cpu())
 
         vals = torch.empty(2, 1, device="mcpu")
         inds = torch.empty(2, 1, device="mcpu", dtype=torch.long)
         torch.topk(x, 1, dim=1, largest=True, sorted=True, out=(vals, inds))
         ref_vals, ref_inds = torch.topk(x.cpu(), 1, dim=1, largest=True, sorted=True)
-        self.assertEqual(vals, ref_vals)
-        self.assertEqual(inds, ref_inds)
+        self.assertEqual(vals.cpu(), ref_vals)
+        self.assertEqual(inds.cpu(), ref_inds)
 
         target = torch.zeros(3, 3, device="mcpu")
         row = torch.tensor([0, 2], device="mcpu", dtype=torch.long)
@@ -412,19 +455,19 @@ class TestFallback(TestCase):
         vals = torch.tensor([5.0, 7.0], device="mcpu")
         torch.ops.aten._index_put_impl_(target, [row, col], vals, False, False)
         self.assertEqual(
-            target,
+            target.cpu(),
             torch.tensor([[0.0, 5.0, 0.0], [0.0, 0.0, 0.0], [7.0, 0.0, 0.0]]),
         )
 
         target.zero_()
-        self.assertEqual(target, torch.zeros(3, 3))
+        self.assertEqual(target.cpu(), torch.zeros(3, 3))
 
     def test_explicit_forward_ops_batch_3(self):
         x = torch.tensor([[0.0, 2.0], [3.0, 0.0]], device="mcpu")
         mask = torch.tensor([[True, False], [False, True]], device="mcpu")
 
         x.masked_fill_(mask, 9.0)
-        self.assertEqual(x, torch.tensor([[9.0, 2.0], [3.0, 9.0]]))
+        self.assertEqual(x.cpu(), torch.tensor([[9.0, 2.0], [3.0, 9.0]]))
 
         ne_out = torch.empty_like(x, dtype=torch.bool)
         torch.ne(x, 9.0, out=ne_out)
@@ -485,8 +528,8 @@ class TestFallback(TestCase):
         max_indices = torch.empty(2, 1, device="mcpu", dtype=torch.long)
         torch.max(x, dim=1, keepdim=True, out=(max_values, max_indices))
         ref_values, ref_indices = torch.max(x.cpu(), dim=1, keepdim=True)
-        self.assertEqual(max_values, ref_values)
-        self.assertEqual(max_indices, ref_indices)
+        self.assertEqual(max_values.cpu(), ref_values)
+        self.assertEqual(max_indices.cpu(), ref_indices)
 
         mean_res = torch.empty(2, 1, device="mcpu")
         torch.mean(x, dim=[1], keepdim=True, out=mean_res)
@@ -789,7 +832,7 @@ class TestFactoryExtended(TestCase):
         x = torch.ones(3, 4, device="mcpu")
         self.assertEqual(x.device.type, "mcpu")
         self.assertEqual(x.shape, torch.Size([3, 4]))
-        self.assertTrue(torch.all(x == 1))
+        self.assertTrue(torch.all(x.cpu() == 1))
 
     def test_ones_like(self):
         """Test ones_like tensor creation"""
@@ -797,7 +840,7 @@ class TestFactoryExtended(TestCase):
         y = torch.ones_like(x)
         self.assertEqual(y.device.type, "mcpu")
         self.assertEqual(y.shape, x.shape)
-        self.assertTrue(torch.all(y == 1))
+        self.assertTrue(torch.all(y.cpu() == 1))
 
     def test_randn(self):
         """Test randn tensor creation"""
@@ -810,7 +853,7 @@ class TestFactoryExtended(TestCase):
         x = torch.full((3, 4), 5.0, device="mcpu")
         self.assertEqual(x.device.type, "mcpu")
         self.assertEqual(x.shape, torch.Size([3, 4]))
-        self.assertTrue(torch.all(x == 5.0))
+        self.assertTrue(torch.all(x.cpu() == 5.0))
 
 
 class TestCopyExtended(TestCase):
@@ -827,7 +870,7 @@ class TestCopyExtended(TestCase):
         x = torch.randn(3, 4, device="mcpu")
         y = x.clone()
         self.assertEqual(y.device.type, "mcpu")
-        self.assertEqual(y, x)
+        self.assertEqual(y.cpu(), x.cpu())
         self.assertNotEqual(y.data_ptr(), x.data_ptr())
 
     def test_copy_non_blocking(self):
@@ -835,7 +878,7 @@ class TestCopyExtended(TestCase):
         x = torch.randn(3, 4, device="mcpu")
         y = torch.empty(3, 4, device="mcpu")
         y.copy_(x, non_blocking=True)
-        self.assertEqual(y, x)
+        self.assertEqual(y.cpu(), x.cpu())
 
 
 class TestOpsExtended(TestCase):
@@ -888,7 +931,7 @@ class TestOpsExtended(TestCase):
         x = torch.randn(3, 4, device="mcpu")
         y = torch.empty(3, 4, device="mcpu")
         y.set_(x)
-        self.assertEqual(y, x)
+        self.assertEqual(y.cpu(), x.cpu())
 
     def test_set_storage(self):
         """Test set_ operation with storage source"""
@@ -896,7 +939,7 @@ class TestOpsExtended(TestCase):
         storage = x.storage()
         y = torch.empty(3, 4, device="mcpu")
         y.set_(storage, 0, y.size())
-        self.assertEqual(y, x)
+        self.assertEqual(y.cpu(), x.cpu())
 
 
 class TestSTUBExtended(TestCase):
@@ -905,7 +948,7 @@ class TestSTUBExtended(TestCase):
         x = torch.randn(2, 3, dtype=torch.float32, device="mcpu")
         y = torch.abs(x)
         self.assertEqual(y.device.type, "mcpu")
-        self.assertTrue(torch.all(y >= 0))
+        self.assertTrue(torch.all(y.cpu() >= 0))
         self.assertEqual(y.shape, x.shape)
 
     def test_abs_non_contiguous(self):
@@ -914,14 +957,14 @@ class TestSTUBExtended(TestCase):
         x_t = x.t()  # Transpose makes it non-contiguous
         y = torch.abs(x_t)
         self.assertEqual(y.device.type, "mcpu")
-        self.assertTrue(torch.all(y >= 0))
+        self.assertTrue(torch.all(y.cpu() >= 0))
 
     def test_custom_abs(self):
         """Test custom abs operation"""
         x = torch.randn(2, 3, dtype=torch.float32, device="mcpu")
         y = torch.ops.mcpu.custom_abs(x)
         self.assertEqual(y.device.type, "mcpu")
-        self.assertTrue(torch.all(y >= 0))
+        self.assertTrue(torch.all(y.cpu() >= 0))
         self.assertEqual(y.shape, x.shape)
 
     def test_abs_out(self):
@@ -930,8 +973,8 @@ class TestSTUBExtended(TestCase):
         out = torch.empty_like(x)
         torch.abs(x, out=out)
         self.assertEqual(out.device.type, "mcpu")
-        self.assertTrue(torch.all(out >= 0))
-        self.assertEqual(out, torch.abs(x))
+        self.assertTrue(torch.all(out.cpu() >= 0))
+        self.assertEqual(out.cpu(), torch.abs(x.cpu()))
 
 
 @unittest.skip("Skipping all quantization tests for mcpu backend")
@@ -1135,7 +1178,7 @@ class TestCustomAutogradFunctions(TestCase):
         y = torch.ops.mcpu.custom_autograd_fn_returns_self(x)
 
         # Should return the same tensor
-        self.assertEqual(x, y)
+        self.assertEqual(x.cpu(), y.cpu())
         self.assertTrue(y.requires_grad)
 
         # Test backward
@@ -1143,7 +1186,7 @@ class TestCustomAutogradFunctions(TestCase):
         loss.backward()
         self.assertIsNotNone(x.grad)
         # Gradient should be 0.5 * 1.0 = 0.5
-        self.assertTrue(torch.allclose(x.grad, torch.ones_like(x) * 0.5))
+        self.assertTrue(torch.allclose(x.grad.cpu(), torch.ones_like(x.cpu()) * 0.5))
 
     def test_custom_autograd_fn_aliasing_basic(self):
         """Test basic usage of custom_autograd_fn_aliasing"""
@@ -1159,13 +1202,13 @@ class TestCustomAutogradFunctions(TestCase):
         loss.backward()
         self.assertIsNotNone(x.grad)
         # Gradient should be 0.5 * 1.0 = 0.5
-        self.assertTrue(torch.allclose(x.grad, torch.ones_like(x) * 0.5))
+        self.assertTrue(torch.allclose(x.grad.cpu(), torch.ones_like(x.cpu()) * 0.5))
 
     def test_custom_autograd_fn_returns_self_no_grad(self):
         """Test custom_autograd_fn_returns_self without requires_grad"""
         x = torch.randn(4, device="mcpu", requires_grad=False)
         y = torch.ops.mcpu.custom_autograd_fn_returns_self(x)
-        self.assertEqual(x, y)
+        self.assertEqual(x.cpu(), y.cpu())
         self.assertFalse(y.requires_grad)
 
     def test_custom_autograd_fn_aliasing_no_grad(self):

@@ -4,7 +4,12 @@
 #endif
 #include "runtime/McpuKernelLaunch.h"
 
+#include <ATen/MemoryOverlap.h>
 #include <ATen/WrapDimUtils.h>
+#include <c10/util/SmallVector.h>
+
+#include <cstring>
+#include <memory>
 
 #if TORCH_MCPU_ENABLE_CPU_FALLBACK
 #include <unordered_set>
@@ -29,6 +34,143 @@ at::Tensor make_mcpu_tensor_cpu_view(const at::Tensor& tensor) {
       tensor.sizes(),
       tensor.strides(),
       tensor.options().device(at::kCPU));
+}
+
+bool is_last_dim_contiguous(const at::Tensor& tensor) {
+  const int64_t dim = tensor.dim();
+  return dim == 0 || tensor.size(dim - 1) <= 1 || tensor.stride(dim - 1) == 1;
+}
+
+struct MemcpyCopyPlan {
+  bool valid = false;
+  bool noop = false;
+  size_t copy_bytes = 0;
+  int64_t outer_count = 0;
+  c10::SmallVector<int64_t, 8> outer_sizes;
+  c10::SmallVector<int64_t, 8> src_byte_strides;
+  c10::SmallVector<int64_t, 8> dst_byte_strides;
+};
+
+MemcpyCopyPlan make_memcpy_copy_plan(
+    const at::Tensor& self,
+    const at::Tensor& dst) {
+  MemcpyCopyPlan plan;
+  if (self.layout() != c10::Layout::Strided ||
+      dst.layout() != c10::Layout::Strided ||
+      self.scalar_type() != dst.scalar_type() || self.sizes() != dst.sizes() ||
+      !is_last_dim_contiguous(self) || !is_last_dim_contiguous(dst)) {
+    return plan;
+  }
+
+  if (self.is_same(dst)) {
+    plan.valid = true;
+    plan.noop = true;
+    return plan;
+  }
+  if (self.is_alias_of(dst)) {
+    return plan;
+  }
+
+  const int64_t numel = self.numel();
+  if (numel == 0) {
+    plan.valid = true;
+    plan.noop = true;
+    return plan;
+  }
+
+  const int64_t ndim = self.dim();
+  const size_t elem_size = self.element_size();
+
+  if (ndim == 0) {
+    plan.valid = true;
+    plan.copy_bytes = elem_size;
+    plan.outer_count = 1;
+    return plan;
+  }
+
+  int64_t inner_start = ndim - 1;
+  while (inner_start > 0) {
+    const int64_t dim = inner_start - 1;
+    const int64_t next_dim = inner_start;
+    if (self.size(dim) <= 1 && dst.size(dim) <= 1) {
+      --inner_start;
+      continue;
+    }
+    if (self.stride(dim) != self.stride(next_dim) * self.size(next_dim) ||
+        dst.stride(dim) != dst.stride(next_dim) * dst.size(next_dim)) {
+      break;
+    }
+    --inner_start;
+  }
+
+  int64_t inner_numel = 1;
+  for (int64_t dim = inner_start; dim < ndim; ++dim) {
+    inner_numel *= self.size(dim);
+  }
+  plan.valid = true;
+  plan.copy_bytes = static_cast<size_t>(inner_numel) * elem_size;
+  plan.outer_count = 1;
+  for (int64_t dim = 0; dim < inner_start; ++dim) {
+    plan.outer_count *= self.size(dim);
+    plan.outer_sizes.push_back(self.size(dim));
+    plan.src_byte_strides.push_back(
+        self.stride(dim) * static_cast<int64_t>(elem_size));
+    plan.dst_byte_strides.push_back(
+        dst.stride(dim) * static_cast<int64_t>(elem_size));
+  }
+
+  return plan;
+}
+
+void execute_memcpy_copy(
+    const char* src_base,
+    char* dst_base,
+    const MemcpyCopyPlan& plan) {
+  const int64_t outer_ndim = plan.outer_sizes.size();
+  if (outer_ndim == 0) {
+    std::memcpy(dst_base, src_base, plan.copy_bytes);
+  } else if (outer_ndim == 1) {
+    const int64_t size0 = plan.outer_sizes[0];
+    const int64_t src_s0 = plan.src_byte_strides[0];
+    const int64_t dst_s0 = plan.dst_byte_strides[0];
+    for (int64_t i = 0; i < size0; ++i) {
+      std::memcpy(dst_base + i * dst_s0, src_base + i * src_s0, plan.copy_bytes);
+    }
+  } else if (outer_ndim == 2) {
+    const int64_t size0 = plan.outer_sizes[0];
+    const int64_t size1 = plan.outer_sizes[1];
+    const int64_t src_s0 = plan.src_byte_strides[0];
+    const int64_t src_s1 = plan.src_byte_strides[1];
+    const int64_t dst_s0 = plan.dst_byte_strides[0];
+    const int64_t dst_s1 = plan.dst_byte_strides[1];
+    for (int64_t i = 0; i < size0; ++i) {
+      for (int64_t j = 0; j < size1; ++j) {
+        std::memcpy(
+            dst_base + i * dst_s0 + j * dst_s1,
+            src_base + i * src_s0 + j * src_s1,
+            plan.copy_bytes);
+      }
+    }
+  } else {
+    c10::SmallVector<int64_t, 8> indices(outer_ndim, 0);
+    int64_t src_offset = 0;
+    int64_t dst_offset = 0;
+    for (int64_t i = 0; i < plan.outer_count; ++i) {
+      std::memcpy(dst_base + dst_offset, src_base + src_offset, plan.copy_bytes);
+
+      for (int64_t dim = outer_ndim - 1; dim >= 0; --dim) {
+        ++indices[dim];
+        src_offset += plan.src_byte_strides[dim];
+        dst_offset += plan.dst_byte_strides[dim];
+        if (indices[dim] < plan.outer_sizes[dim]) {
+          break;
+        }
+        src_offset -= indices[dim] * plan.src_byte_strides[dim];
+        dst_offset -= indices[dim] * plan.dst_byte_strides[dim];
+        indices[dim] = 0;
+      }
+    }
+  }
 }
 
 void launch_async_host_device_copy(
@@ -141,23 +283,40 @@ at::Tensor _copy_from(
 
   if (is_mcpu_tensor(self) && is_mcpu_tensor(dst) &&
       self.device() == dst.device()) {
-    at::mcpu::launch_timed_kernel(
+    at::assert_no_partial_overlap(dst, self);
+    MemcpyCopyPlan plan = make_memcpy_copy_plan(self, dst);
+    if (plan.valid) {
+      if (plan.noop) {
+        return dst;
+      }
+      const auto* src_ptr = static_cast<const char*>(self.data_ptr());
+      auto* dst_ptr = static_cast<char*>(dst.data_ptr());
+      auto plan_ptr = std::make_shared<MemcpyCopyPlan>(std::move(plan));
+      MCPU_LAUNCH_TIMED_KERNEL(
+          "mcpu::_copy_from.same_device.memcpy",
+          ([self, dst, src_ptr, dst_ptr, plan_ptr]), {
+            (void)self;
+            (void)dst;
+            at::mcpu::KernelPointerMemoryGuard guard({src_ptr, dst_ptr});
+            execute_memcpy_copy(src_ptr, dst_ptr, *plan_ptr);
+          });
+      return dst;
+    }
+
+    at::Tensor dst_as_cpu = at::from_blob(
+        dst.data_ptr(),
+        dst.sizes(),
+        dst.strides(),
+        dst.options().device(at::kCPU));
+    const at::Tensor self_as_cpu = at::from_blob(
+        self.data_ptr(),
+        self.sizes(),
+        self.strides(),
+        self.options().device(at::kCPU));
+    MCPU_LAUNCH_TIMED_KERNEL(
         "mcpu::_copy_from.same_device",
-        [self, dst, non_blocking](
-            at::mcpu::kernel_timing::Event* timing_event) mutable {
-          MCPU_KERNEL_TIMING_SCOPE_EVENT(
-              "mcpu::_copy_from.same_device", timing_event);
+        ([self, dst, dst_as_cpu, self_as_cpu, non_blocking]), {
           at::mcpu::KernelMemoryGuard guard(self, dst);
-          at::Tensor dst_as_cpu = at::from_blob(
-              dst.data_ptr(),
-              dst.sizes(),
-              dst.strides(),
-              dst.options().device(at::kCPU));
-          const at::Tensor self_as_cpu = at::from_blob(
-              self.data_ptr(),
-              self.sizes(),
-              self.strides(),
-              self.options().device(at::kCPU));
           at::native::copy_(
               const_cast<at::Tensor&>(dst_as_cpu), self_as_cpu, non_blocking);
         });
@@ -171,7 +330,22 @@ at::Tensor _copy_from(
 
   synchronize_if_mcpu(self);
   synchronize_if_mcpu(dst);
+  MemcpyCopyPlan plan;
+  if (is_mcpu_tensor(self) && is_mcpu_tensor(dst)) {
+    plan = make_memcpy_copy_plan(self, dst);
+    if (plan.valid && plan.noop) {
+      return dst;
+    }
+  }
   MemoryGuard guard(self, dst);
+
+  if (plan.valid) {
+    execute_memcpy_copy(
+        static_cast<const char*>(self.data_ptr()),
+        static_cast<char*>(dst.data_ptr()),
+        plan);
+    return dst;
+  }
 
   if (self.device() == dst.device()) {
     at::Tensor dst_as_cpu = at::from_blob(
