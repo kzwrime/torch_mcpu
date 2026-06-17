@@ -32,6 +32,7 @@ namespace at::mcpu::kernel_timing {
 
 struct Event {
   const char* name;
+  std::uint64_t stream;
   std::uint64_t begin_tsc;
   std::uint64_t end_tsc;
 };
@@ -53,7 +54,9 @@ struct ThreadBuffer {
 MCPU_KERNEL_TIMING_EXPORT extern std::atomic<bool> g_enabled;
 MCPU_KERNEL_TIMING_EXPORT void set_enabled(bool value);
 MCPU_KERNEL_TIMING_EXPORT void reset();
-MCPU_KERNEL_TIMING_EXPORT Event* reserve_event_slot(const char* name);
+MCPU_KERNEL_TIMING_EXPORT Event* reserve_event_slot(
+    const char* name,
+    std::uint64_t stream = 0);
 MCPU_KERNEL_TIMING_EXPORT std::size_t event_count();
 MCPU_KERNEL_TIMING_EXPORT double elapsed_us_between(
     std::size_t begin,

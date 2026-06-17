@@ -58,7 +58,11 @@ def _valid_kernel_events():
                     begin,
                     end,
                     str(event.get("name", "mcpu::kernel")),
-                    int(thread.get("thread_index", thread_index)),
+                    int(
+                        event.get(
+                            "stream", thread.get("thread_index", thread_index)
+                        )
+                    ),
                 )
             )
     events.sort(key=lambda item: item[0])
@@ -171,7 +175,7 @@ def _append_mcpu_events(path):
                 b'\n{"ph":"M","cat":"mcpu_kernel","name":"process_name",'
                 b'"pid":"MCPU","args":{"name":"MCPU"}}'
             )
-            for begin, end, name, thread_index in events:
+            for begin, end, name, stream_id in events:
                 ts = anchor_us + ((begin - first_begin) / ticks_per_ns) / 1000.0
                 dur = ((end - begin) / ticks_per_ns) / 1000.0
                 out.write(b",\n")
@@ -182,10 +186,10 @@ def _append_mcpu_events(path):
                             "cat": "mcpu_kernel",
                             "name": name,
                             "pid": "MCPU",
-                            "tid": f"mcpu_stream_{thread_index}",
+                            "tid": f"mcpu_stream_{stream_id}",
                             "ts": ts,
                             "dur": max(0.0, dur),
-                            "args": {"stream": thread_index},
+                            "args": {"stream": stream_id},
                         },
                         separators=(",", ":"),
                     ).encode("utf-8")

@@ -254,9 +254,11 @@ static PyObject* _getKernelTiming(PyObject* self, PyObject* noargs) {
          ++j) {
       const auto& event = snapshot.events[static_cast<std::size_t>(j)];
       PyObject* py_event = Py_BuildValue(
-          "{s:s,s:K,s:K}",
+          "{s:s,s:K,s:K,s:K}",
           "name",
           event.name,
+          "stream",
+          static_cast<unsigned long long>(event.stream),
           "begin_tsc",
           static_cast<unsigned long long>(event.begin_tsc),
           "end_tsc",

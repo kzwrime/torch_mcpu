@@ -41,7 +41,7 @@ void reset() {
   g_worker_buffer.count = 0;
 }
 
-Event* reserve_event_slot(const char* name) {
+Event* reserve_event_slot(const char* name, std::uint64_t stream) {
   if (!enabled()) {
     return nullptr;
   }
@@ -51,7 +51,7 @@ Event* reserve_event_slot(const char* name) {
     return nullptr;
   }
   Event& event = g_worker_buffer.events[index];
-  event = {name, 0, 0};
+  event = {name, stream, 0, 0};
   return &event;
 }
 

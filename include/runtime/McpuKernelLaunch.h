@@ -12,6 +12,7 @@
 #include "runtime/McpuKernelTiming.h"
 #include "runtime/OpenRegStream.h"
 
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <type_traits>
@@ -219,7 +220,9 @@ inline void launch_timed_kernel_on_stream(
     orStream_t stream,
     const char* record_name,
     Func&& func) {
-  auto* event_slot = kernel_timing::reserve_event_slot(record_name);
+  auto* event_slot = kernel_timing::reserve_event_slot(
+      record_name,
+      static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(stream)));
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
   auto status =
       orLaunchKernel(stream, [event_slot, func = std::forward<Func>(func)]() mutable {

@@ -221,6 +221,109 @@ class TestProfiler(TestCase):
             if os.path.exists(trace_file):
                 os.remove(trace_file)
 
+    def test_profiler_trace_postprocess_keeps_distinct_stream_ids(self):
+        """Test mcpu trace injection keeps per-kernel stream ids distinct."""
+        trace = {
+            "schemaVersion": 1,
+            "traceEvents": [
+                {
+                    "ph": "X",
+                    "cat": "cpu_op",
+                    "name": "aten::empty",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": 100.0,
+                    "dur": 5.0,
+                    "args": {},
+                }
+            ],
+        }
+        fd, trace_file = tempfile.mkstemp(suffix=".pt.trace.json")
+        os.close(fd)
+
+        try:
+            with open(trace_file, "w", encoding="utf-8") as f:
+                json.dump(trace, f)
+
+            with mock.patch.object(
+                mcpu_profiler,
+                "_valid_kernel_events",
+                return_value=[
+                    (1000, 1300, "mcpu::stream_a", 101),
+                    (1100, 1500, "mcpu::stream_b", 202),
+                ],
+            ), mock.patch.object(
+                mcpu_profiler, "_calibrate_timer_ticks_per_ns", return_value=10.0
+            ):
+                injected = mcpu_profiler._append_mcpu_events_to_trace(trace_file)
+
+            self.assertEqual(injected, 2)
+            with open(trace_file, encoding="utf-8") as f:
+                trace_data = json.load(f)
+
+            mcpu_events = [
+                event
+                for event in trace_data["traceEvents"]
+                if event.get("cat") == "mcpu_kernel" and event.get("ph") == "X"
+            ]
+            self.assertEqual(
+                {event.get("tid") for event in mcpu_events},
+                {"mcpu_stream_101", "mcpu_stream_202"},
+            )
+            self.assertEqual(
+                {event.get("args", {}).get("stream") for event in mcpu_events},
+                {101, 202},
+            )
+        finally:
+            if os.path.exists(trace_file):
+                os.remove(trace_file)
+
+    @skipIfTorchDynamo()
+    def test_profiler_export_chrome_trace_multiple_mcpu_streams(self):
+        """Test Chrome trace export emits separate mcpu stream lanes."""
+        stream1 = torch.Stream(device="mcpu")
+        stream2 = torch.Stream(device="mcpu")
+        x = torch.empty(8, dtype=torch.int64, device="mcpu")
+        y = torch.empty(8, dtype=torch.int64, device="mcpu")
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU]
+            ) as prof:
+                with stream1:
+                    torch.ops.mcpu.stream_sleep_fill_(x, 1, 1)
+                with stream2:
+                    torch.ops.mcpu.stream_sleep_fill_(y, 2, 1)
+                stream1.synchronize()
+                stream2.synchronize()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+
+        fd, trace_file = tempfile.mkstemp(suffix=".pt.trace.json")
+        os.close(fd)
+
+        try:
+            prof.export_chrome_trace(trace_file)
+            with open(trace_file, encoding="utf-8") as f:
+                trace_data = json.load(f)
+
+            events = (
+                trace_data["traceEvents"] if isinstance(trace_data, dict) else trace_data
+            )
+            stream_ids = {
+                event.get("args", {}).get("stream")
+                for event in events
+                if event.get("cat") == "mcpu_kernel"
+                and event.get("name") == "mcpu::stream_sleep_fill_"
+            }
+            self.assertGreaterEqual(len(stream_ids), 2)
+        finally:
+            if os.path.exists(trace_file):
+                os.remove(trace_file)
+            torch.mcpu.reset_kernel_timing()
+
     @skipIfTorchDynamo()
     def test_profiler_with_shapes(self):
         """Test profiler with shape recording enabled."""
