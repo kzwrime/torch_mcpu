@@ -52,6 +52,10 @@ struct MemcpyCopyPlan {
   c10::SmallVector<int64_t, 8> dst_byte_strides;
 };
 
+void record_stream_if_cross_stream(
+    const at::Tensor& tensor,
+    c10::mcpu::McpuStream stream);
+
 MemcpyCopyPlan make_memcpy_copy_plan(
     const at::Tensor& self,
     const at::Tensor& dst) {
@@ -68,14 +72,18 @@ MemcpyCopyPlan make_memcpy_copy_plan(
     plan.noop = true;
     return plan;
   }
-  if (self.is_alias_of(dst)) {
-    return plan;
-  }
 
   const int64_t numel = self.numel();
   if (numel == 0) {
     plan.valid = true;
     plan.noop = true;
+    return plan;
+  }
+
+  if (self.device() == dst.device() && self.is_alias_of(dst)) {
+    return plan;
+  }
+  if (self.device() != dst.device() && self.data_ptr() == dst.data_ptr()) {
     return plan;
   }
 
@@ -174,6 +182,27 @@ void execute_memcpy_copy(
   }
 }
 
+void launch_async_memcpy_copy(
+    c10::mcpu::McpuStream stream,
+    const char* record_name,
+    const void* src_ptr,
+    void* dst_ptr,
+    MemcpyCopyPlan plan) {
+  auto plan_ptr = std::make_shared<MemcpyCopyPlan>(std::move(plan));
+  at::mcpu::launch_timed_kernel_on_stream(
+      stream,
+      record_name,
+      [src_ptr, dst_ptr, plan_ptr, record_name](
+          at::mcpu::kernel_timing::Event* timing_event) {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(record_name, timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard({src_ptr, dst_ptr});
+        execute_memcpy_copy(
+            static_cast<const char*>(src_ptr),
+            static_cast<char*>(dst_ptr),
+            *plan_ptr);
+      });
+}
+
 void launch_async_host_device_copy(
     const at::Tensor& self,
     const at::Tensor& dst) {
@@ -197,6 +226,29 @@ void launch_async_host_device_copy(
           at::native::copy_(const_cast<at::Tensor&>(dst), self_as_cpu, true);
         }
       });
+}
+
+bool try_launch_async_host_device_memcpy(
+    const at::Tensor& self,
+    const at::Tensor& dst) {
+  MemcpyCopyPlan plan = make_memcpy_copy_plan(self, dst);
+  if (!plan.valid) {
+    return false;
+  }
+  if (plan.noop) {
+    return true;
+  }
+
+  const at::Tensor& mcpu_tensor = self.is_cpu() ? dst : self;
+  auto stream = c10::mcpu::getCurrentMcpuStream(mcpu_tensor.device().index());
+  record_stream_if_cross_stream(mcpu_tensor, stream);
+  launch_async_memcpy_copy(
+      stream,
+      "mcpu::_copy_from.host_device.memcpy",
+      self.data_ptr(),
+      dst.data_ptr(),
+      std::move(plan));
+  return true;
 }
 
 void record_stream_if_cross_stream(
@@ -304,17 +356,12 @@ at::Tensor _copy_from(
       auto stream = c10::mcpu::getCurrentMcpuStream(self.device().index());
       record_stream_if_cross_stream(self, stream);
       record_stream_if_cross_stream(dst, stream);
-      auto plan_ptr = std::make_shared<MemcpyCopyPlan>(std::move(plan));
-      at::mcpu::launch_timed_kernel_on_stream(
+      launch_async_memcpy_copy(
           stream,
           "mcpu::_copy_from.same_device.memcpy",
-          [src_ptr, dst_ptr, plan_ptr](
-              at::mcpu::kernel_timing::Event* timing_event) {
-            MCPU_KERNEL_TIMING_SCOPE_EVENT(
-                "mcpu::_copy_from.same_device.memcpy", timing_event);
-            at::mcpu::KernelPointerMemoryGuard guard({src_ptr, dst_ptr});
-            execute_memcpy_copy(src_ptr, dst_ptr, *plan_ptr);
-          });
+          src_ptr,
+          dst_ptr,
+          std::move(plan));
       return dst;
     }
 
@@ -339,6 +386,9 @@ at::Tensor _copy_from(
   }
 
   if (non_blocking && is_host_device_copy(self, dst)) {
+    if (try_launch_async_host_device_memcpy(self, dst)) {
+      return dst;
+    }
     launch_async_host_device_copy(self, dst);
     return dst;
   }
@@ -346,7 +396,8 @@ at::Tensor _copy_from(
   synchronize_if_mcpu(self);
   synchronize_if_mcpu(dst);
   MemcpyCopyPlan plan;
-  if (is_mcpu_tensor(self) && is_mcpu_tensor(dst)) {
+  if ((is_mcpu_tensor(self) && is_mcpu_tensor(dst)) ||
+      is_host_device_copy(self, dst)) {
     plan = make_memcpy_copy_plan(self, dst);
     if (plan.valid && plan.noop) {
       return dst;

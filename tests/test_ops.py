@@ -2,9 +2,14 @@
 
 import collections
 import functools
+import os
+import sys
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
+import torch_mcpu  # noqa: F401
 from torch.nn.attention import SDPBackend
 from torch.testing._internal.common_nn import NNTestCase
 from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
@@ -1181,6 +1186,37 @@ class TestCopyFromAndResize(TestCase):
         result = torch.ops.aten._copy_from(x, y, non_blocking=False)
         self.assertEqual(result.device.type, "mcpu")
         self.assertEqual(result.cpu(), x)
+
+    def test_copy_from_host_device_non_blocking_uses_raw_memcpy(self):
+        """Test host-device _copy_from avoids copy_ for memcpy-compatible layouts."""
+        cpu_src = torch.randn(3, 7, 5)
+        mcpu_dst = torch.empty_like(cpu_src, device="mcpu")
+        mcpu_src = cpu_src.to("mcpu")
+        cpu_dst = torch.empty_like(cpu_src)
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            torch.ops.aten._copy_from(cpu_src, mcpu_dst, non_blocking=True)
+            torch.ops.aten._copy_from(mcpu_src, cpu_dst, non_blocking=True)
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        self.assertEqual(mcpu_dst.cpu(), cpu_src)
+        self.assertEqual(cpu_dst, cpu_src)
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        self.assertGreaterEqual(
+            event_names.count("mcpu::_copy_from.host_device.memcpy"),
+            2,
+            event_names,
+        )
 
     def test_copy_from_non_blocking(self):
         """Test _copy_from with non_blocking=True"""
