@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "RawPlan.h"
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/add.h>
@@ -11,6 +12,7 @@
 #include <torch/library.h>
 
 #include <cstdint>
+#include <memory>
 
 namespace at::mcpu {
 namespace {
@@ -33,6 +35,24 @@ void raw_binary_kernel(
       out[i] = self[i] - other[i];
     }
   }
+}
+
+template <typename scalar_t>
+void raw_gt_scalar_kernel(
+    const scalar_t* self,
+    scalar_t other,
+    bool* out,
+    const ops::RawTensorPairPlan& plan) {
+  ops::for_each_raw_tensor_pair_row(
+      plan,
+      [self, other, out](
+          int64_t self_offset, int64_t out_offset, int64_t inner_size) {
+        const auto* self_row = self + self_offset;
+        auto* out_row = out + out_offset;
+        for (int64_t i = 0; i < inner_size; ++i) {
+          out_row[i] = self_row[i] > other;
+        }
+      });
 }
 
 bool has_safe_output_overlap(const at::Tensor& out, const at::Tensor& input) {
@@ -243,6 +263,36 @@ at::Tensor& gt_Scalar_out(
     const at::Scalar& other,
     at::Tensor& out) {
   ops::check_out_sizes("aten::gt.Scalar_out", out, self.sizes());
+
+  auto plan = ops::make_same_shape_raw_tensor_pair_plan(self, out);
+  if (plan.has_value() && out.scalar_type() == at::ScalarType::Bool &&
+      ops::is_raw_dtype_supported(self.scalar_type())) {
+    if (self.numel() == 0) {
+      return out;
+    }
+
+    AT_DISPATCH_ALL_TYPES_AND3(
+        at::ScalarType::Half,
+        at::ScalarType::BFloat16,
+        at::ScalarType::Bool,
+        self.scalar_type(),
+        "mcpu_raw_gt_scalar_out",
+        [&] {
+          auto plan_ptr =
+              std::make_shared<ops::RawTensorPairPlan>(*std::move(plan));
+          const auto* self_ptr = self.const_data_ptr<scalar_t>();
+          auto* out_ptr = out.mutable_data_ptr<bool>();
+          const auto other_value = other.to<scalar_t>();
+          MCPU_LAUNCH_TIMED_KERNEL(
+              "mcpu::aten::gt.Scalar.raw",
+              ([ self_ptr, other_value, out_ptr, plan_ptr ]),
+              {
+                KernelPointerMemoryGuard guard({self_ptr, out_ptr});
+                raw_gt_scalar_kernel(self_ptr, other_value, out_ptr, *plan_ptr);
+              });
+        });
+    return out;
+  }
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::gt.Scalar_out", ([ self, other, out ]), {

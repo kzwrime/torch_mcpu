@@ -90,6 +90,12 @@ class KernelPointerMemoryGuard {
     }
   }
 
+  explicit KernelPointerMemoryGuard(c10::ArrayRef<const void*> ptrs) {
+    for (const void* ptr : ptrs) {
+      detail::unprotect_memory(ptr, unprotected_pointers_);
+    }
+  }
+
   ~KernelPointerMemoryGuard() noexcept {
     for (void* ptr : unprotected_pointers_) {
       detail::protect_memory(ptr);
@@ -98,6 +104,7 @@ class KernelPointerMemoryGuard {
 #else
   explicit KernelPointerMemoryGuard(
       std::initializer_list<const void*>) noexcept {}
+  explicit KernelPointerMemoryGuard(c10::ArrayRef<const void*>) noexcept {}
   ~KernelPointerMemoryGuard() noexcept = default;
 #endif
 

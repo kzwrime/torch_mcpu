@@ -1,4 +1,5 @@
 #include "Common.h"
+#include "RawPlan.h"
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/bitwise_not.h>
@@ -19,6 +20,7 @@
 #include <torch/library.h>
 
 #include <cmath>
+#include <memory>
 
 namespace at::mcpu {
 namespace {
@@ -30,6 +32,38 @@ inline bool is_nonzero_value(const scalar_t& value) {
   } else {
     return value != scalar_t(0);
   }
+}
+
+template <typename scalar_t>
+void raw_bitwise_not_kernel(
+    const scalar_t* self,
+    scalar_t* out,
+    const ops::RawTensorPairPlan& plan) {
+  ops::for_each_raw_tensor_pair_row(
+      plan,
+      [self, out](int64_t self_offset, int64_t out_offset, int64_t inner_size) {
+        const auto* self_row = self + self_offset;
+        auto* out_row = out + out_offset;
+        for (int64_t i = 0; i < inner_size; ++i) {
+          out_row[i] = ~self_row[i];
+        }
+      });
+}
+
+template <>
+void raw_bitwise_not_kernel<bool>(
+    const bool* self,
+    bool* out,
+    const ops::RawTensorPairPlan& plan) {
+  ops::for_each_raw_tensor_pair_row(
+      plan,
+      [self, out](int64_t self_offset, int64_t out_offset, int64_t inner_size) {
+        const auto* self_row = self + self_offset;
+        auto* out_row = out + out_offset;
+        for (int64_t i = 0; i < inner_size; ++i) {
+          out_row[i] = !self_row[i];
+        }
+      });
 }
 
 at::Tensor empty_unary_mcpu(
@@ -147,6 +181,32 @@ at::Tensor& neg_out(const at::Tensor& self, at::Tensor& out) {
 
 at::Tensor& bitwise_not_out(const at::Tensor& self, at::Tensor& out) {
   ops::check_out_sizes("aten::bitwise_not.out", out, self.sizes());
+
+  auto plan = ops::make_same_shape_raw_tensor_pair_plan(self, out);
+  if (plan.has_value() && self.scalar_type() == out.scalar_type()) {
+    if (self.numel() == 0) {
+      return out;
+    }
+
+    AT_DISPATCH_INTEGRAL_TYPES_AND(
+        at::ScalarType::Bool,
+        self.scalar_type(),
+        "mcpu_raw_bitwise_not_out",
+        [&] {
+          auto plan_ptr =
+              std::make_shared<ops::RawTensorPairPlan>(*std::move(plan));
+          const auto* self_ptr = self.const_data_ptr<scalar_t>();
+          auto* out_ptr = out.mutable_data_ptr<scalar_t>();
+          MCPU_LAUNCH_TIMED_KERNEL(
+              "mcpu::aten::bitwise_not.out.raw",
+              ([ self_ptr, out_ptr, plan_ptr ]),
+              {
+                KernelPointerMemoryGuard guard({self_ptr, out_ptr});
+                raw_bitwise_not_kernel(self_ptr, out_ptr, *plan_ptr);
+              });
+        });
+    return out;
+  }
 
   MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::bitwise_not.out", ([ self, out ]), {
     KernelMemoryGuard guard(self, out);

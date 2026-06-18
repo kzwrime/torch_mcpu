@@ -147,6 +147,16 @@ class TestOps(TestCase):
         a = torch.ones(20, device="mcpu")
         print(a.cpu())
 
+    def test_fill_scalar_last_dim_contiguous_view(self):
+        base = torch.zeros(2, 6, 4, dtype=torch.float32, device="mcpu")
+        view = base[:, ::2, :]
+
+        view.fill_(3.5)
+
+        expected = torch.zeros(2, 6, 4, dtype=torch.float32)
+        expected[:, ::2, :] = 3.5
+        self.assertEqual(base.cpu(), expected)
+
 
 class TestSTUB(TestCase):
     def test_backend_dispatchstub(self):
@@ -1065,6 +1075,43 @@ class TestFallbackExtended(TestCase):
             for event in thread.get("events", [])
         ]
         self.assertNotIn("mcpu::aten::add.raw", event_names)
+
+    def test_scalar_gt_bitwise_not_and_index_put_use_raw_kernels(self):
+        x = torch.tensor([[0.0, 2.0], [3.0, 4.0]], device="mcpu")
+        gt_out = torch.empty_like(x, dtype=torch.bool)
+        bits = torch.tensor([[0, 1], [2, 3]], device="mcpu", dtype=torch.int32)
+        bitwise_not_out = torch.empty_like(bits)
+        target = torch.zeros(3, 3, device="mcpu")
+        row = torch.tensor([0, 2], device="mcpu", dtype=torch.long)
+        col = torch.tensor([1, 0], device="mcpu", dtype=torch.long)
+        vals = torch.tensor([5.0, 7.0], device="mcpu")
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            torch.gt(x, 2.0, out=gt_out)
+            torch.bitwise_not(bits, out=bitwise_not_out)
+            torch.ops.aten._index_put_impl_(target, [row, col], vals, False, False)
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        self.assertEqual(gt_out.cpu(), torch.gt(x.cpu(), 2.0))
+        self.assertEqual(bitwise_not_out.cpu(), torch.bitwise_not(bits.cpu()))
+        self.assertEqual(
+            target.cpu(),
+            torch.tensor([[0.0, 5.0, 0.0], [0.0, 0.0, 0.0], [7.0, 0.0, 0.0]]),
+        )
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        self.assertIn("mcpu::aten::gt.Scalar.raw", event_names)
+        self.assertIn("mcpu::aten::bitwise_not.raw", event_names)
+        self.assertIn("mcpu::aten::_index_put_impl_.raw", event_names)
 
     def test_abs_uses_explicit_mcpu_kernel(self):
         x = torch.tensor([[-1.0, 2.0, -3.0], [4.0, -5.0, 6.0]], device="mcpu")
