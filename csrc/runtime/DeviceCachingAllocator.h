@@ -58,6 +58,8 @@ inline void recordStream(const DataPtr& dataPtr, McpuStream stream) { // [3]
   get()->recordStream(dataPtr, stream.unwrap());
 }
 
+MCPU_EXPORT bool isAllocationStream(const DataPtr& dataPtr, McpuStream stream);
+
 // [6] REMOVED: enablePeerAccess — openreg has no peer-access API
 MCPU_EXPORT double getMemoryFraction(DeviceIndex device); // [4]
 MCPU_EXPORT void setMemoryFraction(double fraction, DeviceIndex device); // [4]

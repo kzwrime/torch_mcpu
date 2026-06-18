@@ -3,6 +3,7 @@
 #include "MCPUFallback.h"
 #endif
 #include "runtime/McpuKernelLaunch.h"
+#include <runtime/DeviceCachingAllocator.h>
 
 #include <ATen/MemoryOverlap.h>
 #include <ATen/WrapDimUtils.h>
@@ -198,6 +199,15 @@ void launch_async_host_device_copy(
       });
 }
 
+void record_stream_if_cross_stream(
+    const at::Tensor& tensor,
+    c10::mcpu::McpuStream stream) {
+  const c10::DataPtr& data_ptr = tensor.storage().data_ptr();
+  if (!c10::mcpu::isAllocationStream(data_ptr, stream)) {
+    c10::mcpu::recordStream(data_ptr, stream);
+  }
+}
+
 } // namespace
 
 // LITERALINCLUDE START: EMPTY.MEMORY_FORMAT IMPL
@@ -291,12 +301,17 @@ at::Tensor _copy_from(
       }
       const auto* src_ptr = static_cast<const char*>(self.data_ptr());
       auto* dst_ptr = static_cast<char*>(dst.data_ptr());
+      auto stream = c10::mcpu::getCurrentMcpuStream(self.device().index());
+      record_stream_if_cross_stream(self, stream);
+      record_stream_if_cross_stream(dst, stream);
       auto plan_ptr = std::make_shared<MemcpyCopyPlan>(std::move(plan));
-      MCPU_LAUNCH_TIMED_KERNEL(
+      at::mcpu::launch_timed_kernel_on_stream(
+          stream,
           "mcpu::_copy_from.same_device.memcpy",
-          ([self, dst, src_ptr, dst_ptr, plan_ptr]), {
-            (void)self;
-            (void)dst;
+          [src_ptr, dst_ptr, plan_ptr](
+              at::mcpu::kernel_timing::Event* timing_event) {
+            MCPU_KERNEL_TIMING_SCOPE_EVENT(
+                "mcpu::_copy_from.same_device.memcpy", timing_event);
             at::mcpu::KernelPointerMemoryGuard guard({src_ptr, dst_ptr});
             execute_memcpy_copy(src_ptr, dst_ptr, *plan_ptr);
           });

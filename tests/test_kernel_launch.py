@@ -178,6 +178,91 @@ class TestKernelLaunchProtection(TestCase):
         stream.synchronize()
         self.assertTrue(torch.equal(dst.cpu(), torch.full_like(dst.cpu(), 7)))
 
+    def test_mcpu_to_mcpu_copy_records_cross_stream_source_reuse(self):
+        torch.mcpu.synchronize()
+        torch.mcpu.empty_cache()
+        gc.collect()
+
+        default_stream = torch.mcpu.default_stream()
+        torch.mcpu.set_stream(default_stream)
+        side_stream = torch.Stream(device="mcpu:0")
+        numel = 1_000_000
+
+        src = torch.full((numel,), 3.0, dtype=torch.float32, device="mcpu")
+        dst = torch.empty((numel,), dtype=torch.float32, device="mcpu")
+        torch.mcpu.synchronize()
+        src_ptr = src.data_ptr()
+
+        with side_stream:
+            blocker = torch.empty(1, dtype=torch.int64, device="mcpu")
+            torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 100)
+            dst.copy_(src)
+
+        del src
+        gc.collect()
+
+        replacement = torch.full((numel,), 9.0, dtype=torch.float32, device="mcpu")
+        self.assertNotEqual(replacement.data_ptr(), src_ptr)
+
+        default_stream.synchronize()
+        side_stream.synchronize()
+        self.assertTrue(torch.equal(dst[:8].cpu(), torch.full((8,), 3.0)))
+
+        reserved_before_recovered = torch.mcpu.memory_stats(0)[
+            "reserved_bytes.all.current"
+        ]
+        recovered = torch.empty((numel,), dtype=torch.float32, device="mcpu")
+        reserved_after_recovered = torch.mcpu.memory_stats(0)[
+            "reserved_bytes.all.current"
+        ]
+        self.assertEqual(reserved_after_recovered, reserved_before_recovered)
+        self.assertEqual(recovered.data_ptr(), src_ptr)
+
+    def test_mcpu_to_mcpu_copy_releases_recorded_source_and_dst_after_completion(
+        self,
+    ):
+        torch.mcpu.synchronize()
+        torch.mcpu.empty_cache()
+        gc.collect()
+
+        default_stream = torch.mcpu.default_stream()
+        torch.mcpu.set_stream(default_stream)
+        side_stream = torch.Stream(device="mcpu:0")
+        numel = 1_000_000
+
+        src = torch.full((numel,), 4.0, dtype=torch.float32, device="mcpu")
+        dst = torch.empty((numel,), dtype=torch.float32, device="mcpu")
+        torch.mcpu.synchronize()
+        original_ptrs = {src.data_ptr(), dst.data_ptr()}
+
+        with side_stream:
+            blocker = torch.empty(1, dtype=torch.int64, device="mcpu")
+            torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 100)
+            dst.copy_(src)
+
+        del src
+        del dst
+        gc.collect()
+
+        early_a = torch.empty((numel,), dtype=torch.float32, device="mcpu")
+        early_b = torch.empty((numel,), dtype=torch.float32, device="mcpu")
+        self.assertTrue(
+            original_ptrs.isdisjoint({early_a.data_ptr(), early_b.data_ptr()})
+        )
+
+        side_stream.synchronize()
+        reserved_before_recovered = torch.mcpu.memory_stats(0)[
+            "reserved_bytes.all.current"
+        ]
+        recovered_a = torch.empty((numel,), dtype=torch.float32, device="mcpu")
+        recovered_b = torch.empty((numel,), dtype=torch.float32, device="mcpu")
+        reserved_after_recovered = torch.mcpu.memory_stats(0)[
+            "reserved_bytes.all.current"
+        ]
+
+        self.assertEqual(reserved_after_recovered, reserved_before_recovered)
+        self.assertNotEqual(recovered_a.data_ptr(), recovered_b.data_ptr())
+
 
 if __name__ == "__main__":
     run_tests()

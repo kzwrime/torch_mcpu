@@ -954,6 +954,19 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
     device_allocators[block->device]->recordStream(block, mcpu_stream);
   }
 
+  bool isAllocationStream(const DataPtr& ptr, McpuStream stream) {
+    if (!ptr.get()) {
+      return true;
+    }
+    if (ptr.get_deleter() != &local_raw_delete) {
+      return true;
+    }
+
+    Block* block = get_allocated_block(ptr.get());
+    TORCH_CHECK(block, "No allocated block can be found.");
+    return stream.stream() == block->stream;
+  }
+
   DataPtr allocate(size_t size) override {
     auto device = c10::mcpu::current_device();
     void* r = nullptr;
@@ -1110,6 +1123,10 @@ void resetPeakStats(DeviceIndex device) {
 
 void resetAccumulatedStats(DeviceIndex device) {
   native_allocator.resetAccumulatedStats(device);
+}
+
+bool isAllocationStream(const DataPtr& dataPtr, McpuStream stream) {
+  return native_allocator.isAllocationStream(dataPtr, stream);
 }
 
 double getMemoryFraction(DeviceIndex device) {
