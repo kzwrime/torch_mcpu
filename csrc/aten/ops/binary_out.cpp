@@ -10,8 +10,99 @@
 #include <ATen/ops/sub.h>
 #include <torch/library.h>
 
+#include <cstdint>
+
 namespace at::mcpu {
 namespace {
+
+enum class RawBinaryOp {
+  Add,
+  Sub,
+};
+
+template <RawBinaryOp op, typename scalar_t>
+void raw_binary_kernel(
+    const scalar_t* self,
+    const scalar_t* other,
+    scalar_t* out,
+    int64_t numel) {
+  for (int64_t i = 0; i < numel; ++i) {
+    if constexpr (op == RawBinaryOp::Add) {
+      out[i] = self[i] + other[i];
+    } else {
+      out[i] = self[i] - other[i];
+    }
+  }
+}
+
+bool has_safe_output_overlap(const at::Tensor& out, const at::Tensor& input) {
+  if (out.numel() == 0 || input.numel() == 0) {
+    return true;
+  }
+
+  const auto out_begin = reinterpret_cast<std::uintptr_t>(out.const_data_ptr());
+  const auto input_begin =
+      reinterpret_cast<std::uintptr_t>(input.const_data_ptr());
+  if (out_begin == input_begin) {
+    return true;
+  }
+
+  const auto out_end = out_begin + out.nbytes();
+  const auto input_end = input_begin + input.nbytes();
+  return out_end <= input_begin || input_end <= out_begin;
+}
+
+bool can_use_raw_binary_kernel(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha,
+    const at::Tensor& out) {
+  return alpha.equal(1) && ops::is_mcpu_tensor(self) &&
+      ops::is_mcpu_tensor(other) && ops::is_mcpu_tensor(out) &&
+      self.scalar_type() == other.scalar_type() &&
+      self.scalar_type() == out.scalar_type() &&
+      self.sizes().equals(out.sizes()) && other.sizes().equals(out.sizes()) &&
+      self.is_contiguous() && other.is_contiguous() && out.is_contiguous() &&
+      self.scalar_type() != at::ScalarType::Bool &&
+      !c10::isComplexType(self.scalar_type()) &&
+      has_safe_output_overlap(out, self) && has_safe_output_overlap(out, other);
+}
+
+template <RawBinaryOp op>
+bool raw_binary_out(
+    const char* record_name,
+    const at::Tensor& self,
+    const at::Tensor& other,
+    const at::Scalar& alpha,
+    at::Tensor& out) {
+  if (!can_use_raw_binary_kernel(self, other, alpha, out)) {
+    return false;
+  }
+
+  const auto numel = out.numel();
+  if (numel == 0) {
+    return true;
+  }
+
+  AT_DISPATCH_ALL_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      out.scalar_type(),
+      "mcpu_raw_binary",
+      [&] {
+        const auto* self_ptr = self.const_data_ptr<scalar_t>();
+        const auto* other_ptr = other.const_data_ptr<scalar_t>();
+        auto* out_ptr = out.mutable_data_ptr<scalar_t>();
+        MCPU_LAUNCH_TIMED_KERNEL(
+            record_name,
+            ([ self_ptr, other_ptr, out_ptr, numel, record_name ]),
+            {
+              KernelPointerMemoryGuard guard({self_ptr, other_ptr, out_ptr});
+              raw_binary_kernel<op>(self_ptr, other_ptr, out_ptr, numel);
+            });
+      });
+  return true;
+}
 
 at::Tensor empty_binary_mcpu(const at::Tensor& self, const at::Tensor& other) {
   auto out_sizes = at::infer_size(self.sizes(), other.sizes());
@@ -44,6 +135,11 @@ at::Tensor& add_out(
       expected_sizes,
       ", but got ",
       out.sizes());
+
+  if (raw_binary_out<RawBinaryOp::Add>(
+          "mcpu::aten::add.raw", self, other, alpha, out)) {
+    return out;
+  }
 
   MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::add", ([ alpha, self, other, out ]), {
     KernelMemoryGuard guard(self, other, out);
@@ -204,6 +300,11 @@ at::Tensor sub_Tensor(
     const at::Tensor& other,
     const at::Scalar& alpha) {
   auto out = empty_binary_mcpu(self, other);
+  if (raw_binary_out<RawBinaryOp::Sub>(
+          "mcpu::aten::sub.raw", self, other, alpha, out)) {
+    return out;
+  }
+
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::sub.Tensor", ([ self, other, out, alpha ]), {
         KernelMemoryGuard guard(self, other, out);
@@ -227,6 +328,11 @@ at::Tensor& sub_out(
       expected_sizes,
       ", but got ",
       out.sizes());
+
+  if (raw_binary_out<RawBinaryOp::Sub>(
+          "mcpu::aten::sub.raw", self, other, alpha, out)) {
+    return out;
+  }
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::sub.out", ([ self, other, out, alpha ]), {

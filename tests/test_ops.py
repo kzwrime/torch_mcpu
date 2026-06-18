@@ -1008,6 +1008,59 @@ class TestQuantizationExtended(TestCase):
 
 
 class TestFallbackExtended(TestCase):
+    def test_contiguous_add_sub_use_raw_kernel(self):
+        x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
+        y = (torch.arange(12, dtype=torch.float32).reshape(3, 4) + 1).to("mcpu")
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            add_res = torch.add(x, y)
+            sub_res = torch.sub(y, x)
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        self.assertEqual(add_res.cpu(), x.cpu() + y.cpu())
+        self.assertEqual(sub_res.cpu(), y.cpu() - x.cpu())
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        self.assertIn("mcpu::aten::add.raw", event_names)
+        self.assertIn("mcpu::aten::sub.raw", event_names)
+
+    def test_add_sub_raw_kernel_fallback_cases(self):
+        x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
+        y = torch.arange(4, dtype=torch.float32).to("mcpu")
+
+        broadcast_res = torch.add(x, y)
+        self.assertEqual(broadcast_res.cpu(), x.cpu() + y.cpu())
+
+        alpha_res = torch.sub(x, x, alpha=0.5)
+        self.assertEqual(alpha_res.cpu(), x.cpu() - x.cpu() * 0.5)
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            base = torch.arange(5, dtype=torch.float32, device="mcpu")
+            torch.add(base[:-1], base[:-1], out=base[1:])
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        self.assertNotIn("mcpu::aten::add.raw", event_names)
+
     def test_abs_uses_explicit_mcpu_kernel(self):
         x = torch.tensor([[-1.0, 2.0, -3.0], [4.0, -5.0, 6.0]], device="mcpu")
         y = torch.abs(x)
