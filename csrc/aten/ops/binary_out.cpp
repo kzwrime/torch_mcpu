@@ -11,8 +11,8 @@
 #include <ATen/ops/sub.h>
 #include <torch/library.h>
 
-#include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace at::mcpu {
 namespace {
@@ -20,6 +20,7 @@ namespace {
 enum class RawBinaryOp {
   Add,
   Sub,
+  Mul,
 };
 
 template <RawBinaryOp op, typename scalar_t>
@@ -27,14 +28,49 @@ void raw_binary_kernel(
     const scalar_t* self,
     const scalar_t* other,
     scalar_t* out,
-    int64_t numel) {
-  for (int64_t i = 0; i < numel; ++i) {
-    if constexpr (op == RawBinaryOp::Add) {
-      out[i] = self[i] + other[i];
-    } else {
-      out[i] = self[i] - other[i];
-    }
-  }
+    const ops::RawTensorTripletPlan& plan) {
+  ops::for_each_raw_tensor_triplet_row(
+      plan,
+      [self, other, out](
+          int64_t self_offset,
+          int64_t other_offset,
+          int64_t out_offset,
+          int64_t inner_size) {
+        const auto* self_row = self + self_offset;
+        const auto* other_row = other + other_offset;
+        auto* out_row = out + out_offset;
+        for (int64_t i = 0; i < inner_size; ++i) {
+          if constexpr (op == RawBinaryOp::Add) {
+            out_row[i] = self_row[i] + other_row[i];
+          } else if constexpr (op == RawBinaryOp::Sub) {
+            out_row[i] = self_row[i] - other_row[i];
+          } else {
+            out_row[i] = self_row[i] * other_row[i];
+          }
+        }
+      });
+}
+
+template <typename scalar_t>
+void raw_div_kernel(
+    const scalar_t* self,
+    const scalar_t* other,
+    scalar_t* out,
+    const ops::RawTensorTripletPlan& plan) {
+  ops::for_each_raw_tensor_triplet_row(
+      plan,
+      [self, other, out](
+          int64_t self_offset,
+          int64_t other_offset,
+          int64_t out_offset,
+          int64_t inner_size) {
+        const auto* self_row = self + self_offset;
+        const auto* other_row = other + other_offset;
+        auto* out_row = out + out_offset;
+        for (int64_t i = 0; i < inner_size; ++i) {
+          out_row[i] = self_row[i] / other_row[i];
+        }
+      });
 }
 
 template <typename scalar_t>
@@ -55,37 +91,63 @@ void raw_gt_scalar_kernel(
       });
 }
 
-bool has_safe_output_overlap(const at::Tensor& out, const at::Tensor& input) {
-  if (out.numel() == 0 || input.numel() == 0) {
-    return true;
-  }
-
-  const auto out_begin = reinterpret_cast<std::uintptr_t>(out.const_data_ptr());
-  const auto input_begin =
-      reinterpret_cast<std::uintptr_t>(input.const_data_ptr());
-  if (out_begin == input_begin) {
-    return true;
-  }
-
-  const auto out_end = out_begin + out.nbytes();
-  const auto input_end = input_begin + input.nbytes();
-  return out_end <= input_begin || input_end <= out_begin;
+template <typename scalar_t>
+void raw_gt_tensor_kernel(
+    const scalar_t* self,
+    const scalar_t* other,
+    bool* out,
+    const ops::RawTensorTripletPlan& plan) {
+  ops::for_each_raw_tensor_triplet_row(
+      plan,
+      [self, other, out](
+          int64_t self_offset,
+          int64_t other_offset,
+          int64_t out_offset,
+          int64_t inner_size) {
+        const auto* self_row = self + self_offset;
+        const auto* other_row = other + other_offset;
+        auto* out_row = out + out_offset;
+        for (int64_t i = 0; i < inner_size; ++i) {
+          out_row[i] = self_row[i] > other_row[i];
+        }
+      });
 }
 
-bool can_use_raw_binary_kernel(
+template <RawBinaryOp op, typename scalar_t>
+void raw_binary_scalar_kernel(
+    const scalar_t* self,
+    scalar_t other,
+    scalar_t* out,
+    const ops::RawTensorPairPlan& plan) {
+  ops::for_each_raw_tensor_pair_row(
+      plan,
+      [self, other, out](
+          int64_t self_offset, int64_t out_offset, int64_t inner_size) {
+        const auto* self_row = self + self_offset;
+        auto* out_row = out + out_offset;
+        for (int64_t i = 0; i < inner_size; ++i) {
+          if constexpr (op == RawBinaryOp::Add) {
+            out_row[i] = self_row[i] + other;
+          } else {
+            out_row[i] = self_row[i] - other;
+          }
+        }
+      });
+}
+
+std::optional<ops::RawTensorTripletPlan> make_raw_binary_plan(
     const at::Tensor& self,
     const at::Tensor& other,
     const at::Scalar& alpha,
     const at::Tensor& out) {
-  return alpha.equal(1) && ops::is_mcpu_tensor(self) &&
-      ops::is_mcpu_tensor(other) && ops::is_mcpu_tensor(out) &&
-      self.scalar_type() == other.scalar_type() &&
-      self.scalar_type() == out.scalar_type() &&
-      self.sizes().equals(out.sizes()) && other.sizes().equals(out.sizes()) &&
-      self.is_contiguous() && other.is_contiguous() && out.is_contiguous() &&
-      self.scalar_type() != at::ScalarType::Bool &&
-      !c10::isComplexType(self.scalar_type()) &&
-      has_safe_output_overlap(out, self) && has_safe_output_overlap(out, other);
+  if (!alpha.equal(1) || self.scalar_type() != other.scalar_type() ||
+      self.scalar_type() != out.scalar_type() ||
+      self.scalar_type() == at::ScalarType::Bool ||
+      c10::isComplexType(self.scalar_type())) {
+    return std::nullopt;
+  }
+
+  return ops::make_same_shape_raw_tensor_triplet_plan(self, other, out);
 }
 
 template <RawBinaryOp op>
@@ -95,7 +157,8 @@ bool raw_binary_out(
     const at::Tensor& other,
     const at::Scalar& alpha,
     at::Tensor& out) {
-  if (!can_use_raw_binary_kernel(self, other, alpha, out)) {
+  auto plan = make_raw_binary_plan(self, other, alpha, out);
+  if (!plan.has_value()) {
     return false;
   }
 
@@ -113,12 +176,133 @@ bool raw_binary_out(
         const auto* self_ptr = self.const_data_ptr<scalar_t>();
         const auto* other_ptr = other.const_data_ptr<scalar_t>();
         auto* out_ptr = out.mutable_data_ptr<scalar_t>();
+        auto plan_ptr = std::make_shared<ops::RawTensorTripletPlan>(*plan);
         MCPU_LAUNCH_TIMED_KERNEL(
             record_name,
-            ([ self_ptr, other_ptr, out_ptr, numel, record_name ]),
+            ([ self_ptr, other_ptr, out_ptr, plan_ptr, record_name ]),
             {
               KernelPointerMemoryGuard guard({self_ptr, other_ptr, out_ptr});
-              raw_binary_kernel<op>(self_ptr, other_ptr, out_ptr, numel);
+              raw_binary_kernel<op>(self_ptr, other_ptr, out_ptr, *plan_ptr);
+            });
+      });
+  return true;
+}
+
+template <RawBinaryOp op>
+bool raw_binary_scalar_out(
+    const char* record_name,
+    const at::Tensor& self,
+    const at::Scalar& other,
+    const at::Scalar& alpha,
+    at::Tensor& out) {
+  if (!alpha.equal(1) || self.scalar_type() != out.scalar_type() ||
+      self.scalar_type() == at::ScalarType::Bool ||
+      c10::isComplexType(self.scalar_type())) {
+    return false;
+  }
+
+  auto plan = ops::make_same_shape_raw_tensor_pair_plan(self, out);
+  if (!plan.has_value()) {
+    return false;
+  }
+
+  if (self.numel() == 0) {
+    return true;
+  }
+
+  AT_DISPATCH_ALL_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      out.scalar_type(),
+      "mcpu_raw_binary_scalar",
+      [&] {
+        const auto* self_ptr = self.const_data_ptr<scalar_t>();
+        auto* out_ptr = out.mutable_data_ptr<scalar_t>();
+        const auto other_value = other.to<scalar_t>();
+        auto plan_ptr = std::make_shared<ops::RawTensorPairPlan>(*plan);
+        MCPU_LAUNCH_TIMED_KERNEL(
+            record_name,
+            ([ self_ptr, other_value, out_ptr, plan_ptr, record_name ]),
+            {
+              KernelPointerMemoryGuard guard({self_ptr, out_ptr});
+              raw_binary_scalar_kernel<op>(
+                  self_ptr, other_value, out_ptr, *plan_ptr);
+            });
+      });
+  return true;
+}
+
+bool raw_div_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  auto plan = make_raw_binary_plan(self, other, at::Scalar(1), out);
+  if (!plan.has_value() || !c10::isFloatingType(out.scalar_type())) {
+    return false;
+  }
+
+  const auto numel = out.numel();
+  if (numel == 0) {
+    return true;
+  }
+
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      out.scalar_type(),
+      "mcpu_raw_div",
+      [&] {
+        const auto* self_ptr = self.const_data_ptr<scalar_t>();
+        const auto* other_ptr = other.const_data_ptr<scalar_t>();
+        auto* out_ptr = out.mutable_data_ptr<scalar_t>();
+        auto plan_ptr = std::make_shared<ops::RawTensorTripletPlan>(*plan);
+        MCPU_LAUNCH_TIMED_KERNEL(
+            "mcpu::aten::div.raw",
+            ([ self_ptr, other_ptr, out_ptr, plan_ptr ]),
+            {
+              KernelPointerMemoryGuard guard({self_ptr, other_ptr, out_ptr});
+              raw_div_kernel(self_ptr, other_ptr, out_ptr, *plan_ptr);
+            });
+      });
+  return true;
+}
+
+bool raw_gt_tensor_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  if (self.scalar_type() != other.scalar_type() ||
+      out.scalar_type() != at::ScalarType::Bool ||
+      !ops::is_raw_dtype_supported(self.scalar_type())) {
+    return false;
+  }
+
+  auto plan = ops::make_same_shape_raw_tensor_triplet_plan(self, other, out);
+  if (!plan.has_value()) {
+    return false;
+  }
+
+  if (out.numel() == 0) {
+    return true;
+  }
+
+  AT_DISPATCH_ALL_TYPES_AND3(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      at::ScalarType::Bool,
+      self.scalar_type(),
+      "mcpu_raw_gt_tensor_out",
+      [&] {
+        const auto* self_ptr = self.const_data_ptr<scalar_t>();
+        const auto* other_ptr = other.const_data_ptr<scalar_t>();
+        auto* out_ptr = out.mutable_data_ptr<bool>();
+        auto plan_ptr = std::make_shared<ops::RawTensorTripletPlan>(*plan);
+        MCPU_LAUNCH_TIMED_KERNEL(
+            "mcpu::aten::gt.Tensor.raw",
+            ([ self_ptr, other_ptr, out_ptr, plan_ptr ]),
+            {
+              KernelPointerMemoryGuard guard({self_ptr, other_ptr, out_ptr});
+              raw_gt_tensor_kernel(self_ptr, other_ptr, out_ptr, *plan_ptr);
             });
       });
   return true;
@@ -193,6 +377,11 @@ at::Tensor add_Scalar(
     const at::Scalar& other,
     const at::Scalar& alpha) {
   auto out = empty_like_mcpu_result(self, other);
+  if (raw_binary_scalar_out<RawBinaryOp::Add>(
+          "mcpu::aten::add.Scalar.raw", self, other, alpha, out)) {
+    return out;
+  }
+
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::add.Scalar", ([ self, other, out, alpha ]), {
         KernelMemoryGuard guard(self, out);
@@ -207,6 +396,11 @@ at::Tensor& add_Scalar_(
     at::Tensor& self,
     const at::Scalar& other,
     const at::Scalar& alpha) {
+  if (raw_binary_scalar_out<RawBinaryOp::Add>(
+          "mcpu::aten::add_.Scalar.raw", self, other, alpha, self)) {
+    return self;
+  }
+
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::add_.Scalar", ([ self, other, alpha ]), {
         KernelMemoryGuard guard(self);
@@ -222,6 +416,10 @@ at::Tensor& div_out(
     at::Tensor& out) {
   auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
   ops::check_out_sizes("aten::div.out", out, expected_sizes);
+
+  if (raw_div_out(self, other, out)) {
+    return out;
+  }
 
   MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::div.out", ([ self, other, out ]), {
     KernelMemoryGuard guard(self, other, out);
@@ -239,6 +437,10 @@ at::Tensor& gt_Tensor_out(
     at::Tensor& out) {
   auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
   ops::check_out_sizes("aten::gt.Tensor_out", out, expected_sizes);
+
+  if (raw_gt_tensor_out(self, other, out)) {
+    return out;
+  }
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::gt.Tensor_out", ([ self, other, out ]), {
@@ -316,6 +518,11 @@ at::Tensor& mul_out(
     at::Tensor& out) {
   auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
   ops::check_out_sizes("aten::mul.out", out, expected_sizes);
+
+  if (raw_binary_out<RawBinaryOp::Mul>(
+          "mcpu::aten::mul.raw", self, other, at::Scalar(1), out)) {
+    return out;
+  }
 
   MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::mul.out", ([ self, other, out ]), {
     KernelMemoryGuard guard(self, other, out);
@@ -408,6 +615,11 @@ at::Tensor sub_Scalar(
     const at::Scalar& other,
     const at::Scalar& alpha) {
   auto out = empty_like_mcpu_result(self, other);
+  if (raw_binary_scalar_out<RawBinaryOp::Sub>(
+          "mcpu::aten::sub.Scalar.raw", self, other, alpha, out)) {
+    return out;
+  }
+
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::sub.Scalar", ([ self, out, other, alpha ]), {
         KernelMemoryGuard guard(self, out);
@@ -422,6 +634,11 @@ at::Tensor& sub_Scalar_(
     at::Tensor& self,
     const at::Scalar& other,
     const at::Scalar& alpha) {
+  if (raw_binary_scalar_out<RawBinaryOp::Sub>(
+          "mcpu::aten::sub_.Scalar.raw", self, other, alpha, self)) {
+    return self;
+  }
+
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::sub_.Scalar", ([ self, other, alpha ]), {
         KernelMemoryGuard guard(self);

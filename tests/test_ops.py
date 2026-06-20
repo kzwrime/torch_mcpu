@@ -1023,28 +1023,34 @@ class TestQuantizationExtended(TestCase):
 
 
 class TestFallbackExtended(TestCase):
-    def test_contiguous_add_sub_use_raw_kernel(self):
-        x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
-        y = (torch.arange(12, dtype=torch.float32).reshape(3, 4) + 1).to("mcpu")
-
+    def _timed_event_names(self, fn):
         torch.mcpu.reset_kernel_timing()
         torch.mcpu.set_kernel_timing_enabled(True)
         try:
-            add_res = torch.add(x, y)
-            sub_res = torch.sub(y, x)
+            result = fn()
             torch.mcpu.synchronize()
             timing = torch.mcpu.get_kernel_timing()
         finally:
             torch.mcpu.set_kernel_timing_enabled(False)
             torch.mcpu.reset_kernel_timing()
 
-        self.assertEqual(add_res.cpu(), x.cpu() + y.cpu())
-        self.assertEqual(sub_res.cpu(), y.cpu() - x.cpu())
         event_names = [
             event.get("name")
             for thread in timing
             for event in thread.get("events", [])
         ]
+        return result, event_names
+
+    def test_contiguous_add_sub_use_raw_kernel(self):
+        x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
+        y = (torch.arange(12, dtype=torch.float32).reshape(3, 4) + 1).to("mcpu")
+
+        (add_res, sub_res), event_names = self._timed_event_names(
+            lambda: (torch.add(x, y), torch.sub(y, x))
+        )
+
+        self.assertEqual(add_res.cpu(), x.cpu() + y.cpu())
+        self.assertEqual(sub_res.cpu(), y.cpu() - x.cpu())
         self.assertIn("mcpu::aten::add.raw", event_names)
         self.assertIn("mcpu::aten::sub.raw", event_names)
 
@@ -1058,25 +1064,84 @@ class TestFallbackExtended(TestCase):
         alpha_res = torch.sub(x, x, alpha=0.5)
         self.assertEqual(alpha_res.cpu(), x.cpu() - x.cpu() * 0.5)
 
-        torch.mcpu.reset_kernel_timing()
-        torch.mcpu.set_kernel_timing_enabled(True)
-        try:
-            base = torch.arange(5, dtype=torch.float32, device="mcpu")
-            torch.add(base[:-1], base[:-1], out=base[1:])
-            torch.mcpu.synchronize()
-            timing = torch.mcpu.get_kernel_timing()
-        finally:
-            torch.mcpu.set_kernel_timing_enabled(False)
-            torch.mcpu.reset_kernel_timing()
+        _, event_names = self._timed_event_names(
+            lambda: (
+                (
+                    lambda base: torch.add(base[:-1], base[:-1], out=base[1:])
+                )(torch.arange(5, dtype=torch.float32, device="mcpu"))
+            )
+        )
 
-        event_names = [
-            event.get("name")
-            for thread in timing
-            for event in thread.get("events", [])
-        ]
         self.assertNotIn("mcpu::aten::add.raw", event_names)
 
-    def test_scalar_gt_bitwise_not_and_index_put_use_raw_kernels(self):
+    def test_strided_sigmoid_and_mul_use_raw_kernel(self):
+        tokens = 5
+        heads = 3
+        head_dim = 4
+        for dtype in (torch.float32, torch.float16, torch.bfloat16):
+            q_gate_cpu = torch.randn(tokens, heads, 2 * head_dim, dtype=dtype)
+            attn_cpu = torch.randn(tokens, heads, head_dim, dtype=dtype)
+            q_gate = q_gate_cpu.to("mcpu")
+            attn = attn_cpu.to("mcpu")
+            gate = q_gate[..., head_dim:]
+
+            result, event_names = self._timed_event_names(
+                lambda: attn * torch.sigmoid(gate)
+            )
+
+            expected = attn_cpu * torch.sigmoid(q_gate_cpu[..., head_dim:])
+            self.assertEqual(result.cpu(), expected)
+            self.assertFalse(gate.is_contiguous())
+            self.assertIn("mcpu::aten::sigmoid.raw", event_names)
+            self.assertIn("mcpu::aten::mul.raw", event_names)
+            self.assertNotIn("mcpu::aten::sigmoid", event_names)
+            self.assertNotIn("mcpu::aten::mul.out", event_names)
+
+    def test_double_unary_falls_back_from_raw_kernel(self):
+        x = torch.tensor([1e-300, 2.0], dtype=torch.float64, device="mcpu")
+        out = torch.empty_like(x)
+
+        result, event_names = self._timed_event_names(
+            lambda: torch.reciprocal(x, out=out)
+        )
+
+        self.assertIs(result, out)
+        self.assertEqual(out.cpu(), torch.reciprocal(x.cpu()))
+        self.assertIn("mcpu::aten::reciprocal.out", event_names)
+        self.assertNotIn("mcpu::aten::reciprocal.raw", event_names)
+
+    def test_mul_raw_kernel_fallback_cases(self):
+        x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
+        y = torch.arange(4, dtype=torch.float32).to("mcpu")
+
+        result, event_names = self._timed_event_names(lambda: torch.mul(x, y))
+        self.assertEqual(result.cpu(), x.cpu() * y.cpu())
+        self.assertNotIn("mcpu::aten::mul.raw", event_names)
+
+        overlap_base = torch.arange(5, dtype=torch.float32, device="mcpu")
+        _, event_names = self._timed_event_names(
+            lambda: torch.mul(
+                overlap_base[:-1], overlap_base[:-1], out=overlap_base[1:]
+            )
+        )
+        self.assertNotIn("mcpu::aten::mul.raw", event_names)
+
+    def test_strided_add_sub_raw_kernel_matches_cpu(self):
+        base_x = torch.arange(96, dtype=torch.float32).reshape(4, 3, 8)
+        base_y = torch.arange(96, 192, dtype=torch.float32).reshape(4, 3, 8)
+        x = base_x.to("mcpu")[:, :, 2:6]
+        y = base_y.to("mcpu")[:, :, 2:6]
+
+        (add_res, sub_res), event_names = self._timed_event_names(
+            lambda: (torch.add(x, y), torch.sub(y, x))
+        )
+
+        self.assertEqual(add_res.cpu(), base_x[:, :, 2:6] + base_y[:, :, 2:6])
+        self.assertEqual(sub_res.cpu(), base_y[:, :, 2:6] - base_x[:, :, 2:6])
+        self.assertIn("mcpu::aten::add.raw", event_names)
+        self.assertIn("mcpu::aten::sub.raw", event_names)
+
+    def test_scalar_gt_bitwise_not_use_raw_and_multi_index_put_falls_back(self):
         x = torch.tensor([[0.0, 2.0], [3.0, 4.0]], device="mcpu")
         gt_out = torch.empty_like(x, dtype=torch.bool)
         bits = torch.tensor([[0, 1], [2, 3]], device="mcpu", dtype=torch.int32)
@@ -1110,8 +1175,194 @@ class TestFallbackExtended(TestCase):
             for event in thread.get("events", [])
         ]
         self.assertIn("mcpu::aten::gt.Scalar.raw", event_names)
-        self.assertIn("mcpu::aten::bitwise_not.raw", event_names)
+        self.assertIn("mcpu::aten::bitwise_not.out.raw", event_names)
+        self.assertIn("mcpu::aten::_index_put_impl_", event_names)
+        self.assertNotIn("mcpu::aten::_index_put_impl_.raw", event_names)
+
+    def test_index_put_dim0_raw_kernel_supports_outer_strides(self):
+        target = torch.empty_strided((7, 2, 3, 4), (32, 12, 4, 1), device="mcpu")
+        target.zero_()
+        index_base = torch.tensor(
+            [5, 99, 1, 99, 5], device="mcpu", dtype=torch.long
+        )
+        index = index_base[::2]
+        values_cpu = torch.arange(3 * 2 * 3 * 4, dtype=torch.float32).reshape(
+            3, 2, 3, 4
+        )
+        values = torch.empty_strided((3, 2, 3, 4), (29, 12, 4, 1), device="mcpu")
+        values.copy_(values_cpu.to("mcpu"))
+
+        ref = target.cpu()
+        ref.index_put_((index.cpu(),), values.cpu(), accumulate=False)
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            torch.ops.aten._index_put_impl_(target, [index], values, False, False)
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        self.assertEqual(target.cpu(), ref)
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
         self.assertIn("mcpu::aten::_index_put_impl_.raw", event_names)
+        self.assertNotIn("mcpu::aten::_index_put_impl_.raw.validate", event_names)
+
+        scalar_target = torch.empty_strided(
+            (1, 2, 3, 4), (24, 12, 4, 1), device="mcpu"
+        )
+        scalar_target.zero_()
+        scalar_index = torch.tensor([0], device="mcpu", dtype=torch.long)
+        scalar_value = torch.tensor(9.0, device="mcpu")
+        scalar_ref = scalar_target.cpu()
+        scalar_ref.index_put_(
+            (scalar_index.cpu(),), scalar_value.cpu(), accumulate=False
+        )
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            torch.ops.aten._index_put_impl_(
+                scalar_target, [scalar_index], scalar_value, False, False
+            )
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        self.assertEqual(scalar_target.cpu(), scalar_ref)
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        self.assertIn("mcpu::aten::_index_put_impl_.raw", event_names)
+
+        bad_index = torch.tensor(
+            [scalar_target.size(0)], device="mcpu", dtype=torch.long
+        )
+        with self.assertRaisesRegex(RuntimeError, "out of bounds"):
+            torch.ops.aten._index_put_impl_(
+                scalar_target, [bad_index], scalar_value, False, False
+            )
+
+        int_index_target = torch.empty_strided(
+            (7, 2, 3, 4), (32, 12, 4, 1), device="mcpu"
+        )
+        int_index_target.zero_()
+        int_index = torch.tensor([4], device="mcpu", dtype=torch.int32)
+        single_row_values = torch.arange(
+            2 * 3 * 4, dtype=torch.float32, device="mcpu"
+        ).reshape(2, 3, 4)
+        int_index_ref = int_index_target.cpu()
+        int_index_ref.index_put_(
+            (int_index.cpu(),), single_row_values.cpu(), accumulate=False
+        )
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            torch.ops.aten._index_put_impl_(
+                int_index_target, [int_index], single_row_values, False, False
+            )
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        self.assertEqual(int_index_target.cpu(), int_index_ref)
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        self.assertIn("mcpu::aten::_index_put_impl_.raw", event_names)
+
+        bool_mask_target = torch.empty_strided(
+            (1, 2, 3, 4), (24, 12, 4, 1), device="mcpu"
+        )
+        bool_mask_target.zero_()
+        bool_mask = torch.tensor([True], device="mcpu", dtype=torch.bool)
+        bool_scalar_value = torch.tensor(11.0, device="mcpu")
+        bool_mask_ref = bool_mask_target.cpu()
+        bool_mask_ref.index_put_(
+            (bool_mask.cpu(),), bool_scalar_value.cpu(), accumulate=False
+        )
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            torch.ops.aten._index_put_impl_(
+                bool_mask_target, [bool_mask], bool_scalar_value, False, False
+            )
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        self.assertEqual(bool_mask_target.cpu(), bool_mask_ref)
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        self.assertIn("mcpu::aten::_index_put_impl_.raw", event_names)
+
+    def test_index_put_dim0_raw_kernel_rejects_fallback_required_cases(self):
+        target = torch.zeros(3, 2, device="mcpu")
+        index = torch.tensor([1], device="mcpu", dtype=torch.long)
+        values = torch.ones(1, 2, device="mcpu")
+        with self.assertRaisesRegex(IndexError, "too many indices"):
+            torch.ops.aten._index_put_impl_(
+                target, [index, None, None], values, False, False
+            )
+
+        alias_target = torch.tensor(
+            [[1, 0], [2, 0], [0, 0]], device="mcpu", dtype=torch.long
+        )
+        alias_index = alias_target[:, 0]
+        alias_values = torch.tensor(
+            [[2, 10], [0, 20], [1, 30]], device="mcpu", dtype=torch.long
+        )
+        alias_ref = alias_target.cpu()
+        torch.ops.aten._index_put_impl_(
+            alias_ref, [alias_ref[:, 0]], alias_values.cpu(), False, False
+        )
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            torch.ops.aten._index_put_impl_(
+                alias_target, [alias_index], alias_values, False, False
+            )
+            torch.mcpu.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        self.assertEqual(alias_target.cpu(), alias_ref)
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        self.assertIn("mcpu::aten::_index_put_impl_", event_names)
+        self.assertFalse(
+            any(
+                name and name.startswith("mcpu::aten::_index_put_impl_.raw")
+                for name in event_names
+            )
+        )
 
     def test_abs_uses_explicit_mcpu_kernel(self):
         x = torch.tensor([[-1.0, 2.0, -3.0], [4.0, -5.0, 6.0]], device="mcpu")
