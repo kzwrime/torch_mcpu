@@ -11,6 +11,7 @@
 
 #include <cstring>
 #include <memory>
+#include <vector>
 
 #if TORCH_MCPU_ENABLE_CPU_FALLBACK
 #include <unordered_set>
@@ -228,6 +229,50 @@ void launch_async_host_device_copy(
       });
 }
 
+void launch_async_same_device_copy_fallback(
+    const at::Tensor& self,
+    const at::Tensor& dst,
+    bool non_blocking) {
+  auto stream = c10::mcpu::getCurrentMcpuStream(self.device().index());
+  record_stream_if_cross_stream(self, stream);
+  record_stream_if_cross_stream(dst, stream);
+
+  const void* src_ptr = self.data_ptr();
+  void* dst_ptr = dst.data_ptr();
+  auto self_sizes = self.sizes().vec();
+  auto self_strides = self.strides().vec();
+  auto dst_sizes = dst.sizes().vec();
+  auto dst_strides = dst.strides().vec();
+  auto self_options = self.options().device(at::kCPU);
+  auto dst_options = dst.options().device(at::kCPU);
+
+  at::mcpu::launch_timed_kernel_on_stream(
+      stream,
+      "mcpu::_copy_from.same_device",
+      [src_ptr,
+       dst_ptr,
+       self_sizes = std::move(self_sizes),
+       self_strides = std::move(self_strides),
+       dst_sizes = std::move(dst_sizes),
+       dst_strides = std::move(dst_strides),
+       self_options,
+       dst_options,
+       non_blocking](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(
+            "mcpu::_copy_from.same_device", timing_event);
+        at::mcpu::KernelPointerMemoryGuard guard({src_ptr, dst_ptr});
+        at::Tensor dst_as_cpu =
+            at::from_blob(dst_ptr, dst_sizes, dst_strides, dst_options);
+        const at::Tensor self_as_cpu = at::from_blob(
+            const_cast<void*>(src_ptr),
+            self_sizes,
+            self_strides,
+            self_options);
+        at::native::copy_(
+            const_cast<at::Tensor&>(dst_as_cpu), self_as_cpu, non_blocking);
+      });
+}
+
 bool try_launch_async_host_device_memcpy(
     const at::Tensor& self,
     const at::Tensor& dst) {
@@ -364,24 +409,7 @@ at::Tensor _copy_from(
           std::move(plan));
       return dst;
     }
-
-    at::Tensor dst_as_cpu = at::from_blob(
-        dst.data_ptr(),
-        dst.sizes(),
-        dst.strides(),
-        dst.options().device(at::kCPU));
-    const at::Tensor self_as_cpu = at::from_blob(
-        self.data_ptr(),
-        self.sizes(),
-        self.strides(),
-        self.options().device(at::kCPU));
-    MCPU_LAUNCH_TIMED_KERNEL(
-        "mcpu::_copy_from.same_device",
-        ([self, dst, dst_as_cpu, self_as_cpu, non_blocking]), {
-          at::mcpu::KernelMemoryGuard guard(self, dst);
-          at::native::copy_(
-              const_cast<at::Tensor&>(dst_as_cpu), self_as_cpu, non_blocking);
-        });
+    launch_async_same_device_copy_fallback(self, dst, non_blocking);
     return dst;
   }
 

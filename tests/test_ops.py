@@ -1477,6 +1477,21 @@ class TestCopyFromAndResize(TestCase):
         self.assertEqual(result.shape, x.shape)
         self.assertEqual(result.cpu(), x.cpu())
 
+    def test_copy_from_same_device_fallback_cases(self):
+        """Test same-device _copy_from fallback for non-memcpy-compatible copies."""
+        src = torch.randn(8, 16, device="mcpu", dtype=torch.float32)
+        dst = torch.empty(8, 16, device="mcpu", dtype=torch.bfloat16)
+        torch.ops.aten._copy_from(src, dst, non_blocking=False)
+
+        base = torch.arange(1, device="mcpu", dtype=torch.int32)
+        expanded = base.expand(16)
+        out = torch.empty(16, device="mcpu", dtype=torch.int32)
+        torch.ops.aten._copy_from(expanded, out, non_blocking=False)
+
+        torch.mcpu.synchronize()
+        self.assertEqual(dst.cpu(), src.cpu().bfloat16())
+        self.assertEqual(out.cpu(), expanded.cpu())
+
     def test_copy_from_cross_device(self):
         """Test _copy_from operation across devices"""
         x = torch.randn(3, 4, device="cpu")
