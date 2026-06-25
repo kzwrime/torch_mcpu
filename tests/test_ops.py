@@ -690,6 +690,20 @@ class TestFallback(TestCase):
         self.assertTrue(torch.isfinite(exp_sample.cpu()).all())
         self.assertTrue((exp_sample.cpu() >= 0).all())
 
+        exp_generator = torch.Generator(device="mcpu").manual_seed(123)
+        exp_with_generator = torch.empty(2, 4, device="mcpu")
+        exp_with_generator[0].exponential_(2.0, generator=exp_generator)
+        torch.mcpu.synchronize()
+        exp_with_generator_cpu = exp_with_generator[0].cpu()
+        self.assertTrue(torch.isfinite(exp_with_generator_cpu).all())
+        self.assertTrue((exp_with_generator_cpu >= 0).all())
+
+        exp_generator.manual_seed(123)
+        exp_repeat = torch.empty(4, device="mcpu")
+        exp_repeat.exponential_(2.0, generator=exp_generator)
+        torch.mcpu.synchronize()
+        self.assertEqual(exp_with_generator_cpu, exp_repeat.cpu())
+
         uniform_sample = torch.empty(16, device="mcpu")
         uniform_result = uniform_sample.uniform_(-1.0, 2.0)
         uniform_cpu = uniform_sample.cpu()

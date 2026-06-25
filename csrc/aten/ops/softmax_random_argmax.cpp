@@ -1,6 +1,10 @@
 #include "Common.h"
 #include "runtime/McpuKernelLaunch.h"
+#include "runtime/OpenRegGenerator.h"
 
+#include <ATen/CPUGeneratorImpl.h>
+#include <ATen/native/TensorIterator.h>
+#include <ATen/native/cpu/DistributionTemplates.h>
 #include <ATen/ops/_softmax.h>
 #include <ATen/ops/argmax.h>
 #include <ATen/ops/exponential.h>
@@ -8,6 +12,44 @@
 
 namespace at::mcpu {
 namespace {
+
+at::CPUGeneratorImpl* get_mcpu_exponential_generator(
+    const at::Tensor& self,
+    const std::optional<at::Generator>& generator) {
+  if (generator.has_value() && generator->defined()) {
+    if (generator->device().type() == c10::DeviceType::CPU) {
+      return generator->get<at::CPUGeneratorImpl>();
+    }
+    TORCH_CHECK(
+        generator->device().type() == c10::DeviceType::PrivateUse1,
+        "Expected an mcpu generator for mcpu exponential_, but got ",
+        generator->device());
+    return generator->get<c10::mcpu::McpuGeneratorImpl>();
+  }
+
+  const auto device_index = self.device().index();
+  const at::Generator& default_generator =
+      c10::mcpu::getDefaultMcpuGenerator(device_index);
+  return default_generator.get<c10::mcpu::McpuGeneratorImpl>();
+}
+
+void exponential_mcpu_impl(
+    const at::Tensor& self,
+    double lambd,
+    const std::optional<at::Generator>& generator) {
+  TORCH_CHECK(
+      lambd > 0.0,
+      "exponential_ expects lambda > 0.0, but found lambda=",
+      lambd);
+  if (self.numel() == 0) {
+    return;
+  }
+
+  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
+  auto* gen = get_mcpu_exponential_generator(self, generator);
+  auto iter = at::TensorIterator::borrowing_nullary_op(cpu_self);
+  at::native::templates::cpu::exponential_kernel(iter, lambd, gen);
+}
 
 at::Tensor& _softmax_out(
     const at::Tensor& self,
@@ -33,8 +75,7 @@ at::Tensor& exponential_(
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::exponential_", ([ self, lambd, generator ]), {
         KernelMemoryGuard guard(self);
-        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-        at::_ops::exponential_::call(cpu_self, lambd, generator);
+        exponential_mcpu_impl(self, lambd, generator);
       });
   return self;
 }
