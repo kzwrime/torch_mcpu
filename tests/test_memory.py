@@ -1,6 +1,10 @@
 # Owner(s): ["module: PrivateUse1"]
 
 import gc
+import os
+import subprocess
+import sys
+import textwrap
 import time
 
 import torch
@@ -547,6 +551,52 @@ class TestCachingDeviceAllocator(TestCase):
         torch.mcpu.empty_cache()
         stats_after = torch.mcpu.memory_stats(0)
         self.assertEqual(stats_after["reserved_bytes.all.current"], 0)
+
+    @skipIfTorchDynamo()
+    def test_accelerator_empty_cache_synchronizes_stream_work(self):
+        """torch.accelerator.empty_cache() should wait for pending MCPU work."""
+        stream = torch.Stream(device="mcpu:0")
+        marker = torch.empty(1, dtype=torch.int64, device="mcpu")
+
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(marker, 17, 500)
+
+        self.assertFalse(stream.query())
+        torch.accelerator.empty_cache()
+        self.assertTrue(stream.query())
+        self.assertEqual(torch.ops.mcpu.first_element_int(marker), 17)
+
+    @skipIfTorchDynamo()
+    def test_empty_cache_does_not_deadlock_on_pending_tensor_release(self):
+        """empty_cache must not hold allocator mutex while waiting for kernels."""
+        env = os.environ.copy()
+        env.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "1")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                textwrap.dedent(
+                    """
+                    import torch
+                    import torch_mcpu  # noqa: F401
+
+                    stream = torch.Stream(device="mcpu:0")
+                    with stream:
+                        torch.ops.mcpu.stream_sleep_fill_(
+                            torch.empty(1024, dtype=torch.int64, device="mcpu"),
+                            7,
+                            500,
+                        )
+                    torch.accelerator.empty_cache()
+                    """
+                ),
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=8,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_memory_stats_allocated_tracks_live_tensors(self):
         """allocated_bytes tracks bytes in active tensors."""

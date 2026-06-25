@@ -494,6 +494,13 @@ class DeviceCachingAllocator {
     delete block;
   }
 
+  void synchronize_device() const {
+    c10::DeviceGuard guard{
+        c10::Device(c10::DeviceType::PrivateUse1, device_index)};
+    detail::OptionalPythonGilRelease release_gil;
+    MCPU_CHECK(orDeviceSynchronize());
+  }
+
   // [MCPU-11-REMOVED] unmap_block — ExpandableSegment removed
 
   // [MCPU-11] Removed to_unmap/expandable_segment branch
@@ -513,9 +520,6 @@ class DeviceCachingAllocator {
   bool release_cached_blocks(MempoolId_t mempool_id) {
     if (mempool_id.first == 0 && mempool_id.second == 0) {
       synchronize_and_free_events();
-      // See Note [Safe to Free Blocks on BlockPool]
-      MCPU_CHECK(orDeviceSynchronize()); // [1] orDeviceSynchronize replaces
-                                         // c10::xpu::syncStreamsOnDevice
       release_blocks(large_blocks);
       release_blocks(small_blocks);
     }
@@ -619,7 +623,7 @@ class DeviceCachingAllocator {
   // [MCPU-1] sycl::queue& → McpuStream; [MCPU-12] removed captures_underway
   // check
   Block* malloc(DeviceIndex device, size_t orig_size, McpuStream stream) {
-    std::scoped_lock<std::recursive_mutex> lock(mutex);
+    std::unique_lock<std::recursive_mutex> lock(mutex);
     process_events(); // [MCPU-12] removed captures_underway.empty() guard
     size_t size = round_size(orig_size);
     auto& pool = get_pool(size); // [MCPU-12] removed queue param
@@ -631,8 +635,13 @@ class DeviceCachingAllocator {
     bool block_found = get_free_block(params);
     // Can't reuse an existing block, try to get a new one.
     if (!block_found) {
-      block_found = alloc_block(params, false) ||
-          (release_cached_blocks({0, 0}) && alloc_block(params, true));
+      block_found = alloc_block(params, false);
+    }
+    if (!block_found) {
+      lock.unlock();
+      synchronize_device();
+      lock.lock();
+      block_found = release_cached_blocks({0, 0}) && alloc_block(params, true);
     }
     if (!block_found) {
       // [MCPU-9] mcpu device memory info comes from the configured query mode.
@@ -717,6 +726,9 @@ class DeviceCachingAllocator {
   }
 
   void emptyCache(MempoolId_t mempool_id) {
+    if (mempool_id.first == 0 && mempool_id.second == 0) {
+      synchronize_device();
+    }
     std::scoped_lock<std::recursive_mutex> lock(mutex);
     release_cached_blocks(mempool_id);
   }
@@ -1014,11 +1026,7 @@ class NativeCachingAllocator : public McpuDeviceAllocator {
       at::mcpu::launch_timed_kernel_on_stream(
           stream,
           "mcpu::allocator.copy_data",
-          [dest,
-           src,
-           count,
-           dest_is_device,
-           src_is_device](
+          [dest, src, count, dest_is_device, src_is_device](
               at::mcpu::kernel_timing::Event* timing_event) mutable {
             MCPU_KERNEL_TIMING_SCOPE_EVENT(
                 "mcpu::allocator.copy_data", timing_event);
