@@ -140,8 +140,8 @@ def collect_scoped_events(name: str, tasks: int) -> list[dict[str, int]]:
             if event.get("name") == name:
                 events.append(
                     {
-                        "begin_tsc": int(event["begin_tsc"]),
-                        "end_tsc": int(event["end_tsc"]),
+                        "begin_time": int(event["begin_time"]),
+                        "end_time": int(event["end_time"]),
                     }
                 )
     if len(events) < tasks:
@@ -230,13 +230,13 @@ def run_mode(
         events = collect_scoped_events(
             scoped_event_name(kernel_name, mode_name), tasks
         )
-        scale = cycles_per_ns
+        scale = 1.0
         body_ns = [
-            int(round((event["end_tsc"] - event["begin_tsc"]) / scale))
+            int(round((event["end_time"] - event["begin_time"]) / scale))
             for event in events
         ]
         gap_ns = [
-            int(round((events[i]["begin_tsc"] - events[i - 1]["end_tsc"]) / scale))
+            int(round((events[i]["begin_time"] - events[i - 1]["end_time"]) / scale))
             for i in range(1, len(events))
         ]
     else:
@@ -260,9 +260,9 @@ def run_mode(
         "matmul_shape": "1x128x128" if kernel_name == "matmul-128" else "",
         "data_elements": data_elements,
         "pre_layer_sleep_ms": pre_layer_sleep_ms,
-        "timer": "scope-tsc" if use_scoped_timing else timer_name,
+        "timer": "scope" if use_scoped_timing else timer_name,
         "cycles_per_ns": cycles_per_ns
-        if (timer_name == "tsc" or use_scoped_timing)
+        if timer_name == "tsc"
         else 0.0,
         "submit_elapsed_s": submit_elapsed_s,
         "sync_elapsed_s": sync_elapsed_s,
@@ -324,10 +324,7 @@ def main() -> None:
 
     stream = torch.Stream(device=DEVICE)
     modes = ("raw", "lambda") if args.mode == "all" else (args.mode,)
-    needs_tsc_scale = args.timer == "tsc" or bool(
-        {"scoped", "scoped_lambda"}.intersection(modes)
-    )
-    cycles_per_ns = calibrate_tsc_cycles_per_ns() if needs_tsc_scale else 1.0
+    cycles_per_ns = calibrate_tsc_cycles_per_ns() if args.timer == "tsc" else 1.0
     results = [
         run_mode(
             mode_name=mode,

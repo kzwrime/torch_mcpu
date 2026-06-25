@@ -202,18 +202,7 @@ def summarize_ns(values: list[float]) -> dict[str, float]:
     }
 
 
-def calibrate_cycles_per_ns(duration_s: float = 0.05) -> float:
-    start_tsc = torch.mcpu.read_kernel_timing_tsc()
-    start = time.perf_counter()
-    time.sleep(duration_s)
-    elapsed = time.perf_counter() - start
-    end_tsc = torch.mcpu.read_kernel_timing_tsc()
-    if end_tsc <= start_tsc or elapsed <= 0.0:
-        raise RuntimeError("kernel timing TSC calibration failed")
-    return (end_tsc - start_tsc) / (elapsed * 1e9)
-
-
-def collect_kernel_events(cycles_per_ns: float) -> list[dict[str, Any]]:
+def collect_kernel_events() -> list[dict[str, Any]]:
     threads = torch.mcpu.get_kernel_timing()
     best_thread = max(threads, key=lambda item: len(item.get("events", [])), default=None)
     if best_thread is None:
@@ -221,38 +210,38 @@ def collect_kernel_events(cycles_per_ns: float) -> list[dict[str, Any]]:
 
     events = []
     for index, event in enumerate(best_thread.get("events", [])):
-        begin_tsc = int(event["begin_tsc"])
-        end_tsc = int(event["end_tsc"])
-        if begin_tsc == 0 or end_tsc <= begin_tsc:
+        begin_time = int(event["begin_time"])
+        end_time = int(event["end_time"])
+        if begin_time == 0 or end_time <= begin_time:
             continue
         events.append(
             {
                 "index": index,
                 "name": str(event["name"]),
-                "begin_tsc": begin_tsc,
-                "end_tsc": end_tsc,
-                "body_ns": max(0.0, (end_tsc - begin_tsc) / cycles_per_ns),
+                "begin_time": begin_time,
+                "end_time": end_time,
+                "body_ns": max(0.0, end_time - begin_time),
             }
         )
     return events
 
 
-def summarize_kernel_events(events: list[dict[str, Any]], cycles_per_ns: float) -> dict[str, Any]:
+def summarize_kernel_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     gaps = [
-        max(0.0, (int(curr["begin_tsc"]) - int(prev["end_tsc"])) / cycles_per_ns)
+        max(0.0, int(curr["begin_time"]) - int(prev["end_time"]))
         for prev, curr in zip(events, events[1:])
-        if int(curr["begin_tsc"]) >= int(prev["end_tsc"])
+        if int(curr["begin_time"]) >= int(prev["end_time"])
     ]
     body_by_op: dict[str, list[float]] = {}
     gap_by_edge: dict[str, list[float]] = {}
     for event in events:
         body_by_op.setdefault(str(event["name"]), []).append(float(event["body_ns"]))
     for prev, curr in zip(events, events[1:]):
-        if int(curr["begin_tsc"]) < int(prev["end_tsc"]):
+        if int(curr["begin_time"]) < int(prev["end_time"]):
             continue
         edge = f"{prev['name']} -> {curr['name']}"
         gap_by_edge.setdefault(edge, []).append(
-            (int(curr["begin_tsc"]) - int(prev["end_tsc"])) / cycles_per_ns
+            int(curr["begin_time"]) - int(prev["end_time"])
         )
     return {
         "event_count": len(events),
@@ -325,7 +314,6 @@ def main() -> None:
     synchronize_mcpu()
 
     sleep_marker = torch.empty(1, dtype=torch.int64, device=DEVICE)
-    cycles_per_ns = calibrate_cycles_per_ns()
     torch.mcpu.reset_kernel_timing()
     torch.mcpu.set_kernel_timing_enabled(True)
 
@@ -380,7 +368,7 @@ def main() -> None:
             f"rtol={args.rtol}, atol={args.atol}"
         )
 
-    events = collect_kernel_events(cycles_per_ns)
+    events = collect_kernel_events()
     profiler_table = ""
     profiler_mcpu_stream_events = 0
     if profiler is not None:
@@ -403,12 +391,11 @@ def main() -> None:
         "warmup_iters": args.warmup_iters,
         "pre_layer_sleep_ms": args.pre_layer_sleep_ms,
         "stream_id": stream.stream_id,
-        "cycles_per_ns": cycles_per_ns,
         "submit_elapsed_s": submit_elapsed,
         "sync_elapsed_s": sync_elapsed,
         "total_elapsed_s": total_elapsed,
         "max_diff": max_diff,
-        "kernel_timing": summarize_kernel_events(events, cycles_per_ns),
+        "kernel_timing": summarize_kernel_events(events),
         "profiler": {
             "enabled": args.use_profiler,
             "table_file": str(profiler_table_file) if profiler is not None else "",
@@ -431,8 +418,7 @@ def main() -> None:
     )
     print(
         f"submit={submit_elapsed:.6f}s sync={sync_elapsed:.6f}s "
-        f"total={total_elapsed:.6f}s stream_id={stream.stream_id} "
-        f"cycles_per_ns={cycles_per_ns:.6f}"
+        f"total={total_elapsed:.6f}s stream_id={stream.stream_id}"
     )
     print(f"reference_check: PASS max_diff={max_diff:.8e}")
     if profiler_table:
