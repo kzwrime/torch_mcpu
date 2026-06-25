@@ -549,6 +549,50 @@ class TestFallback(TestCase):
         nz = torch.nonzero(x)
         self.assertEqual(nz.cpu(), torch.nonzero(x.cpu()))
 
+        where_self = torch.where(mask, x, gt_other)
+        self.assertEqual(
+            where_self.cpu(), torch.where(mask.cpu(), x.cpu(), gt_other.cpu())
+        )
+        self.assertEqual(where_self.device.type, "mcpu")
+
+        where_out = torch.empty_like(x)
+        torch.where(mask, x, gt_other, out=where_out)
+        self.assertEqual(
+            where_out.cpu(), torch.where(mask.cpu(), x.cpu(), gt_other.cpu())
+        )
+
+        self.assertEqual(
+            torch.where(mask, 1.5, x).cpu(),
+            torch.where(mask.cpu(), 1.5, x.cpu()),
+        )
+        self.assertEqual(
+            torch.where(mask, x, -2).cpu(),
+            torch.where(mask.cpu(), x.cpu(), -2),
+        )
+        self.assertEqual(
+            torch.where(mask, 1, 2).cpu(),
+            torch.where(mask.cpu(), 1, 2),
+        )
+
+        where_indices = torch.where(mask)
+        ref_indices = torch.where(mask.cpu())
+        self.assertEqual(len(where_indices), len(ref_indices))
+        for actual, expected in zip(where_indices, ref_indices):
+            self.assertEqual(actual.cpu(), expected)
+
+        scalar_condition = torch.tensor(True, device="mcpu")
+        scalar_where_indices = torch.where(scalar_condition)
+        self.assertEqual(len(scalar_where_indices), 1)
+        self.assertEqual(scalar_where_indices[0].cpu(), torch.tensor([0]))
+
+        bad_where_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::where.self_out"):
+            torch.where(mask, x, gt_other, out=bad_where_out)
+
+        bad_where_dtype_out = torch.empty_like(x, dtype=torch.int64)
+        with self.assertRaisesRegex(RuntimeError, "aten::where.self_out"):
+            torch.where(mask, x, gt_other, out=bad_where_dtype_out)
+
         sum_out = torch.empty(2, device="mcpu")
         torch.sum(x, dim=[1], out=sum_out)
         self.assertEqual(sum_out.cpu(), torch.sum(x.cpu(), dim=[1]))

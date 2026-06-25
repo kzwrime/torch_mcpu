@@ -4,6 +4,8 @@
 
 - 尽量复用 PyTorch 现成接口，不重复造 schema / wrapper。
 - 对 `mcpu` Tensor 走“预分配 mcpu Tensor + CPU view 映射”的无额外复制路径。
+- 避免在异步 kernel lambda 里捕获 Tensor；优先捕获指针和元信息，在 kernel 内
+  重建临时 CPU view。
 - 让后续开发者知道去哪里找上游签名、注册名和 `out` 版本。
 
 ## 1. 先确认上游 schema / 注册名
@@ -73,6 +75,7 @@ rg -n "index.Tensor|index.Tensor_out|cumsum.out|arange.start_out|fill_.Scalar" \
 - `csrc/aten/ops/cumsum.cpp`
 - `csrc/aten/ops/fill.cpp`
 - `csrc/aten/ops/index.cpp`
+- `csrc/aten/ops/where.cpp`
 
 公共辅助函数放在：
 
@@ -101,8 +104,13 @@ rg -n "index.Tensor|index.Tensor_out|cumsum.out|arange.start_out|fill_.Scalar" \
 1. 把输入 `mcpu` Tensor 先转成 meta Tensor，只保留元信息
 2. 用 meta `out` 接口推导结果 shape/stride
 3. 分配 `mcpu` 输出
-4. 把输入/输出映射成 CPU view
+4. launch 前抽取输入/输出的 `data_ptr`、shape、stride、options 等元信息
 5. 调 CPU `out` 接口
+
+默认不要在 `MCPU_LAUNCH_TIMED_KERNEL` 的 lambda 捕获列表里捕获 `at::Tensor`。
+如果 kernel 内需要调用 ATen CPU `out` 接口，可以在 launch 前保存指针和元信息，
+在 kernel 内用 `at::from_blob` / `at::empty_strided` 重建临时 CPU view。
+这样不会因为异步任务持有 Tensor 而延长 Tensor / storage 生命周期。
 
 ### 4.2.1 elementwise binary 算子的例外
 
@@ -163,15 +171,72 @@ print(torch._C._dispatch_dump("aten::index.Tensor_out"))
 
 做法：
 
-1. 对输入 `self` 建 CPU view
-2. 直接调用 CPU inplace 接口
-3. 返回原 `self`
+1. launch 前抽取 `self` 的指针和元信息
+2. kernel 内重建临时 CPU view
+3. 直接调用 CPU inplace 接口
+4. 返回原 `self`
+
+如果 inplace 算子有简单连续布局快路径，也可以直接用 raw pointer kernel，
+只在不满足快路径时 fallback 到 CPU view。
+
+### 4.4 launch 捕获方式
+
+推荐顺序：
+
+1. **Pointer capture**：优先捕获 raw pointer、shape、stride、dtype、scalar 等元信息，
+   配合 `KernelPointerMemoryGuard`。这是新增 `aten` op 的默认选择。
+2. **Heap args capture**：如果捕获的元信息太多，超过 openreg inline queue slot，
+   用 `std::make_unique<Args>(...)` 放到堆上，并用 move capture：
+
+```cpp
+auto args = std::make_unique<MyOpArgs>(MyOpArgs{
+    out_ptr,
+    input_ptr,
+    sizes,
+    strides,
+    options,
+});
+
+MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::my_op", ([args = std::move(args)]), {
+  at::mcpu::KernelPointerMemoryGuard guard({args->out_ptr, args->input_ptr});
+  auto cpu_out = at::from_blob(
+      args->out_ptr, args->sizes, args->strides,
+      args->options.device(c10::DeviceType::CPU));
+  // memory work
+});
+```
+
+这里不用 `std::shared_ptr`，因为 queued task 是唯一消费者。`unique_ptr`
+表达单一所有权，也没有引用计数开销。当前 openreg launch 路径是模板转发到
+inline `TupleTask`，支持 move-only lambda；如果以后某条路径必须经过
+`std::function`，那条路径才需要重新评估，因为 `std::function` 要求 callable
+可拷贝。
+
+3. **Tensor capture**：只在确实无法只靠指针和元信息安全重建临时 view 时使用。
+   Tensor capture 会延长 Tensor / storage 生命周期，不能作为新增显式 `aten` op
+   的默认写法。
+
+### 4.5 何时仍然调用 CPU ATen
+
+有些算子的 dtype promotion、broadcast、indexing 或随机数语义复杂。可以继续在
+kernel 内调用 CPU ATen `out` / inplace 接口，但推荐方式仍是：
+
+1. launch 前完成 shape / dtype 检查和输出分配；
+2. launch 前抽取输入/输出指针和元信息；
+3. kernel 内用这些元信息重建临时 CPU view；
+4. 调 CPU ATen 接口执行内存读写。
+
+不要为了调用 CPU ATen 而默认捕获 Tensor。
 
 ## 5. 不要做什么
 
 - 不要新写一层 `wrapper_xxx` 再转发。
 - 不要把这些显式 op 再塞回 `csrc/aten/native/Extra.cpp`。
 - 不要在 `out` 变体里偷偷 `resize_`。
+- 不要在 async kernel lambda 里默认捕获 Tensor；能用指针和元信息表达的都用
+  pointer capture。
+- 不要为单一 queued task 使用 `shared_ptr` 保存 args；优先 `unique_ptr + move`
+  capture。
 
 现在的约定是：
 
@@ -215,20 +280,20 @@ print(torch._C._dispatch_dump("aten::index.Tensor_out"))
 先编译：
 
 ```bash
-python setup.py build_ext --inplace
+./build.sh
 ```
 
 再跑定向测试：
 
 ```bash
-python - <<'PY'
-import os
-os.environ['TORCH_DEVICE_BACKEND_AUTOLOAD'] = '0'
-import torch_mcpu
-import pytest, sys
-sys.exit(pytest.main(['tests/test_ops.py', '-k', 'Fallback', '-q']))
-PY
+cd /path/to/torch_mcpu
+LD_LIBRARY_PATH="$PWD/build/cmake_install/torch_mcpu/lib" \
+TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
+pytest tests/test_ops.py -k 'Fallback' -q
 ```
+
+从源码树运行测试时要先 `cd` 到仓库目录，并显式设置 staging lib 目录到
+`LD_LIBRARY_PATH`。这样可以避免 Python 包名和源码目录重名导致导入到错误产物。
 
 如果要快速做烟测，可以直接写：
 
@@ -251,7 +316,8 @@ print(x[idx, idx])
 1. 能不能直接显式注册到 `csrc/aten/ops/<op>.cpp`
 2. 有没有 CPU `out` / inplace 版本可复用
 3. 能不能用 meta 先推导输出，再分配 `mcpu` 输出
-4. 输入里是否只需要做 view 映射，而不是 copy
-5. `out` 尺寸不匹配时是否已经明确报错
+4. 能不能只捕获指针和元信息，在 kernel 内重建临时 CPU view
+5. 输入里是否只需要做 view 映射，而不是 copy
+6. `out` 尺寸不匹配时是否已经明确报错
 
 满足这几条，基本就是本仓库当前推荐实现方式。
