@@ -266,10 +266,6 @@ def get_kernel_timing() -> list[dict[str, Any]]:
     return torch_mcpu._C._get_kernel_timing()
 
 
-def read_kernel_timing_tsc() -> int:
-    return torch_mcpu._C._read_kernel_timing_tsc()
-
-
 def is_available():
     return True
 
@@ -455,7 +451,6 @@ __all__ = [
     "set_kernel_timing_enabled",
     "reset_kernel_timing",
     "get_kernel_timing",
-    "read_kernel_timing_tsc",
     "device_count",
     "current_device",
     "set_device",

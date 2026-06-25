@@ -9,10 +9,6 @@
 #include <c10/macros/Macros.h>
 #include <c10/util/ApproximateClock.h>
 
-#if defined(__x86_64__) || defined(__i386__)
-#include <x86intrin.h>
-#endif
-
 #ifdef _WIN32
 #define MCPU_KERNEL_TIMING_EXPORT __declspec(dllexport)
 #else
@@ -33,8 +29,8 @@ namespace at::mcpu::kernel_timing {
 struct Event {
   const char* name;
   std::uint64_t stream;
-  std::uint64_t begin_tsc;
-  std::uint64_t end_tsc;
+  std::uint64_t begin_time;
+  std::uint64_t end_time;
 };
 
 struct ThreadSnapshot {
@@ -69,14 +65,8 @@ inline bool enabled() {
   return g_enabled.load(std::memory_order_relaxed);
 }
 
-inline std::uint64_t read_tsc() {
-#if TORCH_MCPU_KERNEL_TIMING_USE_TSC && \
-    (defined(__x86_64__) || defined(__i386__))
-  unsigned int aux = 0;
-  return static_cast<std::uint64_t>(__rdtscp(&aux));
-#else
+inline std::uint64_t read_timer() {
   return static_cast<std::uint64_t>(c10::getTime(/*allow_monotonic=*/true));
-#endif
 }
 
 class CurrentEventSlotGuard {
@@ -100,18 +90,18 @@ class CurrentEventSlotGuard {
 class Scope {
  public:
   explicit Scope(const char* name) noexcept
-      : event_(current_event_slot), begin_tsc_(0) {
+      : event_(current_event_slot), begin_time_(0) {
     (void)name;
     if (C10_LIKELY(event_ != nullptr)) {
-      begin_tsc_ = read_tsc();
+      begin_time_ = read_timer();
       event_->name = name;
     }
   }
 
   ~Scope() noexcept {
     if (C10_LIKELY(event_ != nullptr)) {
-      event_->begin_tsc = begin_tsc_;
-      event_->end_tsc = read_tsc();
+      event_->begin_time = begin_time_;
+      event_->end_time = read_timer();
     }
   }
 
@@ -120,23 +110,23 @@ class Scope {
 
  private:
   Event* event_;
-  std::uint64_t begin_tsc_;
+  std::uint64_t begin_time_;
 };
 
 class EventScope {
  public:
   EventScope(const char* name, Event* event) noexcept
-      : event_(event), begin_tsc_(0) {
+      : event_(event), begin_time_(0) {
     if (C10_LIKELY(event_ != nullptr)) {
-      begin_tsc_ = read_tsc();
+      begin_time_ = read_timer();
       event_->name = name;
     }
   }
 
   ~EventScope() noexcept {
     if (C10_LIKELY(event_ != nullptr)) {
-      event_->begin_tsc = begin_tsc_;
-      event_->end_tsc = read_tsc();
+      event_->begin_time = begin_time_;
+      event_->end_time = read_timer();
     }
   }
 
@@ -145,7 +135,7 @@ class EventScope {
 
  private:
   Event* event_;
-  std::uint64_t begin_tsc_;
+  std::uint64_t begin_time_;
 };
 
 } // namespace at::mcpu::kernel_timing

@@ -253,16 +253,21 @@ static PyObject* _getKernelTiming(PyObject* self, PyObject* noargs) {
     for (Py_ssize_t j = 0; j < static_cast<Py_ssize_t>(snapshot.events.size());
          ++j) {
       const auto& event = snapshot.events[static_cast<std::size_t>(j)];
+      const auto elapsed_time =
+          event.end_time > event.begin_time ? event.end_time - event.begin_time
+                                            : 0;
       PyObject* py_event = Py_BuildValue(
-          "{s:s,s:K,s:K,s:K}",
+          "{s:s,s:K,s:K,s:K,s:K}",
           "name",
           event.name,
           "stream",
           static_cast<unsigned long long>(event.stream),
-          "begin_tsc",
-          static_cast<unsigned long long>(event.begin_tsc),
-          "end_tsc",
-          static_cast<unsigned long long>(event.end_tsc));
+          "begin_time",
+          static_cast<unsigned long long>(event.begin_time),
+          "end_time",
+          static_cast<unsigned long long>(event.end_time),
+          "elapsed_time",
+          static_cast<unsigned long long>(elapsed_time));
       PyList_SET_ITEM(py_events, j, py_event);
     }
     PyObject* py_thread = Py_BuildValue(
@@ -271,13 +276,6 @@ static PyObject* _getKernelTiming(PyObject* self, PyObject* noargs) {
     PyList_SET_ITEM(py_threads, i, py_thread);
   }
   return py_threads;
-  END_HANDLE_TH_ERRORS
-}
-
-static PyObject* _readKernelTimingTsc(PyObject* self, PyObject* noargs) {
-  HANDLE_TH_ERRORS
-  return PyLong_FromUnsignedLongLong(static_cast<unsigned long long>(
-      at::mcpu::kernel_timing::read_tsc()));
   END_HANDLE_TH_ERRORS
 }
 
@@ -307,7 +305,6 @@ static PyMethodDef methods[] = {
     {"_set_kernel_timing_enabled", _setKernelTimingEnabled, METH_O, nullptr},
     {"_reset_kernel_timing", _resetKernelTiming, METH_NOARGS, nullptr},
     {"_get_kernel_timing", _getKernelTiming, METH_NOARGS, nullptr},
-    {"_read_kernel_timing_tsc", _readKernelTimingTsc, METH_NOARGS, nullptr},
     {"create_process_group_mcpu",
      c10d::_create_process_group_mcpu,
      METH_VARARGS,

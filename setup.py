@@ -41,9 +41,6 @@ def get_mcpu_build_options():
         "TORCH_MCPU_ENABLE_MEMORY_PROTECTION": cmake_bool(
             os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "OFF")
         ),
-        "TORCH_MCPU_KERNEL_TIMING_USE_TSC": cmake_bool(
-            os.getenv("TORCH_MCPU_KERNEL_TIMING_USE_TSC", "OFF")
-        ),
         "TORCH_MCPU_ENABLE_CPU_FALLBACK": cmake_bool(
             os.getenv("TORCH_MCPU_ENABLE_CPU_FALLBACK", "OFF")
         ),
@@ -102,8 +99,6 @@ def build_deps():
         "-DPYTORCH_INSTALL_DIR=" + get_pytorch_dir(),
         "-DTORCH_MCPU_ENABLE_MEMORY_PROTECTION="
         + build_options["TORCH_MCPU_ENABLE_MEMORY_PROTECTION"],
-        "-DTORCH_MCPU_KERNEL_TIMING_USE_TSC="
-        + build_options["TORCH_MCPU_KERNEL_TIMING_USE_TSC"],
         "-DTORCH_MCPU_ENABLE_CPU_FALLBACK="
         + build_options["TORCH_MCPU_ENABLE_CPU_FALLBACK"],
     ]

@@ -204,8 +204,6 @@ class TestProfiler(TestCase):
                 mcpu_profiler,
                 "_valid_kernel_events",
                 return_value=[(1000, 1300, "mcpu::unit_test_kernel", 0)],
-            ), mock.patch.object(
-                mcpu_profiler, "_calibrate_timer_ticks_per_ns", return_value=10.0
             ):
                 injected = mcpu_profiler._append_mcpu_events_to_trace(trace_file)
 
@@ -217,6 +215,83 @@ class TestProfiler(TestCase):
             self.assertTrue(
                 any(event.get("cat") == "mcpu_kernel" for event in events)
             )
+        finally:
+            if os.path.exists(trace_file):
+                os.remove(trace_file)
+
+    def test_valid_kernel_events_consumes_kernel_timing(self):
+        """Test profiler consumes kernel timing events."""
+        with mock.patch.object(
+            torch.mcpu,
+            "get_kernel_timing",
+            return_value=[
+                {
+                    "role": "worker",
+                    "events": [
+                        {
+                            "name": "mcpu::unit_test_kernel",
+                            "stream": 3,
+                            "begin_time": 2000,
+                            "end_time": 2600,
+                            "elapsed_time": 600,
+                        }
+                    ],
+                }
+            ],
+        ):
+            self.assertEqual(
+                mcpu_profiler._valid_kernel_events(),
+                [(2000, 2600, "mcpu::unit_test_kernel", 3)],
+            )
+
+    def test_kernel_timing_legacy_aliases_are_not_exposed(self):
+        """Test legacy timing aliases are not part of the Python API."""
+        self.assertFalse(hasattr(torch.mcpu, "get_kernel_timing_ns"))
+        self.assertFalse(hasattr(torch.mcpu, "read_kernel_timing_tsc"))
+
+    def test_profiler_trace_postprocess_uses_direct_timer_path(self):
+        """Test trace injection converts kernel timing directly to us."""
+        trace = {
+            "schemaVersion": 1,
+            "traceEvents": [
+                {
+                    "ph": "X",
+                    "cat": "cpu_op",
+                    "name": "aten::empty",
+                    "pid": 1,
+                    "tid": 1,
+                    "ts": 100.0,
+                    "dur": 5.0,
+                    "args": {},
+                }
+            ],
+        }
+        fd, trace_file = tempfile.mkstemp(suffix=".pt.trace.json")
+        os.close(fd)
+
+        try:
+            with open(trace_file, "w", encoding="utf-8") as f:
+                json.dump(trace, f)
+
+            with mock.patch.object(
+                mcpu_profiler,
+                "_valid_kernel_events",
+                return_value=[(1000, 1300, "mcpu::unit_test_kernel", 0)],
+            ):
+                injected = mcpu_profiler._append_mcpu_events_to_trace(trace_file)
+
+            self.assertEqual(injected, 1)
+            with open(trace_file, encoding="utf-8") as f:
+                trace_data = json.load(f)
+
+            mcpu_events = [
+                event
+                for event in trace_data["traceEvents"]
+                if event.get("cat") == "mcpu_kernel" and event.get("ph") == "X"
+            ]
+            self.assertEqual(len(mcpu_events), 1)
+            self.assertEqual(mcpu_events[0]["ts"], 100.0 + 5.0)
+            self.assertEqual(mcpu_events[0]["dur"], 0.3)
         finally:
             if os.path.exists(trace_file):
                 os.remove(trace_file)
@@ -252,8 +327,6 @@ class TestProfiler(TestCase):
                     (1000, 1300, "mcpu::stream_a", 101),
                     (1100, 1500, "mcpu::stream_b", 202),
                 ],
-            ), mock.patch.object(
-                mcpu_profiler, "_calibrate_timer_ticks_per_ns", return_value=10.0
             ):
                 injected = mcpu_profiler._append_mcpu_events_to_trace(trace_file)
 

@@ -2,12 +2,8 @@ import gzip
 import json
 import os
 import tempfile
-import time
 
 import torch
-
-
-_timer_ticks_per_ns = None
 
 
 def _prefer_mcpu_profiler_fallback():
@@ -29,28 +25,12 @@ def _prefer_mcpu_profiler_fallback():
         pass
 
 
-def _calibrate_timer_ticks_per_ns():
-    global _timer_ticks_per_ns
-    if _timer_ticks_per_ns is not None:
-        return _timer_ticks_per_ns
-
-    start_ticks = torch.mcpu.read_kernel_timing_tsc()
-    start_ns = time.perf_counter_ns()
-    time.sleep(0.002)
-    end_ticks = torch.mcpu.read_kernel_timing_tsc()
-    end_ns = time.perf_counter_ns()
-    elapsed_ns = max(1, end_ns - start_ns)
-    elapsed_ticks = max(1, end_ticks - start_ticks)
-    _timer_ticks_per_ns = max(0.001, elapsed_ticks / elapsed_ns)
-    return _timer_ticks_per_ns
-
-
 def _valid_kernel_events():
     events = []
     for thread_index, thread in enumerate(torch.mcpu.get_kernel_timing()):
         for event in thread.get("events", []):
-            begin = int(event.get("begin_tsc", 0))
-            end = int(event.get("end_tsc", 0))
+            begin = int(event.get("begin_time", 0))
+            end = int(event.get("end_time", 0))
             if begin == 0 or end <= begin:
                 continue
             events.append(
@@ -151,7 +131,6 @@ def _append_mcpu_events(path):
     if close_pos < 0:
         return 0
 
-    ticks_per_ns = _calibrate_timer_ticks_per_ns()
     first_begin = events[0][0]
     anchor_us = _first_mcpu_host_op_end_us(path)
     need_comma = _trace_events_need_comma(path, close_pos)
@@ -176,8 +155,8 @@ def _append_mcpu_events(path):
                 b'"pid":"MCPU","args":{"name":"MCPU"}}'
             )
             for begin, end, name, stream_id in events:
-                ts = anchor_us + ((begin - first_begin) / ticks_per_ns) / 1000.0
-                dur = ((end - begin) / ticks_per_ns) / 1000.0
+                ts = anchor_us + (begin - first_begin) / 1000.0
+                dur = (end - begin) / 1000.0
                 out.write(b",\n")
                 out.write(
                     json.dumps(
