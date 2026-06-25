@@ -3,9 +3,9 @@
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/core/TensorBody.h>
-#include <torch/csrc/inductor/cpp_wrapper/common.h>
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
 #include <torch/csrc/inductor/aoti_torch/utils.h>
+#include <torch/csrc/inductor/cpp_wrapper/common.h>
 
 #include <ATen/ATen.h>
 #include <torch/extension.h>
@@ -43,6 +43,9 @@
 #include <c10/core/DeviceGuard.h>
 #include <c10/core/StreamGuard.h>
 
+#include <memory>
+#include <vector>
+
 #include "../aten/McpuTensorView.hpp"
 #include "../runtime/McpuKernelLaunch.h"
 
@@ -64,7 +67,8 @@ class AOTIMcpuGuard {
 class AOTIMcpuStreamGuard {
  public:
   AOTIMcpuStreamGuard(orStream_t stream, int32_t device_index)
-      : guard_(c10::mcpu::getStreamFromExternal(stream, device_index).unwrap()) {}
+      : guard_(
+            c10::mcpu::getStreamFromExternal(stream, device_index).unwrap()) {}
 
  private:
   c10::OptionalStreamGuard guard_;
@@ -79,6 +83,29 @@ using namespace torch::aot_inductor;
 
 using at::mcpu::get_cpu_tensor_view_if_needed;
 using at::mcpu::get_cpu_view_from_mcpu_tensor;
+
+namespace torch_mcpu_cpp_wrapper_detail {
+
+struct TensorMeta {
+  void* ptr;
+  std::vector<int64_t> sizes;
+  std::vector<int64_t> strides;
+  at::TensorOptions options;
+};
+
+inline TensorMeta make_tensor_meta(const at::Tensor& tensor) {
+  return TensorMeta{
+      tensor.data_ptr(),
+      tensor.sizes().vec(),
+      tensor.strides().vec(),
+      tensor.options().device(c10::DeviceType::CPU)};
+}
+
+inline at::Tensor tensor_from_meta(const TensorMeta& meta) {
+  return at::from_blob(meta.ptr, meta.sizes, meta.strides, meta.options);
+}
+
+} // namespace torch_mcpu_cpp_wrapper_detail
 
 inline at::Tensor empty_unary_mcpu_result(
     const at::Tensor& self,
@@ -105,7 +132,9 @@ inline at::Tensor empty_binary_mcpu_result(
 inline std::vector<int64_t> cat_mcpu_result_sizes(
     const std::vector<at::Tensor>& tensors,
     int64_t dim) {
-  TORCH_CHECK(!tensors.empty(), "aoti_torch_mcpu_cat: expected a non-empty tensor list");
+  TORCH_CHECK(
+      !tensors.empty(),
+      "aoti_torch_mcpu_cat: expected a non-empty tensor list");
 
   auto is_skippable_empty = [](const at::Tensor& tensor) {
     return tensor.dim() == 1 && tensor.numel() == 0;
@@ -125,7 +154,8 @@ inline std::vector<int64_t> cat_mcpu_result_sizes(
 
   const auto ndim = first_nonempty->dim();
   const auto wrapped_dim = at::maybe_wrap_dim(dim, ndim);
-  std::vector<int64_t> result(first_nonempty->sizes().begin(), first_nonempty->sizes().end());
+  std::vector<int64_t> result(
+      first_nonempty->sizes().begin(), first_nonempty->sizes().end());
   result[wrapped_dim] = 0;
 
   for (const auto i : c10::irange(tensors.size())) {
@@ -163,7 +193,8 @@ inline at::Tensor empty_cat_mcpu_result(
   }
   auto options = device_tensor->device().type() == c10::DeviceType::PrivateUse1
       ? device_tensor->options()
-      : device_tensor->options().device(c10::Device(c10::DeviceType::PrivateUse1, 0));
+      : device_tensor->options().device(
+            c10::Device(c10::DeviceType::PrivateUse1, 0));
   return at::empty(out_sizes, options);
 }
 
@@ -182,11 +213,14 @@ inline AOTITorchError aoti_torch_mcpu_mm_out(AtenTensorHandle out, AtenTensorHan
     at::Tensor* t_self = tensor_handle_to_tensor_pointer(self);
     at::Tensor* t_mat2 = tensor_handle_to_tensor_pointer(mat2);
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
-        at::mcpu::launch_kernel(*t_out, [out = *t_out, self = *t_self, mat2 = *t_mat2]() mutable {
-            at::mcpu::KernelMemoryGuard guard(out, self, mat2);
-            at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
-            at::Tensor cpu_self = get_cpu_view_from_mcpu_tensor(self);
-            at::Tensor cpu_mat2 = get_cpu_view_from_mcpu_tensor(mat2);
+        auto self_meta = torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_self);
+        auto mat2_meta = torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_mat2);
+        auto out_meta = torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_out);
+        at::mcpu::launch_kernel(*t_out, [self_meta = std::move(self_meta), mat2_meta = std::move(mat2_meta), out_meta = std::move(out_meta)]() mutable {
+            at::mcpu::KernelPointerMemoryGuard guard({self_meta.ptr, mat2_meta.ptr, out_meta.ptr});
+            at::Tensor cpu_out = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(out_meta);
+            at::Tensor cpu_self = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(self_meta);
+            at::Tensor cpu_mat2 = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(mat2_meta);
             at::mm_out(cpu_out, cpu_self, cpu_mat2);
         });
     });
@@ -198,13 +232,28 @@ inline AOTITorchError aoti_torch_mcpu_addmm_out(AtenTensorHandle out, AtenTensor
     at::Tensor* t_mat1 = tensor_handle_to_tensor_pointer(mat1);
     at::Tensor* t_mat2 = tensor_handle_to_tensor_pointer(mat2);
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
-        at::mcpu::launch_kernel(*t_out, [out = *t_out, self = *t_self, mat1 = *t_mat1, mat2 = *t_mat2, beta, alpha]() mutable {
-            at::mcpu::KernelMemoryGuard guard(out, self, mat1, mat2);
-            at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
-            at::Tensor cpu_self = get_cpu_view_from_mcpu_tensor(self);
-            at::Tensor cpu_mat1 = get_cpu_view_from_mcpu_tensor(mat1);
-            at::Tensor cpu_mat2 = get_cpu_view_from_mcpu_tensor(mat2);
-            at::addmm_out(cpu_out, cpu_self, cpu_mat1, cpu_mat2, beta, alpha);
+        struct AddmmArgs {
+            torch_mcpu_cpp_wrapper_detail::TensorMeta self;
+            torch_mcpu_cpp_wrapper_detail::TensorMeta mat1;
+            torch_mcpu_cpp_wrapper_detail::TensorMeta mat2;
+            torch_mcpu_cpp_wrapper_detail::TensorMeta out;
+            double beta;
+            double alpha;
+        };
+        auto args = std::make_unique<AddmmArgs>(AddmmArgs{
+            torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_self),
+            torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_mat1),
+            torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_mat2),
+            torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_out),
+            beta,
+            alpha});
+        at::mcpu::launch_kernel(*t_out, [args = std::move(args)]() mutable {
+            at::mcpu::KernelPointerMemoryGuard guard({args->self.ptr, args->mat1.ptr, args->mat2.ptr, args->out.ptr});
+            at::Tensor cpu_out = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(args->out);
+            at::Tensor cpu_self = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(args->self);
+            at::Tensor cpu_mat1 = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(args->mat1);
+            at::Tensor cpu_mat2 = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(args->mat2);
+            at::addmm_out(cpu_out, cpu_self, cpu_mat1, cpu_mat2, args->beta, args->alpha);
         });
     });
 }
