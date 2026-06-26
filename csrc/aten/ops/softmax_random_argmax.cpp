@@ -10,11 +10,17 @@
 #include <ATen/ops/exponential.h>
 #include <torch/library.h>
 
+#include <vector>
+
 namespace at::mcpu {
 namespace {
 
+using ops::cpu_view_from_spec;
+using ops::make_cpu_view_spec;
+using ops::TensorViewSpec;
+
 at::CPUGeneratorImpl* get_mcpu_exponential_generator(
-    const at::Tensor& self,
+    c10::DeviceIndex device_index,
     const std::optional<at::Generator>& generator) {
   if (generator.has_value() && generator->defined()) {
     if (generator->device().type() == c10::DeviceType::CPU) {
@@ -27,26 +33,23 @@ at::CPUGeneratorImpl* get_mcpu_exponential_generator(
     return generator->get<c10::mcpu::McpuGeneratorImpl>();
   }
 
-  const auto device_index = self.device().index();
   const at::Generator& default_generator =
       c10::mcpu::getDefaultMcpuGenerator(device_index);
   return default_generator.get<c10::mcpu::McpuGeneratorImpl>();
 }
 
 void exponential_mcpu_impl(
-    const at::Tensor& self,
+    const at::Tensor& cpu_self,
     double lambd,
-    const std::optional<at::Generator>& generator) {
+    at::CPUGeneratorImpl* gen) {
   TORCH_CHECK(
       lambd > 0.0,
       "exponential_ expects lambda > 0.0, but found lambda=",
       lambd);
-  if (self.numel() == 0) {
+  if (cpu_self.numel() == 0) {
     return;
   }
 
-  auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-  auto* gen = get_mcpu_exponential_generator(self, generator);
   auto iter = at::TensorIterator::borrowing_nullary_op(cpu_self);
   at::native::templates::cpu::exponential_kernel(iter, lambd, gen);
 }
@@ -58,11 +61,21 @@ at::Tensor& _softmax_out(
     at::Tensor& out) {
   ops::check_out_sizes("aten::_softmax.out", out, self.sizes());
 
+  auto self_spec = make_cpu_view_spec(self);
+  auto out_spec = make_cpu_view_spec(out);
+
   MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::_softmax.out", ([ self, out, dim, half_to_float ]), {
-        KernelMemoryGuard guard(self, out);
-        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+      "mcpu::aten::_softmax.out",
+      ([
+        self_spec = std::move(self_spec),
+        out_spec = std::move(out_spec),
+        dim,
+        half_to_float
+      ]),
+      {
+        KernelPointerMemoryGuard guard({self_spec.data, out_spec.data});
+        auto cpu_self = cpu_view_from_spec(self_spec);
+        auto cpu_out = cpu_view_from_spec(out_spec);
         at::_softmax_out(cpu_out, cpu_self, dim, half_to_float);
       });
   return out;
@@ -72,10 +85,22 @@ at::Tensor& exponential_(
     at::Tensor& self,
     double lambd,
     std::optional<at::Generator> generator) {
+  auto self_spec = make_cpu_view_spec(self);
+  auto device_index = self.device().index();
+
   MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::exponential_", ([ self, lambd, generator ]), {
-        KernelMemoryGuard guard(self);
-        exponential_mcpu_impl(self, lambd, generator);
+      "mcpu::aten::exponential_",
+      ([
+        self_spec = std::move(self_spec),
+        lambd,
+        generator = std::move(generator),
+        device_index
+      ]),
+      {
+        KernelPointerMemoryGuard guard({self_spec.data});
+        auto cpu_self = cpu_view_from_spec(self_spec);
+        auto* gen = get_mcpu_exponential_generator(device_index, generator);
+        exponential_mcpu_impl(cpu_self, lambd, gen);
       });
   return self;
 }
@@ -90,11 +115,21 @@ at::Tensor& argmax_out(
   at::argmax_out(meta_out, meta_self, dim, keepdim);
   ops::check_out_sizes("aten::argmax.out", out, meta_out);
 
+  auto self_spec = make_cpu_view_spec(self);
+  auto out_spec = make_cpu_view_spec(out);
+
   MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::argmax.out", ([ self, out, dim, keepdim ]), {
-        KernelMemoryGuard guard(self, out);
-        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
+      "mcpu::aten::argmax.out",
+      ([
+        self_spec = std::move(self_spec),
+        out_spec = std::move(out_spec),
+        dim,
+        keepdim
+      ]),
+      {
+        KernelPointerMemoryGuard guard({self_spec.data, out_spec.data});
+        auto cpu_self = cpu_view_from_spec(self_spec);
+        auto cpu_out = cpu_view_from_spec(out_spec);
         at::argmax_out(cpu_out, cpu_self, dim, keepdim);
       });
   return out;

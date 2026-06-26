@@ -7,12 +7,76 @@
 
 #include <ATen/ATen.h>
 #include <ATen/WrapDimUtils.h>
+#include <c10/util/SmallVector.h>
+
+#include <vector>
 
 namespace at::mcpu::ops {
 
 using at::mcpu::get_cpu_tensor_view_if_needed;
 using at::mcpu::get_cpu_view_from_mcpu_tensor;
 using at::mcpu::is_mcpu_tensor;
+
+struct TensorViewSpec {
+  void* data = nullptr;
+  c10::SmallVector<int64_t, 1> sizes;
+  c10::SmallVector<int64_t, 1> strides;
+  at::TensorOptions options;
+};
+
+using TensorPointerList = c10::SmallVector<const void*, 8>;
+
+inline int64_t numel_from_sizes(c10::ArrayRef<int64_t> sizes) {
+  int64_t numel = 1;
+  for (const auto size : sizes) {
+    numel *= size;
+  }
+  return numel;
+}
+
+inline TensorViewSpec make_cpu_view_spec(const at::Tensor& tensor) {
+  return TensorViewSpec{
+      tensor.numel() == 0 ? nullptr : tensor.data_ptr(),
+      c10::SmallVector<int64_t, 1>(
+          tensor.sizes().begin(), tensor.sizes().end()),
+      c10::SmallVector<int64_t, 1>(
+          tensor.strides().begin(), tensor.strides().end()),
+      tensor.options().device(c10::DeviceType::CPU)};
+}
+
+inline at::Tensor cpu_view_from_spec(const TensorViewSpec& spec) {
+  c10::InferenceMode inference_guard(false);
+  if (numel_from_sizes(spec.sizes) == 0) {
+    return at::empty_strided(spec.sizes, spec.strides, spec.options);
+  }
+  return at::from_blob(spec.data, spec.sizes, spec.strides, spec.options);
+}
+
+inline std::vector<at::Tensor> cpu_views_from_specs(
+    c10::ArrayRef<TensorViewSpec> specs) {
+  std::vector<at::Tensor> tensors;
+  tensors.reserve(specs.size());
+  for (const auto& spec : specs) {
+    tensors.push_back(cpu_view_from_spec(spec));
+  }
+  return tensors;
+}
+
+inline TensorPointerList pointer_list(
+    const TensorViewSpec& first,
+    c10::ArrayRef<TensorViewSpec> rest) {
+  TensorPointerList ptrs;
+  ptrs.reserve(rest.size() + 1);
+  if (first.data != nullptr) {
+    ptrs.push_back(first.data);
+  }
+  for (const auto& spec : rest) {
+    if (spec.data != nullptr) {
+      ptrs.push_back(spec.data);
+    }
+  }
+  return ptrs;
+}
 
 inline at::Tensor to_meta_tensor(const at::Tensor& tensor) {
   return at::empty_strided(

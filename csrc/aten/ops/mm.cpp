@@ -6,29 +6,9 @@
 #include <torch/library.h>
 
 #include <memory>
-#include <vector>
 
 namespace at::mcpu {
 namespace {
-
-struct TensorMeta {
-  void* ptr;
-  std::vector<int64_t> sizes;
-  std::vector<int64_t> strides;
-  at::TensorOptions options;
-};
-
-TensorMeta make_tensor_meta(const at::Tensor& tensor) {
-  return TensorMeta{
-      tensor.data_ptr(),
-      tensor.sizes().vec(),
-      tensor.strides().vec(),
-      tensor.options().device(c10::DeviceType::CPU)};
-}
-
-at::Tensor tensor_from_meta(const TensorMeta& meta) {
-  return at::from_blob(meta.ptr, meta.sizes, meta.strides, meta.options);
-}
 
 at::Tensor& mm_out(
     const at::Tensor& self,
@@ -40,23 +20,23 @@ at::Tensor& mm_out(
       self.size(1) == mat2.size(0), "mm: self.size(1) must match mat2.size(0)");
   ops::check_out_sizes("aten::mm.out", out, {self.size(0), mat2.size(1)});
 
-  auto self_meta = make_tensor_meta(self);
-  auto mat2_meta = make_tensor_meta(mat2);
-  auto out_meta = make_tensor_meta(out);
+  auto self_spec = ops::make_cpu_view_spec(self);
+  auto mat2_spec = ops::make_cpu_view_spec(mat2);
+  auto out_spec = ops::make_cpu_view_spec(out);
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::mm_out",
       ([
-        self_meta = std::move(self_meta),
-        mat2_meta = std::move(mat2_meta),
-        out_meta = std::move(out_meta)
+        self_spec = std::move(self_spec),
+        mat2_spec = std::move(mat2_spec),
+        out_spec = std::move(out_spec)
       ]),
       {
         KernelPointerMemoryGuard guard(
-            {self_meta.ptr, mat2_meta.ptr, out_meta.ptr});
-        auto cpu_self = tensor_from_meta(self_meta);
-        auto cpu_mat2 = tensor_from_meta(mat2_meta);
-        auto cpu_out = tensor_from_meta(out_meta);
+            {self_spec.data, mat2_spec.data, out_spec.data});
+        auto cpu_self = ops::cpu_view_from_spec(self_spec);
+        auto cpu_mat2 = ops::cpu_view_from_spec(mat2_spec);
+        auto cpu_out = ops::cpu_view_from_spec(out_spec);
         at::mm_out(cpu_out, cpu_self, cpu_mat2);
       });
   return out;
@@ -85,29 +65,32 @@ at::Tensor& addmm_out(
   ops::check_out_sizes("aten::addmm.out", out, {mat1.size(0), mat2.size(1)});
 
   struct AddmmArgs {
-    TensorMeta self;
-    TensorMeta mat1;
-    TensorMeta mat2;
-    TensorMeta out;
+    ops::TensorViewSpec self;
+    ops::TensorViewSpec mat1;
+    ops::TensorViewSpec mat2;
+    ops::TensorViewSpec out;
     at::Scalar beta;
     at::Scalar alpha;
   };
   auto args = std::make_unique<AddmmArgs>(AddmmArgs{
-      make_tensor_meta(self),
-      make_tensor_meta(mat1),
-      make_tensor_meta(mat2),
-      make_tensor_meta(out),
+      ops::make_cpu_view_spec(self),
+      ops::make_cpu_view_spec(mat1),
+      ops::make_cpu_view_spec(mat2),
+      ops::make_cpu_view_spec(out),
       beta,
       alpha});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::addmm_out", ([args = std::move(args)]), {
         KernelPointerMemoryGuard guard(
-            {args->self.ptr, args->mat1.ptr, args->mat2.ptr, args->out.ptr});
-        auto cpu_self = tensor_from_meta(args->self);
-        auto cpu_mat1 = tensor_from_meta(args->mat1);
-        auto cpu_mat2 = tensor_from_meta(args->mat2);
-        auto cpu_out = tensor_from_meta(args->out);
+            {args->self.data,
+             args->mat1.data,
+             args->mat2.data,
+             args->out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args->self);
+        auto cpu_mat1 = ops::cpu_view_from_spec(args->mat1);
+        auto cpu_mat2 = ops::cpu_view_from_spec(args->mat2);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
         at::addmm_out(
             cpu_out, cpu_self, cpu_mat1, cpu_mat2, args->beta, args->alpha);
       });

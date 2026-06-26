@@ -13,19 +13,17 @@
 namespace at::mcpu {
 namespace {
 
-struct TensorViewSpec {
-  void* data = nullptr;
-  std::vector<int64_t> sizes;
-  std::vector<int64_t> strides;
-  at::TensorOptions options;
-};
+using ops::cpu_view_from_spec;
+using ops::cpu_views_from_specs;
+using ops::make_cpu_view_spec;
+using ops::pointer_list;
+using ops::TensorViewSpec;
 
 struct WhereSelfOutArgs {
   TensorViewSpec condition;
   TensorViewSpec self;
   TensorViewSpec other;
   TensorViewSpec out;
-  std::vector<const void*> ptrs;
 };
 
 struct WhereScalarSelfArgs {
@@ -34,7 +32,6 @@ struct WhereScalarSelfArgs {
   TensorViewSpec other;
   TensorViewSpec out;
   at::ScalarType result_dtype;
-  std::vector<const void*> ptrs;
 };
 
 struct WhereScalarOtherArgs {
@@ -43,7 +40,6 @@ struct WhereScalarOtherArgs {
   at::Scalar other;
   TensorViewSpec out;
   at::ScalarType result_dtype;
-  std::vector<const void*> ptrs;
 };
 
 struct WhereScalarArgs {
@@ -52,85 +48,20 @@ struct WhereScalarArgs {
   at::Scalar other;
   TensorViewSpec out;
   at::ScalarType result_dtype;
-  std::vector<const void*> ptrs;
 };
 
 struct WhereCountArgs {
   TensorViewSpec condition;
   int64_t numel = 0;
   int64_t* count = nullptr;
-  std::vector<const void*> ptrs;
 };
 
 struct WhereWriteArgs {
   TensorViewSpec condition;
-  std::vector<TensorViewSpec> result;
+  c10::SmallVector<TensorViewSpec, 8> result;
   int64_t ndim = 0;
   int64_t numel = 0;
-  std::vector<const void*> ptrs;
 };
-
-int64_t numel_from_sizes(const std::vector<int64_t>& sizes) {
-  int64_t numel = 1;
-  for (const auto size : sizes) {
-    numel *= size;
-  }
-  return numel;
-}
-
-TensorViewSpec make_cpu_view_spec(const at::Tensor& tensor) {
-  TensorViewSpec spec;
-  spec.data = tensor.numel() == 0 ? nullptr : tensor.data_ptr();
-  spec.sizes = tensor.sizes().vec();
-  spec.strides = tensor.strides().vec();
-  spec.options = tensor.options().device(c10::DeviceType::CPU);
-  return spec;
-}
-
-at::Tensor cpu_view_from_spec(const TensorViewSpec& spec) {
-  c10::InferenceMode inference_guard(false);
-  if (numel_from_sizes(spec.sizes) == 0) {
-    return at::empty_strided(spec.sizes, spec.strides, spec.options);
-  }
-  return at::from_blob(spec.data, spec.sizes, spec.strides, spec.options);
-}
-
-std::vector<at::Tensor> cpu_views_from_specs(
-    const std::vector<TensorViewSpec>& specs) {
-  std::vector<at::Tensor> tensors;
-  tensors.reserve(specs.size());
-  for (const auto& spec : specs) {
-    tensors.push_back(cpu_view_from_spec(spec));
-  }
-  return tensors;
-}
-
-std::vector<const void*> pointer_list(
-    std::initializer_list<TensorViewSpec> specs) {
-  std::vector<const void*> ptrs;
-  ptrs.reserve(specs.size());
-  for (const auto& spec : specs) {
-    if (spec.data != nullptr) {
-      ptrs.push_back(spec.data);
-    }
-  }
-  return ptrs;
-}
-
-std::vector<const void*> pointer_list(
-    const TensorViewSpec& first,
-    const std::vector<TensorViewSpec>& rest) {
-  std::vector<const void*> ptrs;
-  if (first.data != nullptr) {
-    ptrs.push_back(first.data);
-  }
-  for (const auto& spec : rest) {
-    if (spec.data != nullptr) {
-      ptrs.push_back(spec.data);
-    }
-  }
-  return ptrs;
-}
 
 template <typename scalar_t>
 inline bool is_nonzero_value(const scalar_t& value) {
@@ -200,16 +131,16 @@ at::Tensor& where_self_out(
   auto self_spec = make_cpu_view_spec(self);
   auto other_spec = make_cpu_view_spec(other);
   auto out_spec = make_cpu_view_spec(out);
-  auto args = std::make_unique<WhereSelfOutArgs>(WhereSelfOutArgs{
-      condition_spec,
-      self_spec,
-      other_spec,
-      out_spec,
-      pointer_list({condition_spec, self_spec, other_spec, out_spec})});
+  auto args = std::make_unique<WhereSelfOutArgs>(
+      WhereSelfOutArgs{condition_spec, self_spec, other_spec, out_spec});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::where.self_out", ([args = std::move(args)]), {
-        KernelPointerMemoryGuard guard(args->ptrs);
+        KernelPointerMemoryGuard guard(
+            {args->condition.data,
+             args->self.data,
+             args->other.data,
+             args->out.data});
         auto cpu_condition = cpu_view_from_spec(args->condition);
         auto cpu_self = cpu_view_from_spec(args->self);
         auto cpu_other = cpu_view_from_spec(args->other);
@@ -244,16 +175,12 @@ at::Tensor where_ScalarSelf(
   auto other_spec = make_cpu_view_spec(other);
   auto out_spec = make_cpu_view_spec(out);
   auto args = std::make_unique<WhereScalarSelfArgs>(WhereScalarSelfArgs{
-      condition_spec,
-      self,
-      other_spec,
-      out_spec,
-      result_dtype,
-      pointer_list({condition_spec, other_spec, out_spec})});
+      condition_spec, self, other_spec, out_spec, result_dtype});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::where.ScalarSelf", ([args = std::move(args)]), {
-        KernelPointerMemoryGuard guard(args->ptrs);
+        KernelPointerMemoryGuard guard(
+            {args->condition.data, args->other.data, args->out.data});
         auto cpu_condition = cpu_view_from_spec(args->condition);
         auto cpu_self_tensor =
             scalar_cpu_tensor(args->self, args->result_dtype);
@@ -276,16 +203,12 @@ at::Tensor where_ScalarOther(
   auto self_spec = make_cpu_view_spec(self);
   auto out_spec = make_cpu_view_spec(out);
   auto args = std::make_unique<WhereScalarOtherArgs>(WhereScalarOtherArgs{
-      condition_spec,
-      self_spec,
-      other,
-      out_spec,
-      result_dtype,
-      pointer_list({condition_spec, self_spec, out_spec})});
+      condition_spec, self_spec, other, out_spec, result_dtype});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::where.ScalarOther", ([args = std::move(args)]), {
-        KernelPointerMemoryGuard guard(args->ptrs);
+        KernelPointerMemoryGuard guard(
+            {args->condition.data, args->self.data, args->out.data});
         auto cpu_condition = cpu_view_from_spec(args->condition);
         auto cpu_self = cpu_view_from_spec(args->self);
         auto cpu_other_tensor =
@@ -305,17 +228,12 @@ at::Tensor where_Scalar(
   auto out = empty_where_mcpu(condition, condition.sizes(), result_dtype);
   auto condition_spec = make_cpu_view_spec(condition);
   auto out_spec = make_cpu_view_spec(out);
-  auto args = std::make_unique<WhereScalarArgs>(WhereScalarArgs{
-      condition_spec,
-      self,
-      other,
-      out_spec,
-      result_dtype,
-      pointer_list({condition_spec, out_spec})});
+  auto args = std::make_unique<WhereScalarArgs>(
+      WhereScalarArgs{condition_spec, self, other, out_spec, result_dtype});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::where.Scalar", ([args = std::move(args)]), {
-        KernelPointerMemoryGuard guard(args->ptrs);
+        KernelPointerMemoryGuard guard({args->condition.data, args->out.data});
         auto cpu_condition = cpu_view_from_spec(args->condition);
         auto cpu_self_tensor =
             scalar_cpu_tensor(args->self, args->result_dtype);
@@ -336,12 +254,12 @@ std::vector<at::Tensor> where(const at::Tensor& condition) {
   auto count_tensor = at::empty(
       {}, at::TensorOptions().device(c10::DeviceType::CPU).dtype(at::kLong));
   auto* count_ptr = count_tensor.mutable_data_ptr<int64_t>();
-  auto count_args = std::make_unique<WhereCountArgs>(WhereCountArgs{
-      condition_spec, numel, count_ptr, pointer_list({condition_spec})});
+  auto count_args = std::make_unique<WhereCountArgs>(
+      WhereCountArgs{condition_spec, numel, count_ptr});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::where.count", ([count_args = std::move(count_args)]), {
-        KernelPointerMemoryGuard guard(count_args->ptrs);
+        KernelPointerMemoryGuard guard({count_args->condition.data});
         auto cpu_condition = cpu_view_from_spec(count_args->condition);
         int64_t count_value = 0;
         AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND3(
@@ -391,18 +309,21 @@ std::vector<at::Tensor> where(const at::Tensor& condition) {
     return result;
   }
 
-  std::vector<TensorViewSpec> result_specs;
+  c10::SmallVector<TensorViewSpec, 8> result_specs;
   result_specs.reserve(result.size());
   for (const auto& tensor : result) {
     result_specs.push_back(make_cpu_view_spec(tensor));
   }
-  auto write_ptrs = pointer_list(condition_spec, result_specs);
   auto write_args = std::make_unique<WhereWriteArgs>(
-      WhereWriteArgs{condition_spec, result_specs, ndim, numel, write_ptrs});
+      WhereWriteArgs{condition_spec, result_specs, ndim, numel});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       "mcpu::aten::where", ([write_args = std::move(write_args)]), {
-        KernelPointerMemoryGuard guard(write_args->ptrs);
+        const auto ptrs = pointer_list(
+            write_args->condition,
+            c10::ArrayRef<TensorViewSpec>(
+                write_args->result.data(), write_args->result.size()));
+        KernelPointerMemoryGuard guard(ptrs);
         auto cpu_condition = cpu_view_from_spec(write_args->condition);
         auto cpu_result = cpu_views_from_specs(write_args->result);
         if (write_args->ndim == 0) {
