@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 namespace at::mcpu {
 namespace {
@@ -240,6 +241,14 @@ bool raw_binary_scalar_out(
       c10::isComplexType(self.scalar_type())) {
     return false;
   }
+  // Integer scalar arithmetic is frequently used to build index tensors
+  // (for example vLLM's logits_indices = query_start_loc[1:] - 1). The raw
+  // pointer fast path has produced stale values for these tensors under the
+  // mcpu memory-protection/runtime path, so keep integer scalar ops on the
+  // CPU-view fallback until the raw path can preserve those semantics.
+  if (c10::isIntegralType(self.scalar_type(), /*includeBool=*/false)) {
+    return false;
+  }
 
   auto plan = ops::make_same_shape_raw_tensor_pair_plan(self, out);
   if (!plan.has_value()) {
@@ -378,6 +387,28 @@ at::Tensor empty_comparison_mcpu(
   return at::empty(out_sizes, self.options().dtype(at::kBool));
 }
 
+struct ArithmeticTensorFallbackArgs {
+  ops::TensorViewSpec self;
+  ops::TensorViewSpec other;
+  ops::TensorViewSpec out;
+  at::Scalar alpha;
+  std::vector<at::Tensor> owners;
+};
+
+struct TensorTripletFallbackArgs {
+  ops::TensorViewSpec self;
+  ops::TensorViewSpec other;
+  ops::TensorViewSpec out;
+  std::vector<at::Tensor> owners;
+};
+
+struct PowScalarOutFallbackArgs {
+  at::Scalar self;
+  ops::TensorViewSpec exponent;
+  ops::TensorViewSpec out;
+  std::vector<at::Tensor> owners;
+};
+
 template <RawBinaryOp op>
 at::ScalarType arithmetic_result_type(
     const at::Tensor& self,
@@ -433,26 +464,25 @@ at::Tensor& arithmetic_Tensor_out_impl(
     return out;
   }
 
-  auto self_spec = ops::make_cpu_view_spec(self);
-  auto other_spec = ops::make_cpu_view_spec(other);
-  auto out_spec = ops::make_cpu_view_spec(out);
+  auto args = std::make_shared<ArithmeticTensorFallbackArgs>(
+      ArithmeticTensorFallbackArgs{
+          ops::make_cpu_view_spec(self),
+          ops::make_cpu_view_spec(other),
+          ops::make_cpu_view_spec(out),
+          alpha,
+          {self, other, out}});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       fallback_record_name,
-      ([
-        self_spec = std::move(self_spec),
-        other_spec = std::move(other_spec),
-        out_spec = std::move(out_spec),
-        alpha,
-        fallback_record_name
-      ]),
+      ([ args = std::move(args), fallback_record_name ]),
       {
         KernelPointerMemoryGuard guard(
-            {self_spec.data, other_spec.data, out_spec.data});
-        auto cpu_self = ops::cpu_view_from_spec(self_spec);
-        auto cpu_other = ops::cpu_view_from_spec(other_spec);
-        auto cpu_out = ops::cpu_view_from_spec(out_spec);
-        cpu_arithmetic_tensor_out<op>(cpu_out, cpu_self, cpu_other, alpha);
+            {args->self.data, args->other.data, args->out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args->self);
+        auto cpu_other = ops::cpu_view_from_spec(args->other);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
+        cpu_arithmetic_tensor_out<op>(
+            cpu_out, cpu_self, cpu_other, args->alpha);
       });
   return out;
 }
@@ -666,24 +696,22 @@ at::Tensor& compare_Tensor_out_impl(
     return out;
   }
 
-  auto self_spec = ops::make_cpu_view_spec(self);
-  auto other_spec = ops::make_cpu_view_spec(other);
-  auto out_spec = ops::make_cpu_view_spec(out);
+  auto args =
+      std::make_shared<TensorTripletFallbackArgs>(TensorTripletFallbackArgs{
+          ops::make_cpu_view_spec(self),
+          ops::make_cpu_view_spec(other),
+          ops::make_cpu_view_spec(out),
+          {self, other, out}});
 
   MCPU_LAUNCH_TIMED_KERNEL(
       fallback_record_name,
-      ([
-        self_spec = std::move(self_spec),
-        other_spec = std::move(other_spec),
-        out_spec = std::move(out_spec),
-        fallback_record_name
-      ]),
+      ([ args = std::move(args), fallback_record_name ]),
       {
         KernelPointerMemoryGuard guard(
-            {self_spec.data, other_spec.data, out_spec.data});
-        auto cpu_self = ops::cpu_view_from_spec(self_spec);
-        auto cpu_other = ops::cpu_view_from_spec(other_spec);
-        auto cpu_out = ops::cpu_view_from_spec(out_spec);
+            {args->self.data, args->other.data, args->out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args->self);
+        auto cpu_other = ops::cpu_view_from_spec(args->other);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
         cpu_compare_tensor_out<op>(cpu_out, cpu_self, cpu_other);
       });
   return out;
@@ -815,23 +843,20 @@ at::Tensor& remainder_Tensor_out(
   auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
   ops::check_out_sizes("aten::remainder.Tensor_out", out, expected_sizes);
 
-  auto self_spec = ops::make_cpu_view_spec(self);
-  auto other_spec = ops::make_cpu_view_spec(other);
-  auto out_spec = ops::make_cpu_view_spec(out);
+  auto args =
+      std::make_shared<TensorTripletFallbackArgs>(TensorTripletFallbackArgs{
+          ops::make_cpu_view_spec(self),
+          ops::make_cpu_view_spec(other),
+          ops::make_cpu_view_spec(out),
+          {self, other, out}});
 
   MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::remainder.Tensor_out",
-      ([
-        self_spec = std::move(self_spec),
-        other_spec = std::move(other_spec),
-        out_spec = std::move(out_spec)
-      ]),
-      {
+      "mcpu::aten::remainder.Tensor_out", ([args = std::move(args)]), {
         KernelPointerMemoryGuard guard(
-            {self_spec.data, other_spec.data, out_spec.data});
-        auto cpu_self = ops::cpu_view_from_spec(self_spec);
-        auto cpu_other = ops::cpu_view_from_spec(other_spec);
-        auto cpu_out = ops::cpu_view_from_spec(out_spec);
+            {args->self.data, args->other.data, args->out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args->self);
+        auto cpu_other = ops::cpu_view_from_spec(args->other);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
         at::remainder_out(cpu_out, cpu_self, cpu_other);
       });
   return out;
@@ -936,21 +961,19 @@ at::Tensor& pow_Scalar_out(
     at::Tensor& out) {
   ops::check_out_sizes("aten::pow.Scalar_out", out, exponent.sizes());
 
-  auto exponent_spec = ops::make_cpu_view_spec(exponent);
-  auto out_spec = ops::make_cpu_view_spec(out);
+  auto args =
+      std::make_shared<PowScalarOutFallbackArgs>(PowScalarOutFallbackArgs{
+          self,
+          ops::make_cpu_view_spec(exponent),
+          ops::make_cpu_view_spec(out),
+          {exponent, out}});
 
   MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::pow.Scalar_out",
-      ([
-        self,
-        exponent_spec = std::move(exponent_spec),
-        out_spec = std::move(out_spec)
-      ]),
-      {
-        KernelPointerMemoryGuard guard({exponent_spec.data, out_spec.data});
-        auto cpu_exponent = ops::cpu_view_from_spec(exponent_spec);
-        auto cpu_out = ops::cpu_view_from_spec(out_spec);
-        at::pow_out(cpu_out, self, cpu_exponent);
+      "mcpu::aten::pow.Scalar_out", ([args = std::move(args)]), {
+        KernelPointerMemoryGuard guard({args->exponent.data, args->out.data});
+        auto cpu_exponent = ops::cpu_view_from_spec(args->exponent);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
+        at::pow_out(cpu_out, args->self, cpu_exponent);
       });
   return out;
 }

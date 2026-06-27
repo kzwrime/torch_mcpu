@@ -2,11 +2,7 @@
 
 import collections
 import functools
-import os
-import sys
 import unittest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch_mcpu  # noqa: F401
@@ -402,6 +398,33 @@ class TestFallback(TestCase):
         sub_res = torch.sub(y, x)
         self.assertEqual(sub_res.cpu(), torch.tensor([[6.0, 14.0], [24.0, 36.0]]))
 
+        cpu_scalar_tensor = torch.tensor(2.0)
+        for name, op in (
+            ("add", torch.add),
+            ("sub", torch.sub),
+            ("mul", torch.mul),
+            ("div", torch.div),
+        ):
+            out = torch.empty_like(x)
+            op(x, cpu_scalar_tensor, out=out)
+            self.assertEqual(out.cpu(), op(x.cpu(), cpu_scalar_tensor))
+
+            result = op(x, cpu_scalar_tensor)
+            self.assertEqual(result.cpu(), op(x.cpu(), cpu_scalar_tensor))
+
+            inplace = x.clone()
+            getattr(inplace, name + "_")(cpu_scalar_tensor)
+            inplace_cpu = x.cpu().clone()
+            getattr(inplace_cpu, name + "_")(cpu_scalar_tensor)
+            self.assertEqual(inplace.cpu(), inplace_cpu)
+
+        remainder_cpu_scalar_out = torch.empty_like(y)
+        torch.remainder(y, cpu_scalar_tensor, out=remainder_cpu_scalar_out)
+        self.assertEqual(
+            remainder_cpu_scalar_out.cpu(),
+            torch.remainder(y.cpu(), cpu_scalar_tensor),
+        )
+
         cos_out = torch.empty_like(x)
         torch.cos(x, out=cos_out)
         self.assertEqual(cos_out.cpu(), torch.cos(x.cpu()))
@@ -636,11 +659,35 @@ class TestFallback(TestCase):
             getattr(inplace_tensor_cpu, name + "_")(rhs_cpu)
             self.assertEqual(inplace_tensor.cpu(), inplace_tensor_cpu)
 
+            cpu_scalar_tensor = torch.tensor(2.0)
+            cpu_scalar_tensor_result = op(lhs, cpu_scalar_tensor)
+            self.assertEqual(
+                cpu_scalar_tensor_result.cpu(), op(lhs_cpu, cpu_scalar_tensor)
+            )
+
+            cpu_scalar_tensor_out = torch.empty_like(lhs, dtype=torch.bool)
+            op(lhs, cpu_scalar_tensor, out=cpu_scalar_tensor_out)
+            self.assertEqual(
+                cpu_scalar_tensor_out.cpu(), op(lhs_cpu, cpu_scalar_tensor)
+            )
+
+            inplace_cpu_scalar_tensor = lhs.clone()
+            getattr(inplace_cpu_scalar_tensor, name + "_")(cpu_scalar_tensor)
+            inplace_cpu_scalar_tensor_cpu = lhs_cpu.clone()
+            getattr(inplace_cpu_scalar_tensor_cpu, name + "_")(cpu_scalar_tensor)
+            self.assertEqual(
+                inplace_cpu_scalar_tensor.cpu(), inplace_cpu_scalar_tensor_cpu
+            )
+
         less = torch.ops.aten.less
         self.assertEqual(less.Scalar(lhs, 2.0).cpu(), torch.lt(lhs_cpu, 2.0))
         self.assertEqual(
             less.Tensor(lhs, rhs).cpu(),
             torch.lt(lhs_cpu, rhs_cpu),
+        )
+        self.assertEqual(
+            less.Tensor(lhs, torch.tensor(2.0)).cpu(),
+            torch.lt(lhs_cpu, torch.tensor(2.0)),
         )
 
         less_equal = torch.ops.aten.less_equal
@@ -651,6 +698,10 @@ class TestFallback(TestCase):
         self.assertEqual(
             less_equal.Tensor(lhs, rhs).cpu(),
             torch.le(lhs_cpu, rhs_cpu),
+        )
+        self.assertEqual(
+            less_equal.Tensor(lhs, torch.tensor(2.0)).cpu(),
+            torch.le(lhs_cpu, torch.tensor(2.0)),
         )
 
     def test_explicit_forward_ops_batch_4(self):
@@ -1204,6 +1255,63 @@ class TestFallbackExtended(TestCase):
         )
 
         self.assertNotIn("mcpu::aten::add.raw", event_names)
+
+    def test_cpu_zero_dim_tensor_binary_ops_use_tensor_fallback(self):
+        x = torch.tensor([[4.0, 6.0], [7.0, 5.0]], device="mcpu")
+        other = torch.tensor(2.0)
+
+        def run_ops():
+            add_out = torch.empty_like(x)
+            sub_out = torch.empty_like(x)
+            mul_out = torch.empty_like(x)
+            div_out = torch.empty_like(x)
+            remainder_out = torch.empty_like(x)
+            gt_out = torch.empty_like(x, dtype=torch.bool)
+
+            torch.add(x, other, out=add_out)
+            torch.sub(x, other, out=sub_out)
+            torch.mul(x, other, out=mul_out)
+            torch.div(x, other, out=div_out)
+            torch.remainder(x, other, out=remainder_out)
+            torch.gt(x, other, out=gt_out)
+
+            return add_out, sub_out, mul_out, div_out, remainder_out, gt_out
+
+        (
+            add_out,
+            sub_out,
+            mul_out,
+            div_out,
+            remainder_out,
+            gt_out,
+        ), event_names = self._timed_event_names(run_ops)
+
+        x_cpu = x.cpu()
+        self.assertEqual(add_out.cpu(), torch.add(x_cpu, other))
+        self.assertEqual(sub_out.cpu(), torch.sub(x_cpu, other))
+        self.assertEqual(mul_out.cpu(), torch.mul(x_cpu, other))
+        self.assertEqual(div_out.cpu(), torch.div(x_cpu, other))
+        self.assertEqual(remainder_out.cpu(), torch.remainder(x_cpu, other))
+        self.assertEqual(gt_out.cpu(), torch.gt(x_cpu, other))
+
+        self.assertIn("mcpu::aten::add", event_names)
+        self.assertIn("mcpu::aten::sub.out", event_names)
+        self.assertIn("mcpu::aten::mul.out", event_names)
+        self.assertIn("mcpu::aten::div.out", event_names)
+        self.assertIn("mcpu::aten::remainder.Tensor_out", event_names)
+        self.assertIn("mcpu::aten::gt.Tensor_out", event_names)
+
+        for raw_name in (
+            "mcpu::aten::add.raw",
+            "mcpu::aten::add.Scalar.raw",
+            "mcpu::aten::sub.raw",
+            "mcpu::aten::sub.Scalar.raw",
+            "mcpu::aten::mul.raw",
+            "mcpu::aten::div.raw",
+            "mcpu::aten::gt.Tensor.raw",
+            "mcpu::aten::gt.Scalar.raw",
+        ):
+            self.assertNotIn(raw_name, event_names)
 
     def test_strided_sigmoid_and_mul_use_raw_kernel(self):
         tokens = 5
