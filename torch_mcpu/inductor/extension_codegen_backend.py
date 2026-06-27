@@ -72,10 +72,19 @@ _MCPU_IOTA_FALLBACK_OPS = frozenset(
     }
 )
 
+_MCPU_GATHER_FALLBACK_OPS = frozenset(
+    {
+        torch.ops.aten.embedding.default,
+        torch.ops.aten.index.Tensor,
+        torch.ops.aten.index_select.default,
+        torch.ops.aten.index_select.out,
+    }
+)
+
 
 def _meta_uses_mcpu(value) -> bool:
     if isinstance(value, torch.Tensor):
-        return value.device.type == "mcpu"
+        return value.device.type in {"mcpu", "privateuseone"}
     if isinstance(value, (list, tuple)):
         return any(_meta_uses_mcpu(item) for item in value)
     if isinstance(value, dict):
@@ -103,6 +112,7 @@ def _is_mcpu_host_loop_op(node) -> bool:
             or torch.Tag.reduction in target.tags
             or target in _MCPU_HOST_LOOP_FALLBACK_OPS
             or target in _MCPU_IOTA_FALLBACK_OPS
+            or target in _MCPU_GATHER_FALLBACK_OPS
         )
         and (
             _meta_uses_mcpu(node.meta.get("val"))

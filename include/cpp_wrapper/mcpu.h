@@ -27,6 +27,7 @@
 #include <ATen/ops/as_strided_cpu_dispatch.h>
 #include <ATen/ops/cat.h>
 #include <ATen/ops/copy_native.h>
+#include <ATen/ops/embedding.h>
 #include <ATen/ops/empty_like.h>
 #include <ATen/ops/quantize_per_tensor_native.h>
 #include <ATen/ops/resize_as_native.h>
@@ -198,6 +199,37 @@ inline at::Tensor empty_cat_mcpu_result(
   return at::empty(out_sizes, options);
 }
 
+inline std::vector<int64_t> embedding_mcpu_result_sizes(
+    const at::Tensor& weight,
+    const at::Tensor& indices) {
+  TORCH_CHECK(
+      weight.dim() >= 1,
+      "aoti_torch_mcpu_embedding: expected weight to have at least one dimension");
+  auto out_sizes = indices.sizes().vec();
+  for (const auto d : c10::irange(1, weight.dim())) {
+    out_sizes.push_back(weight.size(d));
+  }
+  return out_sizes;
+}
+
+inline at::Tensor empty_embedding_mcpu_result(
+    const at::Tensor& weight,
+    const at::Tensor& indices) {
+  const bool weight_is_mcpu =
+      weight.device().type() == c10::DeviceType::PrivateUse1;
+  const bool indices_is_mcpu =
+      indices.device().type() == c10::DeviceType::PrivateUse1;
+  const at::Tensor& device_tensor =
+      weight_is_mcpu ? weight : (indices_is_mcpu ? indices : weight);
+  auto options = (weight_is_mcpu || indices_is_mcpu)
+      ? device_tensor.options()
+      : device_tensor.options().device(
+            c10::Device(c10::DeviceType::PrivateUse1, 0));
+  return at::empty(
+      embedding_mcpu_result_sizes(weight, indices),
+      options.dtype(weight.scalar_type()));
+}
+
 // clang-format off
 inline AOTITorchError aoti_torch_mcpu_view_dtype(AtenTensorHandle self, int32_t dtype, AtenTensorHandle* ret0) {
     AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
@@ -311,6 +343,38 @@ inline AOTITorchError aoti_torch_mcpu_cat(const AtenTensorHandle* tensors, int64
             }
             at::Tensor cpu_out = get_cpu_view_from_mcpu_tensor(out);
             at::cat_out(cpu_out, at::ITensorListRef(cpu_tensors), dim);
+        });
+    });
+}
+
+inline AOTITorchError aoti_torch_mcpu_embedding(AtenTensorHandle weight, AtenTensorHandle indices, int64_t padding_idx, bool scale_grad_by_freq, bool sparse, AtenTensorHandle* ret0) {
+    at::Tensor* t_weight = tensor_handle_to_tensor_pointer(weight);
+    at::Tensor* t_indices = tensor_handle_to_tensor_pointer(indices);
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        struct EmbeddingArgs {
+            torch_mcpu_cpp_wrapper_detail::TensorMeta weight;
+            torch_mcpu_cpp_wrapper_detail::TensorMeta indices;
+            torch_mcpu_cpp_wrapper_detail::TensorMeta out;
+            int64_t padding_idx;
+            bool scale_grad_by_freq;
+            bool sparse;
+        };
+        auto out = empty_embedding_mcpu_result(*t_weight, *t_indices);
+        auto launch_out = out;
+        auto args = std::make_unique<EmbeddingArgs>(EmbeddingArgs{
+            torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_weight),
+            torch_mcpu_cpp_wrapper_detail::make_tensor_meta(*t_indices),
+            torch_mcpu_cpp_wrapper_detail::make_tensor_meta(launch_out),
+            padding_idx,
+            scale_grad_by_freq,
+            sparse});
+        *ret0 = new_tensor_handle(std::move(out));
+        at::mcpu::launch_kernel(launch_out, [args = std::move(args)]() mutable {
+            at::mcpu::KernelPointerMemoryGuard guard({args->weight.ptr, args->indices.ptr, args->out.ptr});
+            at::Tensor cpu_weight = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(args->weight);
+            at::Tensor cpu_indices = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(args->indices);
+            at::Tensor cpu_out = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(args->out);
+            at::embedding_out(cpu_out, cpu_weight, cpu_indices, args->padding_idx, args->scale_grad_by_freq, args->sparse);
         });
     });
 }

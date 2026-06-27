@@ -94,7 +94,27 @@ def _register_mcpu_aoti_fallback_shims() -> None:
     from torchgen.aoti.fallback_ops import inductor_fallback_ops
 
     inductor_fallback_ops.setdefault("aten.cat.default", {})
+    inductor_fallback_ops.setdefault("aten.embedding.default", {})
+    inductor_fallback_ops.setdefault("aten.index.Tensor", {})
+    inductor_fallback_ops.setdefault("aten.index_select.default", {})
+    inductor_fallback_ops.setdefault("aten.index_select.out", {})
     inductor_fallback_ops.setdefault("aten.sigmoid.default", {})
+
+
+def _register_mcpu_inductor_fallback_lowerings() -> None:
+    import torch._inductor.lowering as lowering
+
+    fallback_ops = (
+        torch.ops.aten.embedding.default,
+        torch.ops.aten.index.Tensor,
+        torch.ops.aten.index_select.default,
+        torch.ops.aten.index_select.out,
+    )
+    for op in fallback_ops:
+        lowering.add_needs_realized_inputs(op)
+        lowering.lowerings[op] = lowering.fallback_handler(
+            op, add_to_fallback_set=False
+        )
 
 
 @dataclass(frozen=True)
@@ -248,6 +268,7 @@ def setup_mcpu_compile() -> None:
     """Register mcpu with Dynamo and Inductor."""
     _setup_inductor_cpp_device_build_flags()
     _register_mcpu_aoti_fallback_shims()
+    _register_mcpu_inductor_fallback_lowerings()
     if _env_flag("TORCH_MCPU_ENABLE_TORCH_XCPU_FUSIONS", True):
         inductor_config.post_grad_custom_post_pass = append_post_grad_pass(
             inductor_config.post_grad_custom_post_pass,
@@ -262,4 +283,12 @@ def setup_mcpu_compile() -> None:
         McpuCppWrapperCodegen,
         device_custom_pass=McpuDisableComputeFusionPass(),
     )
+    register_backend_for_device(
+        "privateuseone",
+        McpuScheduling,
+        McpuWrapperCodegen,
+        McpuCppWrapperCodegen,
+        device_custom_pass=McpuDisableComputeFusionPass(),
+    )
     cpp_utils.DEVICE_TO_ATEN["mcpu"] = "at::kPrivateUse1"
+    cpp_utils.DEVICE_TO_ATEN["privateuseone"] = "at::kPrivateUse1"

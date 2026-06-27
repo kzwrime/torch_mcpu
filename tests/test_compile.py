@@ -279,6 +279,35 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertNotIn("cpp_fused", code_text)
         self.assertIn("aoti_torch_mcpu_cat", code_text)
 
+    def test_cpp_wrapper_supports_mcpu_embedding_fallback(self):
+        """AOTI C++ wrapper needs an mcpu embedding shim for MTP compilation."""
+
+        def embed(weight, indices):
+            return torch.nn.functional.embedding(indices, weight)
+
+        weight = torch.arange(
+            20, device="mcpu", dtype=torch.float32
+        ).reshape(5, 4)
+        indices = torch.tensor(
+            [[0, 2], [4, 1]], device="mcpu", dtype=torch.int64
+        )
+        expected = torch.nn.functional.embedding(
+            indices.to("cpu"), weight.to("cpu")
+        )
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "fallback_by_default": False,
+        }):
+            opt_fn = torch.compile(embed)
+            res, code = run_and_get_cpp_code(opt_fn, weight, indices)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
+        self.assertIn("aoti_torch_mcpu_embedding", code_text)
+
     def test_compile_cpp_wrapper(self):
         """torch.compile with cpp_wrapper=True (AOT C++ code generation)."""
         x, y, z, ref = self._make_tensors()
