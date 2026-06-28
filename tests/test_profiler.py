@@ -249,6 +249,55 @@ class TestProfiler(TestCase):
         self.assertFalse(hasattr(torch.mcpu, "get_kernel_timing_ns"))
         self.assertFalse(hasattr(torch.mcpu, "read_kernel_timing_tsc"))
 
+    def test_profiler_start_syncs_before_resetting_kernel_timing(self):
+        """Test profiler start synchronizes before clearing kernel events."""
+        calls = []
+
+        with (
+            mock.patch.object(
+                torch.mcpu, "synchronize", side_effect=lambda: calls.append("sync")
+            ),
+            mock.patch.object(
+                torch.mcpu,
+                "reset_kernel_timing",
+                side_effect=lambda: calls.append("reset"),
+            ),
+            mock.patch.object(
+                torch.mcpu,
+                "set_kernel_timing_enabled",
+                side_effect=lambda enabled: calls.append(("enabled", enabled)),
+            ),
+        ):
+            prof = torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU]
+            )
+            prof.start()
+            prof.stop()
+
+        self.assertEqual(calls[:3], ["sync", "reset", ("enabled", True)])
+        self.assertEqual(calls[-2:], ["sync", ("enabled", False)])
+
+    @skipIfTorchDynamo()
+    def test_profiler_start_clears_stale_kernel_timing_events(self):
+        """Test profiler start clears kernel events from earlier work."""
+        x = torch.empty(8, dtype=torch.int64, device="mcpu")
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            torch.ops.mcpu.stream_sleep_fill_(x, 1, 1)
+            torch.mcpu.synchronize()
+            self.assertGreater(len(mcpu_profiler._valid_kernel_events()), 0)
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU]
+        ):
+            pass
+
+        self.assertEqual(mcpu_profiler._valid_kernel_events(), [])
+
     def test_profiler_trace_postprocess_uses_direct_timer_path(self):
         """Test trace injection converts kernel timing directly to us."""
         trace = {

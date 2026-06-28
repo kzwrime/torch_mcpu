@@ -265,6 +265,90 @@ def _patch_export_chrome_trace():
     profile_cls.export_chrome_trace = export_chrome_trace_with_mcpu
 
 
+def _profiler_kernel_timing_enabled():
+    return (
+        torch._C._get_privateuse1_backend_name() == "mcpu"
+        and os.environ.get("TORCH_MCPU_PATCH_PROFILER_TRACE", "1") != "0"
+    )
+
+
+def _start_mcpu_kernel_timing_for_profiler():
+    if not _profiler_kernel_timing_enabled():
+        return
+    torch.mcpu.synchronize()
+    torch.mcpu.reset_kernel_timing()
+    torch.mcpu.set_kernel_timing_enabled(True)
+
+
+def _stop_mcpu_kernel_timing_for_profiler():
+    if not _profiler_kernel_timing_enabled():
+        return
+    torch.mcpu.synchronize()
+    torch.mcpu.set_kernel_timing_enabled(False)
+
+
+def _patch_torch_profiler_start_stop():
+    try:
+        profile_cls = torch.profiler.profile
+        original_start = profile_cls.start
+        original_stop = profile_cls.stop
+    except Exception:
+        return
+
+    if getattr(original_start, "_torch_mcpu_patched", False):
+        return
+
+    def start_with_mcpu_kernel_timing(self):
+        _start_mcpu_kernel_timing_for_profiler()
+        try:
+            return original_start(self)
+        except Exception:
+            _stop_mcpu_kernel_timing_for_profiler()
+            raise
+
+    def stop_with_mcpu_kernel_timing(self):
+        try:
+            return original_stop(self)
+        finally:
+            _stop_mcpu_kernel_timing_for_profiler()
+
+    start_with_mcpu_kernel_timing._torch_mcpu_patched = True
+    stop_with_mcpu_kernel_timing._torch_mcpu_patched = True
+    profile_cls.start = start_with_mcpu_kernel_timing
+    profile_cls.stop = stop_with_mcpu_kernel_timing
+
+
+def _patch_autograd_profiler_start_stop():
+    try:
+        profile_cls = torch.autograd.profiler.profile
+        original_enter = profile_cls.__enter__
+        original_exit = profile_cls.__exit__
+    except Exception:
+        return
+
+    if getattr(original_enter, "_torch_mcpu_patched", False):
+        return
+
+    def enter_with_mcpu_kernel_timing(self):
+        if getattr(self, "use_device", None) == "mcpu":
+            _start_mcpu_kernel_timing_for_profiler()
+        return original_enter(self)
+
+    def exit_with_mcpu_kernel_timing(self, exc_type, exc_val, exc_tb):
+        try:
+            return original_exit(self, exc_type, exc_val, exc_tb)
+        finally:
+            if getattr(self, "use_device", None) == "mcpu":
+                _stop_mcpu_kernel_timing_for_profiler()
+
+    enter_with_mcpu_kernel_timing._torch_mcpu_patched = True
+    exit_with_mcpu_kernel_timing._torch_mcpu_patched = True
+    profile_cls.__enter__ = enter_with_mcpu_kernel_timing
+    profile_cls.__exit__ = exit_with_mcpu_kernel_timing
+
+
 def install():
     _prefer_mcpu_profiler_fallback()
+    _patch_torch_profiler_start_stop()
+    _patch_autograd_profiler_start_stop()
     _patch_export_chrome_trace()

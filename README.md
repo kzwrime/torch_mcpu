@@ -98,6 +98,19 @@ torch_mcpu 中有 4 个 DSO，它们之间的依赖关系如下：
 - 注册特定的运算符转换规则：参见 `csrc/amp` 中的 `autocat_mode.cpp`
 - 为不同加速器添加新数据类型的支持：参见 `torch_mcpu/mcpu/amp/__init__.py` 中的 `get_amp_supported_dtype`
 
+### Stream host 侧任务提交假设
+
+当前 OpenReg stream 的队列实现面向低开销的热路径：**每个 stream 假设只有一个 host producer 线程提交任务，并由该 stream 独占的 worker 线程顺序消费任务**。
+
+这意味着：
+
+- 多个 stream 可以分别由不同 host 线程提交任务，因为每个 stream 有独立队列。
+- 同一个 stream 不支持多个 host 线程并发调用 `orLaunchKernel` / `stream->launch` 提交任务。
+- 当前队列是固定容量环形队列，`tail` 通过普通 load/store 推进，不使用 mutex、`fetch_add` 或 CAS 分配多 producer slot。
+- 如果多个 host 线程同时向同一个 stream 提交任务，可能发生 slot 覆盖、任务丢失或队列状态损坏；这是未定义行为，不是受支持用法。
+
+这个限制是当前性能取舍的一部分。相关设计和 benchmark 背景见 [docs/openreg_launch_queue_benchmark.md](/shared/vllm-xcpu-dev-kit-0.19/torch_mcpu/docs/openreg_launch_queue_benchmark.md)。
+
 ## 安装和使用
 
 ### 安装
@@ -182,3 +195,8 @@ print(f"Device of z: {z.device}")
   - 自定义 Tensor&Storage
   - ...
 - **改进测试**：添加更多与集成机制相关的测试用例。
+- **Stream 计时与观测性改进**：
+  - 继续以当前 SPSC（single-producer/single-consumer）stream 队列作为主要性能取舍；同一个 stream 多 host producer 并发提交不是当前优化目标。
+  - 将 profiler/kernel timing 的 event buffer 与 stream 并发模型对齐；优先评估 per-stream timing buffer，避免全局计数热点。
+  - 在 event 写满时暴露 dropped event 计数，避免 trace 静默截断。
+  - 强化 profiler start/reset/synchronize 的窗口语义，确保旧任务不会污染新的 profile 区间。
