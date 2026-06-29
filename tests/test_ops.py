@@ -1223,7 +1223,7 @@ class TestFallbackExtended(TestCase):
         ]
         return result, event_names
 
-    def test_contiguous_add_sub_use_raw_kernel(self):
+    def test_contiguous_add_sub_use_cpu_view_kernel(self):
         x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
         y = (torch.arange(12, dtype=torch.float32).reshape(3, 4) + 1).to("mcpu")
 
@@ -1233,10 +1233,12 @@ class TestFallbackExtended(TestCase):
 
         self.assertEqual(add_res.cpu(), x.cpu() + y.cpu())
         self.assertEqual(sub_res.cpu(), y.cpu() - x.cpu())
-        self.assertIn("mcpu::aten::add.raw", event_names)
-        self.assertIn("mcpu::aten::sub.raw", event_names)
+        self.assertIn("mcpu::aten::add", event_names)
+        self.assertIn("mcpu::aten::sub.Tensor", event_names)
+        self.assertNotIn("mcpu::aten::add.raw", event_names)
+        self.assertNotIn("mcpu::aten::sub.raw", event_names)
 
-    def test_add_sub_raw_kernel_fallback_cases(self):
+    def test_add_sub_cpu_view_kernel_cases(self):
         x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
         y = torch.arange(4, dtype=torch.float32).to("mcpu")
 
@@ -1313,7 +1315,7 @@ class TestFallbackExtended(TestCase):
         ):
             self.assertNotIn(raw_name, event_names)
 
-    def test_strided_sigmoid_and_mul_use_raw_kernel(self):
+    def test_strided_sigmoid_uses_raw_and_mul_uses_cpu_view_kernel(self):
         tokens = 5
         heads = 3
         head_dim = 4
@@ -1332,9 +1334,9 @@ class TestFallbackExtended(TestCase):
             self.assertEqual(result.cpu(), expected)
             self.assertFalse(gate.is_contiguous())
             self.assertIn("mcpu::aten::sigmoid.raw", event_names)
-            self.assertIn("mcpu::aten::mul.raw", event_names)
+            self.assertIn("mcpu::aten::mul.Tensor", event_names)
             self.assertNotIn("mcpu::aten::sigmoid", event_names)
-            self.assertNotIn("mcpu::aten::mul.out", event_names)
+            self.assertNotIn("mcpu::aten::mul.raw", event_names)
 
     def test_double_unary_falls_back_from_raw_kernel(self):
         x = torch.tensor([1e-300, 2.0], dtype=torch.float64, device="mcpu")
@@ -1349,7 +1351,7 @@ class TestFallbackExtended(TestCase):
         self.assertIn("mcpu::aten::reciprocal.out", event_names)
         self.assertNotIn("mcpu::aten::reciprocal.raw", event_names)
 
-    def test_mul_raw_kernel_fallback_cases(self):
+    def test_mul_cpu_view_kernel_cases(self):
         x = torch.arange(12, dtype=torch.float32).reshape(3, 4).to("mcpu")
         y = torch.arange(4, dtype=torch.float32).to("mcpu")
 
@@ -1365,7 +1367,7 @@ class TestFallbackExtended(TestCase):
         )
         self.assertNotIn("mcpu::aten::mul.raw", event_names)
 
-    def test_strided_add_sub_raw_kernel_matches_cpu(self):
+    def test_strided_add_sub_cpu_view_kernel_matches_cpu(self):
         base_x = torch.arange(96, dtype=torch.float32).reshape(4, 3, 8)
         base_y = torch.arange(96, 192, dtype=torch.float32).reshape(4, 3, 8)
         x = base_x.to("mcpu")[:, :, 2:6]
@@ -1377,10 +1379,14 @@ class TestFallbackExtended(TestCase):
 
         self.assertEqual(add_res.cpu(), base_x[:, :, 2:6] + base_y[:, :, 2:6])
         self.assertEqual(sub_res.cpu(), base_y[:, :, 2:6] - base_x[:, :, 2:6])
-        self.assertIn("mcpu::aten::add.raw", event_names)
-        self.assertIn("mcpu::aten::sub.raw", event_names)
+        self.assertIn("mcpu::aten::add", event_names)
+        self.assertIn("mcpu::aten::sub.Tensor", event_names)
+        self.assertNotIn("mcpu::aten::add.raw", event_names)
+        self.assertNotIn("mcpu::aten::sub.raw", event_names)
 
-    def test_scalar_gt_bitwise_not_use_raw_and_multi_index_put_falls_back(self):
+    def test_scalar_gt_uses_cpu_view_and_bitwise_not_raw_and_multi_index_put_falls_back(
+        self,
+    ):
         x = torch.tensor([[0.0, 2.0], [3.0, 4.0]], device="mcpu")
         gt_out = torch.empty_like(x, dtype=torch.bool)
         bits = torch.tensor([[0, 1], [2, 3]], device="mcpu", dtype=torch.int32)
@@ -1413,7 +1419,8 @@ class TestFallbackExtended(TestCase):
             for thread in timing
             for event in thread.get("events", [])
         ]
-        self.assertIn("mcpu::aten::gt.Scalar.raw", event_names)
+        self.assertIn("mcpu::aten::gt.Scalar_out", event_names)
+        self.assertNotIn("mcpu::aten::gt.Scalar.raw", event_names)
         self.assertIn("mcpu::aten::bitwise_not.out.raw", event_names)
         self.assertIn("mcpu::aten::_index_put_impl_", event_names)
         self.assertNotIn("mcpu::aten::_index_put_impl_.raw", event_names)
