@@ -620,9 +620,56 @@ class TestFallback(TestCase):
         torch.sum(x, dim=[1], out=sum_out)
         self.assertEqual(sum_out.cpu(), torch.sum(x.cpu(), dim=[1]))
 
+        self.assertEqual(torch.sum(x).cpu(), torch.sum(x.cpu()))
+        sum_all_out = torch.empty((), device="mcpu")
+        torch.ops.aten.sum.out(x, out=sum_all_out)
+        self.assertEqual(sum_all_out.cpu(), torch.sum(x.cpu()))
+
+        self.assertEqual(
+            torch.sum(x, dim=[1], keepdim=True).cpu(),
+            torch.sum(x.cpu(), dim=[1], keepdim=True),
+        )
+        sum_keepdim_out = torch.empty(2, 1, device="mcpu")
+        torch.sum(x, dim=[1], keepdim=True, out=sum_keepdim_out)
+        self.assertEqual(
+            sum_keepdim_out.cpu(), torch.sum(x.cpu(), dim=[1], keepdim=True)
+        )
+
+        int_sum = torch.sum(torch.tensor([1, 2, 3], device="mcpu"))
+        self.assertEqual(int_sum.dtype, torch.int64)
+        self.assertEqual(int_sum.cpu(), torch.tensor(6, dtype=torch.int64))
+
+        int_matrix = torch.tensor([[1, 2], [3, 4]], device="mcpu", dtype=torch.int32)
+        self.assertEqual(
+            torch.sum(int_matrix, dtype=torch.float32).cpu(),
+            torch.sum(int_matrix.cpu(), dtype=torch.float32),
+        )
+        int_sum_dim = torch.sum(int_matrix, dim=[0], dtype=torch.float32)
+        self.assertEqual(
+            int_sum_dim.cpu(), torch.sum(int_matrix.cpu(), dim=[0], dtype=torch.float32)
+        )
+        int_sum_dim_out = torch.empty(2, device="mcpu", dtype=torch.float32)
+        torch.sum(int_matrix, dim=[0], dtype=torch.float32, out=int_sum_dim_out)
+        self.assertEqual(
+            int_sum_dim_out.cpu(),
+            torch.sum(int_matrix.cpu(), dim=[0], dtype=torch.float32),
+        )
+
+        bool_sum = torch.sum(torch.tensor([True, False, True], device="mcpu"))
+        self.assertEqual(bool_sum.dtype, torch.int64)
+        self.assertEqual(bool_sum.cpu(), torch.tensor(2, dtype=torch.int64))
+
+        self.assertEqual(
+            torch.sum(x, dim=[0, 1]).cpu(), torch.sum(x.cpu(), dim=[0, 1])
+        )
+
         bad_sum_out = torch.empty(1, device="mcpu")
         with self.assertRaisesRegex(RuntimeError, "aten::sum.IntList_out"):
             torch.sum(x, dim=[1], out=bad_sum_out)
+
+        bad_sum_all_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::sum.out"):
+            torch.ops.aten.sum.out(x, out=bad_sum_all_out)
 
     def test_explicit_comparison_ops_and_variants(self):
         lhs_cpu = torch.tensor([[0.0, 2.0], [3.0, 4.0]])
@@ -831,14 +878,86 @@ class TestFallback(TestCase):
         torch.argmax(x, dim=1, keepdim=True, out=argmax_out)
         self.assertEqual(argmax_out.cpu(), torch.argmax(x.cpu(), dim=1, keepdim=True))
 
+        self.assertEqual(torch.max(x).cpu(), torch.max(x.cpu()))
+        max_unary_out = torch.empty((), device="mcpu")
+        torch.max(x, out=max_unary_out)
+        self.assertEqual(max_unary_out.cpu(), torch.max(x.cpu()))
+
+        max_values, max_indices = torch.max(x, dim=1, keepdim=True)
+        expected_max_values, expected_max_indices = torch.max(
+            x.cpu(), dim=1, keepdim=True
+        )
+        self.assertEqual(max_values.cpu(), expected_max_values)
+        self.assertEqual(max_indices.cpu(), expected_max_indices)
+        max_values_out = torch.empty(2, 1, device="mcpu")
+        max_indices_out = torch.empty(2, 1, device="mcpu", dtype=torch.long)
+        torch.max(x, dim=1, keepdim=True, out=(max_values_out, max_indices_out))
+        self.assertEqual(max_values_out.cpu(), expected_max_values)
+        self.assertEqual(max_indices_out.cpu(), expected_max_indices)
+
+        self.assertEqual(torch.min(x).cpu(), torch.min(x.cpu()))
+        min_unary_out = torch.empty((), device="mcpu")
+        torch.min(x, out=min_unary_out)
+        self.assertEqual(min_unary_out.cpu(), torch.min(x.cpu()))
+
+        min_values, min_indices = torch.min(x, dim=1, keepdim=True)
+        expected_min_values, expected_min_indices = torch.min(
+            x.cpu(), dim=1, keepdim=True
+        )
+        self.assertEqual(min_values.cpu(), expected_min_values)
+        self.assertEqual(min_indices.cpu(), expected_min_indices)
+        min_values_out = torch.empty(2, 1, device="mcpu")
+        min_indices_out = torch.empty(2, 1, device="mcpu", dtype=torch.long)
+        torch.min(x, dim=1, keepdim=True, out=(min_values_out, min_indices_out))
+        self.assertEqual(min_values_out.cpu(), expected_min_values)
+        self.assertEqual(min_indices_out.cpu(), expected_min_indices)
+
+        self.assertEqual(torch.mean(x).cpu(), torch.mean(x.cpu()))
+        mean_dtype_out = torch.empty((), device="mcpu")
+        torch.mean(x, out=mean_dtype_out)
+        self.assertEqual(mean_dtype_out.cpu(), torch.mean(x.cpu()))
+        self.assertEqual(
+            torch.mean(x, dim=[1], keepdim=True).cpu(),
+            torch.mean(x.cpu(), dim=[1], keepdim=True),
+        )
+        mean_out = torch.empty(2, 1, device="mcpu")
+        torch.mean(x, dim=[1], keepdim=True, out=mean_out)
+        self.assertEqual(mean_out.cpu(), torch.mean(x.cpu(), dim=[1], keepdim=True))
+
+        self.assertEqual(
+            torch.amax(x, dim=[0, 1]).cpu(), torch.amax(x.cpu(), dim=[0, 1])
+        )
+        amax_out = torch.empty(2, 1, device="mcpu")
+        torch.amax(x, dim=[1], keepdim=True, out=amax_out)
+        self.assertEqual(amax_out.cpu(), torch.amax(x.cpu(), dim=[1], keepdim=True))
+        self.assertEqual(
+            torch.amin(x, dim=[0, 1]).cpu(), torch.amin(x.cpu(), dim=[0, 1])
+        )
+        amin_out = torch.empty(2, 1, device="mcpu")
+        torch.amin(x, dim=[1], keepdim=True, out=amin_out)
+        self.assertEqual(amin_out.cpu(), torch.amin(x.cpu(), dim=[1], keepdim=True))
+
         bad_max_values = torch.empty(1, device="mcpu")
         bad_max_indices = torch.empty(1, device="mcpu", dtype=torch.long)
         with self.assertRaisesRegex(RuntimeError, "aten::max.dim_max"):
             torch.max(x, dim=1, keepdim=True, out=(bad_max_values, bad_max_indices))
 
+        bad_min_values = torch.empty(1, device="mcpu")
+        bad_min_indices = torch.empty(1, device="mcpu", dtype=torch.long)
+        with self.assertRaisesRegex(RuntimeError, "aten::min.dim_min"):
+            torch.min(x, dim=1, keepdim=True, out=(bad_min_values, bad_min_indices))
+
         bad_mean_out = torch.empty(1, device="mcpu")
         with self.assertRaisesRegex(RuntimeError, "aten::mean.out"):
             torch.mean(x, dim=[1], keepdim=True, out=bad_mean_out)
+
+        bad_amax_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::amax.out"):
+            torch.amax(x, dim=[1], keepdim=True, out=bad_amax_out)
+
+        bad_amin_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::amin.out"):
+            torch.amin(x, dim=[1], keepdim=True, out=bad_amin_out)
 
         bad_scatter_out = torch.empty(1, device="mcpu")
         with self.assertRaisesRegex(RuntimeError, "aten::scatter_add.out"):

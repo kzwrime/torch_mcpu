@@ -15,7 +15,6 @@
 #include <ATen/ops/sigmoid.h>
 #include <ATen/ops/silu.h>
 #include <ATen/ops/sin.h>
-#include <ATen/ops/sum.h>
 #include <ATen/ops/zero.h>
 #include <torch/library.h>
 
@@ -813,32 +812,6 @@ at::Tensor nonzero(const at::Tensor& self) {
   return out;
 }
 
-at::Tensor& sum_IntList_out(
-    const at::Tensor& self,
-    at::OptionalIntArrayRef dim,
-    bool keepdim,
-    std::optional<at::ScalarType> dtype,
-    at::Tensor& out) {
-  auto expected_sizes = ops::reduction_sizes(self.sizes(), dim, keepdim);
-  ops::check_out_sizes("aten::sum.IntList_out", out, expected_sizes);
-
-  std::optional<std::vector<int64_t>> dim_vec;
-  if (dim.has_value()) {
-    dim_vec = std::vector<int64_t>(dim->begin(), dim->end());
-  }
-
-  MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::sum.IntList_out", ([ self, out, dim_vec, keepdim, dtype ]), {
-        KernelMemoryGuard guard(self, out);
-        auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
-        auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
-        auto cpu_dim = dim_vec.has_value() ? at::OptionalIntArrayRef(*dim_vec)
-                                           : at::OptionalIntArrayRef();
-        at::sum_out(cpu_out, cpu_self, cpu_dim, keepdim, dtype);
-      });
-  return out;
-}
-
 } // namespace
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
@@ -860,7 +833,6 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("silu.out", &silu_out);
   m.impl("silu_", &silu_);
   m.impl("reciprocal.out", &reciprocal_out);
-  m.impl("sum.IntList_out", &sum_IntList_out);
   m.impl("zero_", &zero_);
 }
 
