@@ -35,6 +35,10 @@ inline int64_t numel_from_sizes(c10::ArrayRef<int64_t> sizes) {
 }
 
 inline TensorViewSpec make_cpu_view_spec(const at::Tensor& tensor) {
+  TORCH_CHECK(
+      is_mcpu_tensor(tensor),
+      "make_cpu_view_spec expects an mcpu tensor, but got ",
+      tensor.device());
   return TensorViewSpec{
       tensor.numel() == 0 ? nullptr : tensor.data_ptr(),
       c10::SmallVector<int64_t, 1>(

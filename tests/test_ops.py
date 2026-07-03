@@ -775,6 +775,14 @@ class TestFallback(TestCase):
             torch.scatter_add(scatter_self.cpu(), 1, scatter_index.cpu(), scatter_src.cpu()),
         )
 
+        scatter_src_out = torch.empty_like(scatter_self)
+        torch.scatter(scatter_self, 1, scatter_index, scatter_src, out=scatter_src_out)
+        self.assertEqual(
+            scatter_src_out.cpu(),
+            torch.scatter(scatter_self.cpu(), 1, scatter_index.cpu(), scatter_src.cpu()),
+        )
+        self.assertEqual(scatter_src_out.device.type, "mcpu")
+
         softmax_out = torch.empty_like(x)
         torch.ops.aten._softmax.out(x, 1, False, out=softmax_out)
         self.assertEqual(
@@ -962,6 +970,18 @@ class TestFallback(TestCase):
         bad_scatter_out = torch.empty(1, device="mcpu")
         with self.assertRaisesRegex(RuntimeError, "aten::scatter_add.out"):
             torch.scatter_add(scatter_self, 1, scatter_index, scatter_src, out=bad_scatter_out)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::scatter.src_out"):
+            torch.scatter(scatter_self, 1, scatter_index, scatter_src, out=bad_scatter_out)
+
+        with self.assertRaisesRegex(RuntimeError, "make_cpu_view_spec expects an mcpu tensor"):
+            torch.scatter(
+                scatter_self,
+                1,
+                scatter_index.cpu(),
+                scatter_src,
+                out=torch.empty_like(scatter_self),
+            )
 
         bad_softmax_out = torch.empty(1, device="mcpu")
         with self.assertRaisesRegex(RuntimeError, "aten::_softmax.out"):
