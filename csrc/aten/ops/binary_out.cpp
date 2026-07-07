@@ -4,6 +4,7 @@
 #include <ATen/ops/add.h>
 #include <ATen/ops/div.h>
 #include <ATen/ops/eq.h>
+#include <ATen/ops/floor_divide.h>
 #include <ATen/ops/ge.h>
 #include <ATen/ops/gt.h>
 #include <ATen/ops/le.h>
@@ -29,6 +30,7 @@ enum class ArithmeticOp {
   Sub,
   Mul,
   Div,
+  FloorDivide,
 };
 
 enum class CompareOp {
@@ -129,6 +131,8 @@ at::Tensor& cpu_arithmetic_tensor_out(
     return at::sub_out(out, self, other, alpha);
   } else if constexpr (op == ArithmeticOp::Mul) {
     return at::mul_out(out, self, other);
+  } else if constexpr (op == ArithmeticOp::FloorDivide) {
+    return at::floor_divide_out(out, self, other);
   } else {
     return at::div_out(out, self, other);
   }
@@ -146,6 +150,8 @@ at::Tensor& cpu_arithmetic_scalar_out(
     return at::sub_out(out, self, other, alpha);
   } else if constexpr (op == ArithmeticOp::Mul) {
     return at::mul_out(out, self, other);
+  } else if constexpr (op == ArithmeticOp::FloorDivide) {
+    return at::floor_divide_out(out, self, other);
   } else {
     return at::div_out(out, self, other);
   }
@@ -318,6 +324,70 @@ at::Tensor& div_Tensor_(at::Tensor& self, const at::Tensor& other) {
       self,
       other,
       at::Scalar(1));
+}
+
+at::Tensor& floor_divide_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  return arithmetic_Tensor_out_impl<ArithmeticOp::FloorDivide>(
+      "aten::floor_divide.out",
+      "mcpu::aten::floor_divide.out",
+      self,
+      other,
+      at::Scalar(1),
+      out);
+}
+
+at::Tensor floor_divide_Tensor(
+    const at::Tensor& self,
+    const at::Tensor& other) {
+  return arithmetic_Tensor_impl<ArithmeticOp::FloorDivide>(
+      "aten::floor_divide.out",
+      "mcpu::aten::floor_divide.Tensor",
+      self,
+      other,
+      at::Scalar(1));
+}
+
+at::Tensor& floor_divide_Tensor_(at::Tensor& self, const at::Tensor& other) {
+  return arithmetic_Tensor__impl<ArithmeticOp::FloorDivide>(
+      "aten::floor_divide_.Tensor",
+      "mcpu::aten::floor_divide_.Tensor",
+      self,
+      other,
+      at::Scalar(1));
+}
+
+at::Tensor& floor_divide_Scalar_out(
+    const at::Tensor& self,
+    const at::Scalar& other,
+    at::Tensor& out) {
+  return arithmetic_Scalar_out_impl<ArithmeticOp::FloorDivide>(
+      "aten::floor_divide.Scalar_out",
+      "mcpu::aten::floor_divide.Scalar_out",
+      self,
+      other,
+      at::Scalar(1),
+      out);
+}
+
+at::Tensor floor_divide_Scalar(
+    const at::Tensor& self,
+    const at::Scalar& other) {
+  auto out = empty_like_mcpu_result(self, other);
+  floor_divide_Scalar_out(self, other, out);
+  return out;
+}
+
+at::Tensor& floor_divide_Scalar_(at::Tensor& self, const at::Scalar& other) {
+  return arithmetic_Scalar_out_impl<ArithmeticOp::FloorDivide>(
+      "aten::floor_divide_.Scalar",
+      "mcpu::aten::floor_divide_.Scalar",
+      self,
+      other,
+      at::Scalar(1),
+      self);
 }
 
 template <CompareOp op>
@@ -693,6 +763,12 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("div.Tensor", &div_Tensor);
   m.impl("div.out", &div_out);
   m.impl("div_.Tensor", &div_Tensor_);
+  m.impl("floor_divide", &floor_divide_Tensor);
+  m.impl("floor_divide.out", &floor_divide_out);
+  m.impl("floor_divide_.Tensor", &floor_divide_Tensor_);
+  m.impl("floor_divide.Scalar", &floor_divide_Scalar);
+  m.impl("floor_divide.Scalar_out", &floor_divide_Scalar_out);
+  m.impl("floor_divide_.Scalar", &floor_divide_Scalar_);
   m.impl("eq.Tensor", &eq_Tensor);
   m.impl("eq.Tensor_out", &eq_Tensor_out);
   m.impl("eq.Scalar", &eq_Scalar);
