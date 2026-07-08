@@ -12,6 +12,37 @@
 
 namespace c10::mcpu {
 
+namespace {
+
+class McpuOptionalDeviceGuard {
+ public:
+  explicit McpuOptionalDeviceGuard(DeviceIndex target_device) {
+    if (target_device < 0) {
+      return;
+    }
+    original_device_ = current_device();
+    if (original_device_ != target_device) {
+      set_device(target_device);
+      changed_ = true;
+    }
+  }
+
+  ~McpuOptionalDeviceGuard() {
+    if (changed_) {
+      (void)orSetDevice(original_device_);
+    }
+  }
+
+  McpuOptionalDeviceGuard(const McpuOptionalDeviceGuard&) = delete;
+  McpuOptionalDeviceGuard& operator=(const McpuOptionalDeviceGuard&) = delete;
+
+ private:
+  DeviceIndex original_device_{-1};
+  bool changed_{false};
+};
+
+} // namespace
+
 struct McpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   static constexpr DeviceType static_type = c10::DeviceType::PrivateUse1;
 
@@ -94,6 +125,7 @@ struct McpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
    * completed running on the device.
    */
   void synchronizeDevice(const DeviceIndex device_index) const override {
+    McpuOptionalDeviceGuard guard(device_index);
     MCPU_CHECK(orDeviceSynchronize());
   }
   // LITERALINCLUDE MCPU ALL DEVICE GUARD IMPL
@@ -171,10 +203,8 @@ struct McpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
       return;
 
     auto or_event = static_cast<orEvent_t>(event);
-    auto orig_device = current_device();
-    set_device(device_index);
+    McpuOptionalDeviceGuard guard(device_index);
     MCPU_CHECK(orEventDestroy(or_event));
-    set_device(orig_device);
   }
 
   /**
@@ -200,8 +230,7 @@ struct McpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
     orEvent_t or_event = static_cast<orEvent_t>(*event);
     McpuStream or_stream{stream};
 
-    const auto orig_device = current_device();
-    set_device(stream.device().index());
+    McpuOptionalDeviceGuard guard(stream.device().index());
 
     if (!or_event) {
       auto or_flag = orEventDisableTiming;
@@ -221,8 +250,6 @@ struct McpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
 
     MCPU_CHECK(orEventRecord(or_event, or_stream));
     *event = or_event;
-
-    set_device(orig_device);
   }
   // LITERALINCLUDE MCPU GUARD EVENT RECORD
 
@@ -240,10 +267,8 @@ struct McpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
 
     orEvent_t or_event = static_cast<orEvent_t>(event);
     McpuStream or_stream{stream};
-    const auto orig_device = current_device();
-    set_device(stream.device().index());
+    McpuOptionalDeviceGuard guard(stream.device().index());
     MCPU_CHECK(orStreamWaitEvent(or_stream, or_event, 0));
-    set_device(orig_device);
   }
 
   /**
@@ -282,15 +307,12 @@ struct McpuGuardImpl final : public c10::impl::DeviceGuardImplInterface {
     TORCH_CHECK(
         event1 && event2,
         "Both events must be recorded before calculating elapsed time.");
-    auto orig_device = current_device();
-    set_device(device_index);
+    McpuOptionalDeviceGuard guard(device_index);
 
     orEvent_t or_event1 = static_cast<orEvent_t>(event1);
     orEvent_t or_event2 = static_cast<orEvent_t>(event2);
     float time_ms = 0;
     MCPU_CHECK(orEventElapsedTime(&time_ms, or_event1, or_event2));
-
-    set_device(orig_device);
 
     return static_cast<double>(time_ms);
   }

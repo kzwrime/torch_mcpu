@@ -52,14 +52,20 @@ static void pin_this_thread_to_core(int core) {
 #endif
 }
 
-struct orEventImpl {
+struct orEventRecordState {
   std::mutex mtx;
   std::condition_variable cv;
-  std::uint64_t recorded_version = 0;
-  std::uint64_t completed_version = 0;
+  bool completed = false;
+  std::uint64_t version = 0;
+  std::chrono::high_resolution_clock::time_point completion_time;
+};
+
+struct orEventImpl {
+  std::mutex mtx;
+  std::uint64_t next_version = 0;
+  std::shared_ptr<orEventRecordState> latest_record;
   int device_index = -1;
   bool timing_enabled{false};
-  std::chrono::high_resolution_clock::time_point completion_time;
 };
 
 struct orEvent {
@@ -155,21 +161,25 @@ orError_t orEventRecord(orEvent_t event, orStream_t stream) {
     return orErrorUnknown;
 
   auto event_impl = event->impl;
-  std::uint64_t version = 0;
+  if (event_impl->device_index != stream->device_index) {
+    return orErrorUnknown;
+  }
+
+  auto record = std::make_shared<orEventRecordState>();
+  const bool timing_enabled = event_impl->timing_enabled;
   {
     std::lock_guard<std::mutex> lock(event_impl->mtx);
-    version = ++event_impl->recorded_version;
+    record->version = ++event_impl->next_version;
+    event_impl->latest_record = record;
   }
-  return orLaunchKernel(stream, [event_impl, version]() {
-    std::lock_guard<std::mutex> lock(event_impl->mtx);
-    if (version <= event_impl->completed_version) {
-      return;
+
+  return orLaunchKernel(stream, [record, timing_enabled]() {
+    std::lock_guard<std::mutex> lock(record->mtx);
+    if (timing_enabled) {
+      record->completion_time = std::chrono::high_resolution_clock::now();
     }
-    if (event_impl->timing_enabled) {
-      event_impl->completion_time = std::chrono::high_resolution_clock::now();
-    }
-    event_impl->completed_version = version;
-    event_impl->cv.notify_all();
+    record->completed = true;
+    record->cv.notify_all();
   });
 }
 
@@ -178,10 +188,19 @@ orError_t orEventSynchronize(orEvent_t event) {
     return orErrorUnknown;
 
   auto event_impl = event->impl;
-  std::unique_lock<std::mutex> lock(event_impl->mtx);
-  const auto target_version = event_impl->recorded_version;
-  event_impl->cv.wait(lock, [&] {
-    return event_impl->completed_version >= target_version;
+  std::shared_ptr<orEventRecordState> record;
+  {
+    std::lock_guard<std::mutex> lock(event_impl->mtx);
+    record = event_impl->latest_record;
+  }
+
+  if (!record) {
+    return orSuccess;
+  }
+
+  std::unique_lock<std::mutex> lock(record->mtx);
+  record->cv.wait(lock, [&] {
+    return record->completed;
   });
 
   return orSuccess;
@@ -192,10 +211,18 @@ orError_t orEventQuery(orEvent_t event) {
     return orErrorUnknown;
 
   auto event_impl = event->impl;
-  std::lock_guard<std::mutex> lock(event_impl->mtx);
-  return event_impl->completed_version >= event_impl->recorded_version
-      ? orSuccess
-      : orErrorNotReady;
+  std::shared_ptr<orEventRecordState> record;
+  {
+    std::lock_guard<std::mutex> lock(event_impl->mtx);
+    record = event_impl->latest_record;
+  }
+
+  if (!record) {
+    return orSuccess;
+  }
+
+  std::lock_guard<std::mutex> lock(record->mtx);
+  return record->completed ? orSuccess : orErrorNotReady;
 }
 
 orError_t orEventElapsedTime(float* ms, orEvent_t start, orEvent_t end) {
@@ -213,21 +240,32 @@ orError_t orEventElapsedTime(float* ms, orEvent_t start, orEvent_t end) {
     return orErrorUnknown;
   }
 
-  auto snapshot_completion_time = [](const std::shared_ptr<orEventImpl>& impl,
-                                     auto* completion_time) {
+  auto snapshot_record = [](const std::shared_ptr<orEventImpl>& impl) {
     std::lock_guard<std::mutex> lock(impl->mtx);
-    if (impl->recorded_version == 0 ||
-        impl->completed_version < impl->recorded_version) {
-      return false;
-    }
-    *completion_time = impl->completion_time;
-    return true;
+    return impl->latest_record;
   };
+
+  auto start_record = snapshot_record(start_impl);
+  auto end_record = snapshot_record(end_impl);
+  if (!start_record || !end_record) {
+    return orErrorUnknown;
+  }
+
+  auto snapshot_completion_time =
+      [](const std::shared_ptr<orEventRecordState>& record,
+         auto* completion_time) {
+        std::lock_guard<std::mutex> lock(record->mtx);
+        if (!record->completed) {
+          return false;
+        }
+        *completion_time = record->completion_time;
+        return true;
+      };
 
   std::chrono::high_resolution_clock::time_point start_completion_time;
   std::chrono::high_resolution_clock::time_point end_completion_time;
-  if (!snapshot_completion_time(start_impl, &start_completion_time) ||
-      !snapshot_completion_time(end_impl, &end_completion_time)) {
+  if (!snapshot_completion_time(start_record, &start_completion_time) ||
+      !snapshot_completion_time(end_record, &end_completion_time)) {
     return orErrorUnknown;
   }
 
@@ -323,15 +361,20 @@ orError_t orStreamWaitEvent(orStream_t stream, orEvent_t event, unsigned int) {
     return orErrorUnknown;
 
   auto event_impl = event->impl;
-  std::uint64_t target_version = 0;
+  std::shared_ptr<orEventRecordState> record;
   {
     std::lock_guard<std::mutex> lock(event_impl->mtx);
-    target_version = event_impl->recorded_version;
+    record = event_impl->latest_record;
   }
-  return orLaunchKernel(stream, [event_impl, target_version]() {
-    std::unique_lock<std::mutex> lock(event_impl->mtx);
-    event_impl->cv.wait(lock, [&] {
-      return event_impl->completed_version >= target_version;
+
+  if (!record) {
+    return orSuccess;
+  }
+
+  return orLaunchKernel(stream, [record]() {
+    std::unique_lock<std::mutex> lock(record->mtx);
+    record->cv.wait(lock, [&] {
+      return record->completed;
     });
   });
 }

@@ -51,6 +51,74 @@ TEST_F(EventTest, EventRecordAndSynchronize) {
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
 
+TEST_F(EventTest, StreamWaitEventCapturesRecordBeforeLaterRecord) {
+  orStream_t slow = nullptr;
+  orStream_t consumer = nullptr;
+  orStream_t fast = nullptr;
+  EXPECT_EQ(orStreamCreate(&slow), orSuccess);
+  EXPECT_EQ(orStreamCreate(&consumer), orSuccess);
+  EXPECT_EQ(orStreamCreate(&fast), orSuccess);
+
+  orEvent_t event = nullptr;
+  EXPECT_EQ(orEventCreate(&event), orSuccess);
+
+  std::atomic<int> src{0};
+  std::atomic<int> dst{-1};
+
+  EXPECT_EQ(
+      orLaunchKernel(slow, [&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        src.store(42, std::memory_order_release);
+      }),
+      orSuccess);
+  EXPECT_EQ(orEventRecord(event, slow), orSuccess);
+
+  EXPECT_EQ(orStreamWaitEvent(consumer, event, 0), orSuccess);
+  EXPECT_EQ(
+      orLaunchKernel(consumer, [&] {
+        dst.store(src.load(std::memory_order_acquire), std::memory_order_release);
+      }),
+      orSuccess);
+
+  EXPECT_EQ(orEventRecord(event, fast), orSuccess);
+
+  EXPECT_EQ(orStreamSynchronize(consumer), orSuccess);
+  EXPECT_EQ(dst.load(std::memory_order_acquire), 42);
+  EXPECT_EQ(orStreamQuery(slow), orSuccess);
+
+  EXPECT_EQ(orEventDestroy(event), orSuccess);
+  EXPECT_EQ(orStreamDestroy(slow), orSuccess);
+  EXPECT_EQ(orStreamDestroy(consumer), orSuccess);
+  EXPECT_EQ(orStreamDestroy(fast), orSuccess);
+}
+
+TEST_F(EventTest, EventSynchronizeWaitsForLatestRecordOnly) {
+  orStream_t slow = nullptr;
+  orStream_t fast = nullptr;
+  EXPECT_EQ(orStreamCreate(&slow), orSuccess);
+  EXPECT_EQ(orStreamCreate(&fast), orSuccess);
+
+  orEvent_t event = nullptr;
+  EXPECT_EQ(orEventCreate(&event), orSuccess);
+
+  EXPECT_EQ(
+      orLaunchKernel(slow, [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }),
+      orSuccess);
+  EXPECT_EQ(orEventRecord(event, slow), orSuccess);
+  EXPECT_EQ(orEventRecord(event, fast), orSuccess);
+
+  EXPECT_EQ(orEventSynchronize(event), orSuccess);
+  EXPECT_EQ(orEventQuery(event), orSuccess);
+  EXPECT_EQ(orStreamQuery(slow), orErrorNotReady);
+
+  EXPECT_EQ(orStreamSynchronize(slow), orSuccess);
+  EXPECT_EQ(orEventDestroy(event), orSuccess);
+  EXPECT_EQ(orStreamDestroy(slow), orSuccess);
+  EXPECT_EQ(orStreamDestroy(fast), orSuccess);
+}
+
 TEST_F(EventTest, EventRecordInvalidArgs) {
   orEvent_t event = nullptr;
   EXPECT_EQ(orEventCreate(&event), orSuccess);

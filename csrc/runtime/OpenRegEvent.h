@@ -129,7 +129,24 @@ struct McpuEvent {
   orEvent_t event_{};
 
   void createEvent(DeviceIndex device_index) {
+    struct DeviceRestore {
+      DeviceIndex original_device{-1};
+      bool changed{false};
+
+      ~DeviceRestore() {
+        if (changed) {
+          (void)orSetDevice(original_device);
+        }
+      }
+    };
+
     device_index_ = device_index;
+    DeviceRestore restore;
+    restore.original_device = current_device();
+    if (restore.original_device != device_index_) {
+      set_device(device_index_);
+      restore.changed = true;
+    }
     MCPU_CHECK(orEventCreateWithFlags(&event_, enable_timing_));
     is_created_ = true;
   }
