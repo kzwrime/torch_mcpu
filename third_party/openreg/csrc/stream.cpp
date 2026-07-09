@@ -1,9 +1,13 @@
 #include <include/openreg.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -22,20 +26,132 @@ static std::vector<std::set<orStream_t>> g_streams_per_device;
 thread_local bool g_in_kernel_task = false;
 #endif
 
+#ifndef TORCH_MCPU_STREAM_IDLE_BUSY
+#define TORCH_MCPU_STREAM_IDLE_BUSY 0
+#endif
+#ifndef TORCH_MCPU_STREAM_IDLE_HYBRID
+#define TORCH_MCPU_STREAM_IDLE_HYBRID 1
+#endif
+#ifndef TORCH_MCPU_STREAM_IDLE_BLOCK
+#define TORCH_MCPU_STREAM_IDLE_BLOCK 2
+#endif
+#ifndef TORCH_MCPU_HIGH_PRIORITY_STREAM_IDLE_POLICY
+#define TORCH_MCPU_HIGH_PRIORITY_STREAM_IDLE_POLICY TORCH_MCPU_STREAM_IDLE_BUSY
+#endif
+#ifndef TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY
+#define TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY TORCH_MCPU_STREAM_IDLE_BLOCK
+#endif
+#ifndef TORCH_MCPU_STREAM_IDLE_SPIN_ITERS
+#define TORCH_MCPU_STREAM_IDLE_SPIN_ITERS 5000
+#endif
+
+#define TORCH_MCPU_STREAM_IDLE_POLICY_VALID(policy) \
+  ((policy) == TORCH_MCPU_STREAM_IDLE_BUSY ||       \
+   (policy) == TORCH_MCPU_STREAM_IDLE_HYBRID ||     \
+   (policy) == TORCH_MCPU_STREAM_IDLE_BLOCK)
+
+static_assert(
+    TORCH_MCPU_STREAM_IDLE_POLICY_VALID(
+        TORCH_MCPU_HIGH_PRIORITY_STREAM_IDLE_POLICY),
+    "TORCH_MCPU_HIGH_PRIORITY_STREAM_IDLE_POLICY must be "
+    "TORCH_MCPU_STREAM_IDLE_BUSY, TORCH_MCPU_STREAM_IDLE_HYBRID, or "
+    "TORCH_MCPU_STREAM_IDLE_BLOCK");
+static_assert(
+    TORCH_MCPU_STREAM_IDLE_POLICY_VALID(
+        TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY),
+    "TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY must be "
+    "TORCH_MCPU_STREAM_IDLE_BUSY, TORCH_MCPU_STREAM_IDLE_HYBRID, or "
+    "TORCH_MCPU_STREAM_IDLE_BLOCK");
+static_assert(
+    TORCH_MCPU_STREAM_IDLE_SPIN_ITERS >= 0,
+    "TORCH_MCPU_STREAM_IDLE_SPIN_ITERS must be non-negative");
+
 static void initialize_registries() {
   int device_count = 0;
   orGetDeviceCount(&device_count);
   g_streams_per_device.resize(device_count);
 }
 
-static int choose_worker_core() {
-  if (const char* env = std::getenv("TORCH_MCPU_STREAM_WORKER_CORE")) {
-    return std::atoi(env);
+static bool parse_non_negative_int(const char* value, int* out) {
+  if (!value || *value == '\0' || !out) {
+    return false;
   }
-  // Do not pin production stream workers by default. OpenMP kernels launched
-  // from the worker inherit the worker affinity mask, so single-core pinning
-  // collapses OMP_NUM_THREADS parallel regions onto one CPU.
-  return -1;
+  char* end = nullptr;
+  errno = 0;
+  long parsed = std::strtol(value, &end, 10);
+  if (errno != 0 || end == value || *end != '\0' || parsed < 0 ||
+      parsed > std::numeric_limits<int>::max()) {
+    return false;
+  }
+  *out = static_cast<int>(parsed);
+  return true;
+}
+
+static int parse_worker_core(const char* value, const char* env_name) {
+  if (!value || *value == '\0' || std::strcmp(value, "none") == 0) {
+    return -1;
+  }
+
+  int core = -1;
+  if (!parse_non_negative_int(value, &core)) {
+    std::cerr << "Invalid " << env_name << "='" << value
+              << "'; default stream worker affinity disabled\n";
+    return -1;
+  }
+  return core;
+}
+
+static int choose_worker_core(bool is_default_stream) {
+  if (!is_default_stream) {
+    return -1;
+  }
+  const char* legacy = std::getenv("TORCH_MCPU_STREAM_WORKER_CORE");
+  if (!legacy) {
+    // Do not pin production stream workers by default. OpenMP kernels launched
+    // from the worker inherit the worker affinity mask, so single-core pinning
+    // collapses OMP_NUM_THREADS parallel regions onto one CPU.
+    return -1;
+  }
+
+  return parse_worker_core(legacy, "TORCH_MCPU_STREAM_WORKER_CORE");
+}
+
+static orStream::IdlePolicy idle_policy_from_macro(int policy) {
+  switch (policy) {
+    case TORCH_MCPU_STREAM_IDLE_BUSY:
+      return orStream::IdlePolicy::Busy;
+    case TORCH_MCPU_STREAM_IDLE_HYBRID:
+      return orStream::IdlePolicy::Hybrid;
+    case TORCH_MCPU_STREAM_IDLE_BLOCK:
+      return orStream::IdlePolicy::Block;
+  }
+  return orStream::IdlePolicy::Busy;
+}
+
+static bool is_highest_priority(int priority) {
+  int min_p = 0;
+  int max_p = 0;
+  if (orDeviceGetStreamPriorityRange(&min_p, &max_p) != orSuccess) {
+    return false;
+  }
+  return priority == max_p;
+}
+
+static orStream::IdlePolicy choose_idle_policy(
+    int priority,
+    bool is_default_stream) {
+  if (is_default_stream) {
+    return orStream::IdlePolicy::Busy;
+  }
+
+  const bool high_priority = is_highest_priority(priority);
+  return idle_policy_from_macro(high_priority
+      ? TORCH_MCPU_HIGH_PRIORITY_STREAM_IDLE_POLICY
+      : TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY);
+}
+
+static std::uint64_t choose_spin_iters() {
+  return static_cast<std::uint64_t>(TORCH_MCPU_STREAM_IDLE_SPIN_ITERS);
 }
 
 static void pin_this_thread_to_core(int core) {
@@ -46,7 +162,12 @@ static void pin_this_thread_to_core(int core) {
   cpu_set_t cpuset;
   CPU_ZERO(&cpuset);
   CPU_SET(core, &cpuset);
-  pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+  int status =
+      pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+  if (status != 0) {
+    std::cerr << "Failed to set stream worker affinity: "
+              << std::strerror(status) << "\n";
+  }
 #else
   (void)core;
 #endif
@@ -72,12 +193,19 @@ struct orEvent {
   std::shared_ptr<orEventImpl> impl;
 };
 
-orStream::orStream() {
+orStream::orStream() : orStream(0, false) {}
+
+orStream::orStream(int stream_priority, bool default_stream)
+    : priority(stream_priority),
+      is_default_stream(default_stream),
+      idle_policy(choose_idle_policy(stream_priority, default_stream)),
+      spin_iters(choose_spin_iters()),
+      affinity_core(choose_worker_core(default_stream)) {
   for (std::uint64_t i = 0; i < kQueueCapacity; ++i) {
     slots[i].sequence.store(i, std::memory_order_relaxed);
   }
   worker = std::thread([this] {
-    pin_this_thread_to_core(choose_worker_core());
+    pin_this_thread_to_core(affinity_core);
     workerLoop();
   });
 }
@@ -85,31 +213,72 @@ orStream::orStream() {
 orStream::~orStream() {
   synchronize();
   stop.store(true, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> lock(wake_mutex);
+    wake_cv.notify_all();
+  }
   if (worker.joinable()) {
     worker.join();
   }
 }
 
-void orStream::workerLoop() {
-  std::uint64_t local_head = head.load(std::memory_order_relaxed);
+template <orStream::IdlePolicy Policy>
+static void workerLoopImpl(orStream* stream) {
+  std::uint64_t local_head = stream->head.load(std::memory_order_relaxed);
+  std::uint64_t idle_spins = 0;
   while (true) {
-    auto& slot = slots[local_head & kQueueMask];
+    auto& slot = stream->slots[local_head & orStream::kQueueMask];
     const auto sequence = slot.sequence.load(std::memory_order_acquire);
     if (sequence != local_head + 1) {
-      if (stop.load(std::memory_order_acquire) &&
-          local_head == tail.load(std::memory_order_acquire)) {
+      if (stream->stop.load(std::memory_order_acquire) &&
+          local_head == stream->tail.load(std::memory_order_acquire)) {
         return;
       }
-      openreg::cpu_relax();
+
+      if constexpr (Policy == orStream::IdlePolicy::Busy) {
+        openreg::cpu_relax();
+        continue;
+      }
+
+      if constexpr (Policy == orStream::IdlePolicy::Hybrid) {
+        if (idle_spins++ < stream->spin_iters) {
+          openreg::cpu_relax();
+          continue;
+        }
+      }
+
+      std::unique_lock<std::mutex> lock(stream->wake_mutex);
+      stream->wake_cv.wait(lock, [&] {
+        return slot.sequence.load(std::memory_order_acquire) ==
+            local_head + 1 ||
+            stream->stop.load(std::memory_order_acquire);
+      });
+      idle_spins = 0;
       continue;
     }
 
     slot.run(slot.storage);
     slot.destroy(slot.storage);
-    slot.sequence.store(local_head + kQueueCapacity, std::memory_order_release);
+    slot.sequence.store(
+        local_head + orStream::kQueueCapacity, std::memory_order_release);
     ++local_head;
-    head.store(local_head, std::memory_order_release);
-    completed.store(local_head, std::memory_order_release);
+    stream->head.store(local_head, std::memory_order_release);
+    stream->completed.store(local_head, std::memory_order_release);
+    idle_spins = 0;
+  }
+}
+
+void orStream::workerLoop() {
+  switch (idle_policy) {
+    case IdlePolicy::Busy:
+      workerLoopImpl<IdlePolicy::Busy>(this);
+      return;
+    case IdlePolicy::Hybrid:
+      workerLoopImpl<IdlePolicy::Hybrid>(this);
+      return;
+    case IdlePolicy::Block:
+      workerLoopImpl<IdlePolicy::Block>(this);
+      return;
   }
 }
 
@@ -123,6 +292,13 @@ void orStream::synchronize() {
 bool orStream::idle() const {
   return completed.load(std::memory_order_acquire) ==
       tail.load(std::memory_order_acquire);
+}
+
+void orStream::notifyWorker() {
+  if (idle_policy == IdlePolicy::Busy) {
+    return;
+  }
+  wake_cv.notify_one();
 }
 
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
@@ -284,7 +460,7 @@ orError_t orEventElapsedTime(float* ms, orEvent_t start, orEvent_t end) {
 
 orError_t orStreamCreateWithPriority(
     orStream_t* stream,
-    [[maybe_unused]] unsigned int flag,
+    unsigned int flag,
     int priority) {
   if (!stream) {
     return orErrorUnknown;
@@ -299,7 +475,8 @@ orError_t orStreamCreateWithPriority(
   int current_device = 0;
   orGetDevice(&current_device);
 
-  orStream_t new_stream = new orStream();
+  const bool is_default_stream = (flag & orStreamDefault) != 0;
+  orStream_t new_stream = new orStream(priority, is_default_stream);
   new_stream->device_index = current_device;
 
   {
@@ -320,10 +497,11 @@ orError_t orStreamCreate(orStream_t* stream) {
   return orStreamCreateWithPriority(stream, 0, max_p);
 }
 
-orError_t orStreamGetPriority(
-    [[maybe_unused]] orStream_t stream,
-    int* priority) {
-  *priority = 0;
+orError_t orStreamGetPriority(orStream_t stream, int* priority) {
+  if (!stream || !priority) {
+    return orErrorUnknown;
+  }
+  *priority = stream->priority;
   return orSuccess;
 }
 

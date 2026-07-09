@@ -47,6 +47,10 @@ struct orEvent;
 typedef struct orStream* orStream_t;
 typedef struct orEvent* orEvent_t;
 
+typedef enum orStreamCreateFlags {
+  orStreamDefault = 0x1,
+} orStreamCreateFlags;
+
 // Memory
 OPENREG_EXPORT orError_t orMalloc(void** devPtr, size_t size);
 OPENREG_EXPORT orError_t orFree(void* devPtr);

@@ -149,7 +149,9 @@ void initSingleDeviceStream(int priority, DeviceIndex device_index, int i) {
   if (stream != nullptr) {
     return;
   }
-  MCPU_CHECK(orStreamCreateWithPriority(&stream, 0, priority));
+  const unsigned int flags =
+      (priority == 0 && i == 0) ? orStreamDefault : 0;
+  MCPU_CHECK(orStreamCreateWithPriority(&stream, flags, priority));
 }
 
 void ensureStreamInitialized(

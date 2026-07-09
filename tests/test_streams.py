@@ -6,6 +6,44 @@ from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, T
 
 
 class TestStream(TestCase):
+    def _worker_policy(self, stream):
+        return torch_mcpu._C._get_stream_worker_policy(
+            stream.stream_id,
+            stream.device_index,
+            stream.device_type,
+        )
+
+    def test_00_stream_priority_selects_worker_idle_policy(self):
+        low, high = torch.Stream.priority_range()
+        low_stream = torch.Stream(device="mcpu:0", priority=low)
+        high_stream = torch.Stream(device="mcpu:0", priority=high)
+
+        low_policy = self._worker_policy(low_stream)
+        high_policy = self._worker_policy(high_stream)
+
+        self.assertEqual(low_policy["priority"], low)
+        self.assertEqual(low_policy["idle_policy"], "block")
+        self.assertEqual(low_policy["is_default_stream"], 0)
+
+        self.assertEqual(high_policy["priority"], high)
+        self.assertEqual(high_policy["idle_policy"], "busy")
+        self.assertEqual(high_policy["is_default_stream"], 0)
+
+    def test_00_default_stream_worker_is_busy(self):
+        default_stream = torch.mcpu.default_stream()
+        policy = self._worker_policy(default_stream)
+        self.assertEqual(policy["is_default_stream"], 1)
+        self.assertEqual(policy["idle_policy"], "busy")
+
+    def test_00_stream_worker_policy_rejects_external_stream_id(self):
+        default_stream = torch.mcpu.default_stream()
+        with self.assertRaisesRegex(RuntimeError, "external streams"):
+            torch_mcpu._C._get_stream_worker_policy(
+                0,
+                default_stream.device_index,
+                default_stream.device_type,
+            )
+
     def _stream_test_tensor(self, value=0, size=8):
         tensor = torch.full((size,), value, dtype=torch.int64, device="mcpu")
         torch.mcpu.synchronize()

@@ -184,6 +184,54 @@ static PyObject* _getDefaultStream(PyObject* self, PyObject* arg) {
   END_HANDLE_TH_ERRORS
 }
 
+static const char* idlePolicyName(orStream::IdlePolicy policy) {
+  switch (policy) {
+    case orStream::IdlePolicy::Busy:
+      return "busy";
+    case orStream::IdlePolicy::Hybrid:
+      return "hybrid";
+    case orStream::IdlePolicy::Block:
+      return "block";
+  }
+  return "unknown";
+}
+
+static PyObject* _getStreamWorkerPolicy(PyObject* self, PyObject* args) {
+  HANDLE_TH_ERRORS
+  long long stream_id = 0;
+  int device_index = 0;
+  int device_type = 0;
+  if (!PyArg_ParseTuple(args, "Lii", &stream_id, &device_index, &device_type)) {
+    return nullptr;
+  }
+
+  TORCH_CHECK(stream_id >= 0, "stream_id must be non-negative");
+  TORCH_CHECK(
+      static_cast<c10::DeviceType>(device_type) == c10::DeviceType::PrivateUse1,
+      "stream device type must be mcpu/privateuseone");
+  TORCH_CHECK(
+      (static_cast<c10::StreamId>(stream_id) & 1) != 0,
+      "external streams are not supported by _get_stream_worker_policy");
+
+  torch::utils::device_lazy_init(at::kPrivateUse1);
+  auto stream = c10::mcpu::McpuStream::unpack3(
+      static_cast<c10::StreamId>(stream_id),
+      static_cast<c10::DeviceIndex>(device_index),
+      static_cast<c10::DeviceType>(device_type));
+  auto or_stream = stream.stream();
+  return Py_BuildValue(
+      "{s:i,s:i,s:s,s:i}",
+      "priority",
+      or_stream->priority,
+      "is_default_stream",
+      or_stream->is_default_stream ? 1 : 0,
+      "idle_policy",
+      idlePolicyName(or_stream->idle_policy),
+      "affinity_core",
+      or_stream->affinity_core);
+  END_HANDLE_TH_ERRORS
+}
+
 static PyObject* _setOpTimingEnabled(PyObject* self, PyObject* arg) {
   HANDLE_TH_ERRORS
   at::mcpu::op_timing::set_enabled(PyObject_IsTrue(arg) != 0);
@@ -299,6 +347,7 @@ static PyMethodDef methods[] = {
      METH_NOARGS,
      nullptr},
     {"_get_default_stream", _getDefaultStream, METH_O, nullptr},
+    {"_get_stream_worker_policy", _getStreamWorkerPolicy, METH_VARARGS, nullptr},
     {"_set_op_timing_enabled", _setOpTimingEnabled, METH_O, nullptr},
     {"_reset_op_timing", _resetOpTiming, METH_NOARGS, nullptr},
     {"_get_op_timing", _getOpTiming, METH_NOARGS, nullptr},

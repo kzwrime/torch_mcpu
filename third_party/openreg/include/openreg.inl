@@ -3,9 +3,11 @@
 #endif
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <new>
 #include <thread>
 #include <tuple>
@@ -103,14 +105,24 @@ struct orStream {
   alignas(64) std::atomic<std::uint64_t> tail{0};
   alignas(64) std::atomic<std::uint64_t> completed{0};
   alignas(64) std::atomic<bool> stop{false};
+  std::mutex wake_mutex;
+  std::condition_variable wake_cv;
   std::thread worker;
   int device_index = -1;
+  int priority = 0;
+  bool is_default_stream = false;
+  enum class IdlePolicy { Busy, Hybrid, Block };
+  IdlePolicy idle_policy = IdlePolicy::Busy;
+  std::uint64_t spin_iters = 0;
+  int affinity_core = -1;
 
   OPENREG_EXPORT orStream();
+  OPENREG_EXPORT orStream(int priority, bool is_default_stream);
   OPENREG_EXPORT ~orStream();
   OPENREG_EXPORT void workerLoop();
   OPENREG_EXPORT void synchronize();
   OPENREG_EXPORT bool idle() const;
+  OPENREG_EXPORT void notifyWorker();
 
   template <typename Func, typename... Args>
   inline orError_t launch(Func&& func, Args&&... args) {
@@ -155,10 +167,12 @@ struct orStream {
       slot->run = &openreg::runEmptyTask;
       slot->destroy = &openreg::destroyEmptyTask;
       slot->sequence.store(index + 1, std::memory_order_release);
+      notifyWorker();
       return orErrorUnknown;
     }
 
     slot->sequence.store(index + 1, std::memory_order_release);
+    notifyWorker();
     return orSuccess;
   }
 };

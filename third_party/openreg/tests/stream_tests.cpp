@@ -2,6 +2,9 @@
 #include <include/openreg.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -12,6 +15,34 @@ class StreamTest : public ::testing::Test {
   void SetUp() override {
     orSetDevice(0);
   }
+};
+
+class EnvGuard {
+ public:
+  explicit EnvGuard(const char* name, const char* value) : name_(name) {
+    if (const char* existing = std::getenv(name)) {
+      had_value_ = true;
+      old_value_ = existing;
+    }
+    if (value) {
+      setenv(name, value, 1);
+    } else {
+      unsetenv(name);
+    }
+  }
+
+  ~EnvGuard() {
+    if (had_value_) {
+      setenv(name_.c_str(), old_value_.c_str(), 1);
+    } else {
+      unsetenv(name_.c_str());
+    }
+  }
+
+ private:
+  std::string name_;
+  bool had_value_ = false;
+  std::string old_value_;
 };
 
 TEST_F(StreamTest, StreamCreateAndDestroy) {
@@ -57,11 +88,13 @@ TEST_F(StreamTest, StreamDestroyNullptr) {
 
 TEST_F(StreamTest, StreamGetPriority) {
   orStream_t stream = nullptr;
-  EXPECT_EQ(orStreamCreate(&stream), orSuccess);
+  int min_p, max_p;
+  orDeviceGetStreamPriorityRange(&min_p, &max_p);
+  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, max_p), orSuccess);
 
   int priority = -1;
   EXPECT_EQ(orStreamGetPriority(stream, &priority), orSuccess);
-  EXPECT_EQ(priority, 0);
+  EXPECT_EQ(priority, max_p);
 
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
@@ -77,6 +110,34 @@ TEST_F(StreamTest, StreamTaskExecution) {
   EXPECT_EQ(counter.load(), 1);
 
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
+}
+
+TEST_F(StreamTest, BlockingIdleWorkerWakesForPublishedTask) {
+  orStream_t stream = nullptr;
+  int min_p = 0;
+  int unused_max_p = 0;
+  orDeviceGetStreamPriorityRange(&min_p, &unused_max_p);
+  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, min_p), orSuccess);
+  EXPECT_EQ(stream->idle_policy, orStream::IdlePolicy::Block);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  std::atomic<int> counter{0};
+  EXPECT_EQ(openreg::addTaskToStream(stream, [&] { counter++; }), orSuccess);
+  EXPECT_EQ(orStreamSynchronize(stream), orSuccess);
+  EXPECT_EQ(counter.load(), 1);
+
+  EXPECT_EQ(orStreamDestroy(stream), orSuccess);
+}
+
+TEST_F(StreamTest, BlockingIdleStreamDestroysWithoutHang) {
+  orStream_t blocking_stream = nullptr;
+  int min_p = 0;
+  int unused_max_p = 0;
+  orDeviceGetStreamPriorityRange(&min_p, &unused_max_p);
+  EXPECT_EQ(orStreamCreateWithPriority(&blocking_stream, 0, min_p), orSuccess);
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_EQ(orStreamDestroy(blocking_stream), orSuccess);
 }
 
 TEST_F(StreamTest, StreamAcceptsConcurrentProducers) {
@@ -175,6 +236,58 @@ TEST_F(StreamTest, WorkerThreadCanRecordEventWhileHostProducesTargetStream) {
   EXPECT_EQ(orEventDestroy(event), orSuccess);
   EXPECT_EQ(orStreamDestroy(worker_stream), orSuccess);
   EXPECT_EQ(orStreamDestroy(target_stream), orSuccess);
+}
+
+TEST_F(StreamTest, HighPriorityStreamsDefaultToBusyIdle) {
+  int unused_min_p = 0;
+  int max_p = 0;
+  orDeviceGetStreamPriorityRange(&unused_min_p, &max_p);
+  orStream_t stream = nullptr;
+  ASSERT_EQ(orStreamCreateWithPriority(&stream, 0, max_p), orSuccess);
+  EXPECT_EQ(stream->priority, max_p);
+  EXPECT_EQ(stream->idle_policy, orStream::IdlePolicy::Busy);
+  EXPECT_EQ(orStreamDestroy(stream), orSuccess);
+}
+
+TEST_F(StreamTest, DefaultStreamFlagForcesBusyIdle) {
+  int min_p = 0;
+  int unused_max_p = 0;
+  orDeviceGetStreamPriorityRange(&min_p, &unused_max_p);
+  orStream_t stream = nullptr;
+  ASSERT_EQ(orStreamCreateWithPriority(&stream, orStreamDefault, min_p),
+            orSuccess);
+  EXPECT_TRUE(stream->is_default_stream);
+  EXPECT_EQ(stream->priority, min_p);
+  EXPECT_EQ(stream->idle_policy, orStream::IdlePolicy::Busy);
+  EXPECT_EQ(orStreamDestroy(stream), orSuccess);
+}
+
+TEST_F(StreamTest, StreamAffinityOnlyAppliesToDefaultStream) {
+  EnvGuard legacy("TORCH_MCPU_STREAM_WORKER_CORE", "2");
+
+  int min_p = 0;
+  int max_p = 0;
+  orDeviceGetStreamPriorityRange(&min_p, &max_p);
+
+  orStream_t default_stream = nullptr;
+  ASSERT_EQ(orStreamCreateWithPriority(&default_stream, orStreamDefault, min_p),
+            orSuccess);
+  EXPECT_EQ(default_stream->affinity_core, 2);
+  EXPECT_EQ(orStreamDestroy(default_stream), orSuccess);
+
+  orStream_t pool_stream = nullptr;
+  ASSERT_EQ(orStreamCreateWithPriority(&pool_stream, 0, max_p), orSuccess);
+  EXPECT_EQ(pool_stream->affinity_core, -1);
+  EXPECT_EQ(orStreamDestroy(pool_stream), orSuccess);
+}
+
+TEST_F(StreamTest, StreamAffinityInvalidCoreListFallsBackToNoPinning) {
+  EnvGuard legacy("TORCH_MCPU_STREAM_WORKER_CORE", "7,nope");
+
+  orStream_t stream = nullptr;
+  ASSERT_EQ(orStreamCreateWithPriority(&stream, orStreamDefault, 0), orSuccess);
+  EXPECT_EQ(stream->affinity_core, -1);
+  EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
 
 TEST_F(StreamTest, AddTaskToStreamNullptr) {
