@@ -4,6 +4,7 @@
 #include <torch/csrc/distributed/c10d/Work.hpp>
 
 #include <ATen/ATen.h>
+#include <c10/core/InferenceMode.h>
 #include <c10/util/Exception.h>
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/utils/pybind.h>
@@ -20,8 +21,8 @@
 #include <utility>
 #include <vector>
 
-#include <runtime/McpuKernelLaunch.h>
 #include <csrc/runtime/OpenRegException.h>
+#include <runtime/McpuKernelLaunch.h>
 #include <runtime/OpenRegFunctions.h>
 
 // Adapted from PyTorch sources:
@@ -68,6 +69,7 @@ static void copy_cpu_tensors_to_mcpu(
   TORCH_CHECK(
       dst_tensors.size() == src_tensors.size(),
       "Mismatched tensor counts while copying communication results");
+  c10::InferenceMode inference_guard(true);
   for (const auto i : c10::irange(dst_tensors.size())) {
     dst_tensors[i].copy_(src_tensors[i]);
   }
@@ -79,6 +81,7 @@ static void copy_cpu_tensors_to_mcpu(
   TORCH_CHECK(
       dst_tensors.size() == src_tensors.size(),
       "Mismatched nested tensor counts while copying communication results");
+  c10::InferenceMode inference_guard(true);
   for (const auto i : c10::irange(dst_tensors.size())) {
     TORCH_CHECK(
         dst_tensors[i].size() == src_tensors[i].size(),
@@ -87,6 +90,13 @@ static void copy_cpu_tensors_to_mcpu(
       dst_tensors[i][j].copy_(src_tensors[i][j]);
     }
   }
+}
+
+static void copy_cpu_tensor_to_mcpu(
+    const at::Tensor& dst_tensor,
+    const at::Tensor& src_tensor) {
+  c10::InferenceMode inference_guard(true);
+  dst_tensor.copy_(src_tensor);
 }
 
 // Adapted from torch_mcpu/csrc/aten/UVAView.cpp.
@@ -125,7 +135,8 @@ static py::object create_gloo_backend(
     std::chrono::milliseconds timeout) {
   py::gil_scoped_acquire gil;
   auto dist_c10d = py::module_::import("torch.distributed.distributed_c10d");
-  return dist_c10d.attr("ProcessGroupGloo")(std::move(store), rank, size, timeout);
+  return dist_c10d.attr("ProcessGroupGloo")(
+      std::move(store), rank, size, timeout);
 }
 
 } // namespace
@@ -195,18 +206,16 @@ class McpuWork final : public Work {
       std::unique_lock<std::mutex> lock(state_->mutex);
       if (timeout == kNoTimeout) {
         state_->cv.wait(lock, [&] { return state_->comm_done; });
-      } else if (!state_->cv.wait_for(lock, timeout, [&] {
-                   return state_->comm_done;
-                 })) {
+      } else if (!state_->cv.wait_for(
+                     lock, timeout, [&] { return state_->comm_done; })) {
         TORCH_CHECK(false, "Operation timed out!");
       }
     } else {
       std::unique_lock<std::mutex> lock(state_->mutex);
       if (timeout == kNoTimeout) {
         state_->cv.wait(lock, [&] { return state_->comm_done; });
-      } else if (!state_->cv.wait_for(lock, timeout, [&] {
-                   return state_->comm_done;
-                 })) {
+      } else if (!state_->cv.wait_for(
+                     lock, timeout, [&] { return state_->comm_done; })) {
         TORCH_CHECK(false, "Operation timed out!");
       }
     }
@@ -253,14 +262,14 @@ class McpuBackend final : public Backend {
   };
 
  public:
-
   McpuBackend(
       c10::intrusive_ptr<Store> store,
       int64_t rank,
       int64_t size,
       int64_t timeout_ms)
       : Backend(static_cast<int>(rank), static_cast<int>(size)),
-        options_(c10::make_intrusive<Options>(std::chrono::milliseconds(timeout_ms))),
+        options_(c10::make_intrusive<Options>(
+            std::chrono::milliseconds(timeout_ms))),
         gloo_backend_(create_gloo_backend(
             py::cast(store),
             static_cast<int>(rank),
@@ -299,56 +308,51 @@ class McpuBackend final : public Backend {
     auto backend_ref =
         c10::intrusive_ptr<Backend>::unsafe_reclaim_from_nonowning(this);
     auto work = c10::make_intrusive<McpuWork>(
-        backend_ref,
-        getRank(),
-        opType,
-        tensors,
-        state);
+        backend_ref, getRank(), opType, tensors, state);
 
-    std::thread(
-        [state,
-         backend_ref = backend_ref,
-         device,
-         tensors = tensors,
-         opFn = std::forward<OpFn>(opFn),
-         sourceRankResult]() mutable {
-          try {
-            c10::mcpu::set_device(device.index());
-            MCPU_CHECK(orDeviceSynchronize());
+    std::thread([state,
+                 backend_ref = backend_ref,
+                 device,
+                 tensors = tensors,
+                 opFn = std::forward<OpFn>(opFn),
+                 sourceRankResult]() mutable {
+      try {
+        c10::mcpu::set_device(device.index());
+        MCPU_CHECK(orDeviceSynchronize());
 
-            for (const auto& tensor : tensors) {
-              unprotect_mcpu_tensor_memory(tensor);
-            }
+        for (const auto& tensor : tensors) {
+          unprotect_mcpu_tensor_memory(tensor);
+        }
 
-            opFn();
+        opFn();
 
-            // Ensure any mcpu-side copies launched by the transport callback
-            // have actually completed before memory is re-protected or the
-            // work is marked done. This keeps the host-thread transport path
-            // aligned with the async stream contract used elsewhere in the
-            // backend.
-            MCPU_CHECK(orDeviceSynchronize());
+        // Ensure any mcpu-side copies launched by the transport callback
+        // have actually completed before memory is re-protected or the
+        // work is marked done. This keeps the host-thread transport path
+        // aligned with the async stream contract used elsewhere in the
+        // backend.
+        MCPU_CHECK(orDeviceSynchronize());
 
-            for (const auto& tensor : tensors) {
-              protect_mcpu_tensor_memory(tensor);
-            }
-          } catch (...) {
-            for (const auto& tensor : tensors) {
-              protect_mcpu_tensor_memory(tensor);
-            }
-            std::lock_guard<std::mutex> lock(state->mutex);
-            state->exception = std::current_exception();
-          }
+        for (const auto& tensor : tensors) {
+          protect_mcpu_tensor_memory(tensor);
+        }
+      } catch (...) {
+        for (const auto& tensor : tensors) {
+          protect_mcpu_tensor_memory(tensor);
+        }
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->exception = std::current_exception();
+      }
 
-          {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            state->comm_done = true;
-            if (sourceRankResult && sourceRankResult->has_value()) {
-              state->source_rank = **sourceRankResult;
-            }
-          }
-          state->cv.notify_all();
-        }).detach();
+      {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->comm_done = true;
+        if (sourceRankResult && sourceRankResult->has_value()) {
+          state->source_rank = **sourceRankResult;
+        }
+      }
+      state->cv.notify_all();
+    }).detach();
 
     return work;
   }
@@ -391,36 +395,39 @@ class McpuBackend final : public Backend {
   c10::intrusive_ptr<Work> broadcast(
       std::vector<at::Tensor>& tensors,
       const BroadcastOptions& opts = BroadcastOptions()) override {
-    return submitOp(OpType::BROADCAST, tensors, [this, tensors, opts]() mutable {
-      auto cpu_tensors = toCpuViews(tensors);
-      py::gil_scoped_acquire gil;
-      auto work = gloo_backend_.attr("broadcast")(cpu_tensors, opts);
-      work.attr("wait")();
-      copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
-    });
+    return submitOp(
+        OpType::BROADCAST, tensors, [this, tensors, opts]() mutable {
+          auto cpu_tensors = toCpuViews(tensors);
+          py::gil_scoped_acquire gil;
+          auto work = gloo_backend_.attr("broadcast")(cpu_tensors, opts);
+          work.attr("wait")();
+          copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
+        });
   }
 
   c10::intrusive_ptr<Work> allreduce(
       std::vector<at::Tensor>& tensors,
       const AllreduceOptions& opts = AllreduceOptions()) override {
-    return submitOp(OpType::ALLREDUCE, tensors, [this, tensors, opts]() mutable {
-      auto cpu_tensors = toCpuViews(tensors);
-      py::gil_scoped_acquire gil;
-      auto work = gloo_backend_.attr("allreduce")(cpu_tensors, opts);
-      work.attr("wait")();
-      copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
-    });
+    return submitOp(
+        OpType::ALLREDUCE, tensors, [this, tensors, opts]() mutable {
+          auto cpu_tensors = toCpuViews(tensors);
+          py::gil_scoped_acquire gil;
+          auto work = gloo_backend_.attr("allreduce")(cpu_tensors, opts);
+          work.attr("wait")();
+          copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
+        });
   }
 
   c10::intrusive_ptr<Work> allreduce_coalesced(
       std::vector<at::Tensor>& tensors,
-      const AllreduceCoalescedOptions& opts = AllreduceCoalescedOptions())
-      override {
+      const AllreduceCoalescedOptions& opts =
+          AllreduceCoalescedOptions()) override {
     return submitOp(
         OpType::ALLREDUCE_COALESCED, tensors, [this, tensors, opts]() mutable {
           auto cpu_tensors = toCpuViews(tensors);
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("allreduce_coalesced")(cpu_tensors, opts);
+          auto work =
+              gloo_backend_.attr("allreduce_coalesced")(cpu_tensors, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
         });
@@ -459,7 +466,8 @@ class McpuBackend final : public Backend {
             tensor = tensor.to(c10::DeviceType::CPU);
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("allgather")(cpu_outputs, cpu_inputs, opts);
+          auto work =
+              gloo_backend_.attr("allgather")(cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -477,9 +485,10 @@ class McpuBackend final : public Backend {
           auto cpu_output = outputBuffer.to(c10::DeviceType::CPU);
           auto cpu_input = inputBuffer.to(c10::DeviceType::CPU);
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("_allgather_base")(cpu_output, cpu_input, opts);
+          auto work = gloo_backend_.attr("_allgather_base")(
+              cpu_output, cpu_input, opts);
           work.attr("wait")();
-          outputBuffer.copy_(cpu_output);
+          copy_cpu_tensor_to_mcpu(outputBuffer, cpu_output);
         });
   }
 
@@ -530,7 +539,8 @@ class McpuBackend final : public Backend {
             tensor = tensor.to(c10::DeviceType::CPU);
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("gather")(cpu_outputs, cpu_inputs, opts);
+          auto work =
+              gloo_backend_.attr("gather")(cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -558,7 +568,8 @@ class McpuBackend final : public Backend {
             }
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("scatter")(cpu_outputs, cpu_inputs, opts);
+          auto work =
+              gloo_backend_.attr("scatter")(cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -586,7 +597,8 @@ class McpuBackend final : public Backend {
             }
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("reduce_scatter")(cpu_outputs, cpu_inputs, opts);
+          auto work = gloo_backend_.attr("reduce_scatter")(
+              cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -607,7 +619,7 @@ class McpuBackend final : public Backend {
           auto work = gloo_backend_.attr("_reduce_scatter_base")(
               cpu_output, cpu_input, opts);
           work.attr("wait")();
-          outputBuffer.copy_(cpu_output);
+          copy_cpu_tensor_to_mcpu(outputBuffer, cpu_output);
         });
   }
 
@@ -630,7 +642,8 @@ class McpuBackend final : public Backend {
             tensor = tensor.to(c10::DeviceType::CPU);
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("alltoall")(cpu_outputs, cpu_inputs, opts);
+          auto work =
+              gloo_backend_.attr("alltoall")(cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -658,7 +671,7 @@ class McpuBackend final : public Backend {
           auto work = gloo_backend_.attr("alltoall_base")(
               cpu_output, cpu_input, outputSplitSizes, inputSplitSizes, opts);
           work.attr("wait")();
-          outputBuffer.copy_(cpu_output);
+          copy_cpu_tensor_to_mcpu(outputBuffer, cpu_output);
         });
   }
 
@@ -731,10 +744,10 @@ class McpuBackend final : public Backend {
   c10::intrusive_ptr<Work> barrier(
       const BarrierOptions& opts = BarrierOptions()) override {
     std::vector<at::Tensor> tensors{at::empty(
-      {1},
-      at::TensorOptions()
-          .device(c10::DeviceType::PrivateUse1)
-          .dtype(at::kByte))};
+        {1},
+        at::TensorOptions()
+            .device(c10::DeviceType::PrivateUse1)
+            .dtype(at::kByte))};
     return submitOp(OpType::BARRIER, tensors, [this, tensors, opts]() mutable {
       auto cpu_tensors = tensors;
       for (auto& tensor : cpu_tensors) {
@@ -756,15 +769,14 @@ void registerMcpuDistributedBindings(PyObject* module) {
       m, "McpuBackend");
 }
 
-PyObject* _create_process_group_mcpu(
-    PyObject* /*unused*/,
-    PyObject* args) {
+PyObject* _create_process_group_mcpu(PyObject* /*unused*/, PyObject* args) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(
       PyTuple_Check(args) && PyTuple_GET_SIZE(args) == 4,
       "_create_process_group_mcpu expects (store, rank, size, timeout)");
 
-  py::object store_obj = py::reinterpret_borrow<py::object>(PyTuple_GET_ITEM(args, 0));
+  py::object store_obj =
+      py::reinterpret_borrow<py::object>(PyTuple_GET_ITEM(args, 0));
 
   auto* rank_obj = PyTuple_GET_ITEM(args, 1);
   auto* size_obj = PyTuple_GET_ITEM(args, 2);
@@ -774,7 +786,8 @@ PyObject* _create_process_group_mcpu(
   int rank = static_cast<int>(THPUtils_unpackLong(rank_obj));
   int size = static_cast<int>(THPUtils_unpackLong(size_obj));
 
-  py::object timeout_obj = py::reinterpret_borrow<py::object>(PyTuple_GET_ITEM(args, 3));
+  py::object timeout_obj =
+      py::reinterpret_borrow<py::object>(PyTuple_GET_ITEM(args, 3));
   auto timeout = timeout_obj.cast<std::chrono::milliseconds>();
 
   auto backend = c10::make_intrusive<McpuBackend>(

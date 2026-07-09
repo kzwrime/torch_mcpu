@@ -8,8 +8,11 @@ import torch.distributed as dist
 import torch_mcpu._C  # type: ignore[misc]
 
 
+_MCPU_BACKEND = "mcpu"
+
+
 def register() -> None:
-    backend_name = "mcpu"
+    backend_name = _MCPU_BACKEND
     if dist.is_backend_available(backend_name):
         return
 
