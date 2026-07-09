@@ -60,24 +60,29 @@ TEST_F(StreamTest, StreamCreateNullptr) {
 
 TEST_F(StreamTest, StreamCreateWithInvalidPriority) {
   orStream_t stream = nullptr;
-  int min_p, max_p;
-  orDeviceGetStreamPriorityRange(&min_p, &max_p);
+  int least_priority, greatest_priority;
+  orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority);
 
-  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, min_p - 1), orErrorUnknown);
-  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, max_p + 1), orErrorUnknown);
+  EXPECT_EQ(
+      orStreamCreateWithPriority(&stream, 0, greatest_priority - 1),
+      orErrorUnknown);
+  EXPECT_EQ(
+      orStreamCreateWithPriority(&stream, 0, least_priority + 1),
+      orErrorUnknown);
 }
 
 TEST_F(StreamTest, StreamCreateWithPriorityValidBounds) {
   orStream_t stream = nullptr;
-  int min_p, max_p;
-  orDeviceGetStreamPriorityRange(&min_p, &max_p);
+  int least_priority, greatest_priority;
+  orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority);
 
   // Lowest priority should be accepted.
-  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, min_p), orSuccess);
+  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, least_priority), orSuccess);
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 
   // Highest priority should also be accepted.
-  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, max_p), orSuccess);
+  EXPECT_EQ(
+      orStreamCreateWithPriority(&stream, 0, greatest_priority), orSuccess);
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
 
@@ -88,13 +93,14 @@ TEST_F(StreamTest, StreamDestroyNullptr) {
 
 TEST_F(StreamTest, StreamGetPriority) {
   orStream_t stream = nullptr;
-  int min_p, max_p;
-  orDeviceGetStreamPriorityRange(&min_p, &max_p);
-  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, max_p), orSuccess);
+  int unused_least_priority, greatest_priority;
+  orDeviceGetStreamPriorityRange(&unused_least_priority, &greatest_priority);
+  EXPECT_EQ(
+      orStreamCreateWithPriority(&stream, 0, greatest_priority), orSuccess);
 
   int priority = -1;
   EXPECT_EQ(orStreamGetPriority(stream, &priority), orSuccess);
-  EXPECT_EQ(priority, max_p);
+  EXPECT_EQ(priority, greatest_priority);
 
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
@@ -114,10 +120,10 @@ TEST_F(StreamTest, StreamTaskExecution) {
 
 TEST_F(StreamTest, BlockingIdleWorkerWakesForPublishedTask) {
   orStream_t stream = nullptr;
-  int min_p = 0;
-  int unused_max_p = 0;
-  orDeviceGetStreamPriorityRange(&min_p, &unused_max_p);
-  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, min_p), orSuccess);
+  int least_priority = 0;
+  int unused_greatest_priority = 0;
+  orDeviceGetStreamPriorityRange(&least_priority, &unused_greatest_priority);
+  EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, least_priority), orSuccess);
   EXPECT_EQ(stream->idle_policy, orStream::IdlePolicy::Block);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -132,10 +138,12 @@ TEST_F(StreamTest, BlockingIdleWorkerWakesForPublishedTask) {
 
 TEST_F(StreamTest, BlockingIdleStreamDestroysWithoutHang) {
   orStream_t blocking_stream = nullptr;
-  int min_p = 0;
-  int unused_max_p = 0;
-  orDeviceGetStreamPriorityRange(&min_p, &unused_max_p);
-  EXPECT_EQ(orStreamCreateWithPriority(&blocking_stream, 0, min_p), orSuccess);
+  int least_priority = 0;
+  int unused_greatest_priority = 0;
+  orDeviceGetStreamPriorityRange(&least_priority, &unused_greatest_priority);
+  EXPECT_EQ(
+      orStreamCreateWithPriority(&blocking_stream, 0, least_priority),
+      orSuccess);
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
   EXPECT_EQ(orStreamDestroy(blocking_stream), orSuccess);
 }
@@ -239,25 +247,27 @@ TEST_F(StreamTest, WorkerThreadCanRecordEventWhileHostProducesTargetStream) {
 }
 
 TEST_F(StreamTest, HighPriorityStreamsDefaultToBusyIdle) {
-  int unused_min_p = 0;
-  int max_p = 0;
-  orDeviceGetStreamPriorityRange(&unused_min_p, &max_p);
+  int unused_least_priority = 0;
+  int greatest_priority = 0;
+  orDeviceGetStreamPriorityRange(&unused_least_priority, &greatest_priority);
   orStream_t stream = nullptr;
-  ASSERT_EQ(orStreamCreateWithPriority(&stream, 0, max_p), orSuccess);
-  EXPECT_EQ(stream->priority, max_p);
+  ASSERT_EQ(
+      orStreamCreateWithPriority(&stream, 0, greatest_priority), orSuccess);
+  EXPECT_EQ(stream->priority, greatest_priority);
   EXPECT_EQ(stream->idle_policy, orStream::IdlePolicy::Busy);
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
 
 TEST_F(StreamTest, DefaultStreamFlagForcesBusyIdle) {
-  int min_p = 0;
-  int unused_max_p = 0;
-  orDeviceGetStreamPriorityRange(&min_p, &unused_max_p);
+  int least_priority = 0;
+  int unused_greatest_priority = 0;
+  orDeviceGetStreamPriorityRange(&least_priority, &unused_greatest_priority);
   orStream_t stream = nullptr;
-  ASSERT_EQ(orStreamCreateWithPriority(&stream, orStreamDefault, min_p),
-            orSuccess);
+  ASSERT_EQ(
+      orStreamCreateWithPriority(&stream, orStreamDefault, least_priority),
+      orSuccess);
   EXPECT_TRUE(stream->is_default_stream);
-  EXPECT_EQ(stream->priority, min_p);
+  EXPECT_EQ(stream->priority, least_priority);
   EXPECT_EQ(stream->idle_policy, orStream::IdlePolicy::Busy);
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
@@ -265,18 +275,21 @@ TEST_F(StreamTest, DefaultStreamFlagForcesBusyIdle) {
 TEST_F(StreamTest, StreamAffinityOnlyAppliesToDefaultStream) {
   EnvGuard legacy("TORCH_MCPU_STREAM_WORKER_CORE", "2");
 
-  int min_p = 0;
-  int max_p = 0;
-  orDeviceGetStreamPriorityRange(&min_p, &max_p);
+  int least_priority = 0;
+  int greatest_priority = 0;
+  orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority);
 
   orStream_t default_stream = nullptr;
-  ASSERT_EQ(orStreamCreateWithPriority(&default_stream, orStreamDefault, min_p),
-            orSuccess);
+  ASSERT_EQ(
+      orStreamCreateWithPriority(
+          &default_stream, orStreamDefault, greatest_priority),
+      orSuccess);
   EXPECT_EQ(default_stream->affinity_core, 2);
   EXPECT_EQ(orStreamDestroy(default_stream), orSuccess);
 
   orStream_t pool_stream = nullptr;
-  ASSERT_EQ(orStreamCreateWithPriority(&pool_stream, 0, max_p), orSuccess);
+  ASSERT_EQ(
+      orStreamCreateWithPriority(&pool_stream, 0, least_priority), orSuccess);
   EXPECT_EQ(pool_stream->affinity_core, -1);
   EXPECT_EQ(orStreamDestroy(pool_stream), orSuccess);
 }
@@ -334,12 +347,13 @@ TEST_F(StreamTest, DeviceSynchronizeWithNoStreams) {
 }
 
 TEST_F(StreamTest, StreamPriorityRange) {
-  int min_p = -1;
-  int max_p = -1;
-  // OpenReg currently exposes only one priority level; verify the fixed range.
-  EXPECT_EQ(orDeviceGetStreamPriorityRange(&min_p, &max_p), orSuccess);
-  EXPECT_EQ(min_p, 0);
-  EXPECT_EQ(max_p, 1);
+  int least_priority = -1;
+  int greatest_priority = -1;
+  EXPECT_EQ(
+      orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority),
+      orSuccess);
+  EXPECT_EQ(least_priority, 1);
+  EXPECT_EQ(greatest_priority, 0);
 }
 
 } // namespace

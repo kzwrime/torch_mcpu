@@ -21,6 +21,9 @@ class TestStream(TestCase):
         low_policy = self._worker_policy(low_stream)
         high_policy = self._worker_policy(high_stream)
 
+        self.assertEqual(low, 1)
+        self.assertEqual(high, 0)
+
         self.assertEqual(low_policy["priority"], low)
         self.assertEqual(low_policy["idle_policy"], "block")
         self.assertEqual(low_policy["is_default_stream"], 0)

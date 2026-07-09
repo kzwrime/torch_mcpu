@@ -1,5 +1,6 @@
 #include <include/openreg.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -129,12 +130,13 @@ static orStream::IdlePolicy idle_policy_from_macro(int policy) {
 }
 
 static bool is_highest_priority(int priority) {
-  int min_p = 0;
-  int max_p = 0;
-  if (orDeviceGetStreamPriorityRange(&min_p, &max_p) != orSuccess) {
+  int least_priority = 0;
+  int greatest_priority = 0;
+  if (orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority) !=
+      orSuccess) {
     return false;
   }
-  return priority == max_p;
+  return priority == greatest_priority;
 }
 
 static orStream::IdlePolicy choose_idle_policy(
@@ -466,9 +468,11 @@ orError_t orStreamCreateWithPriority(
     return orErrorUnknown;
   }
 
-  int min_p, max_p;
-  orDeviceGetStreamPriorityRange(&min_p, &max_p);
-  if (priority < min_p || priority > max_p) {
+  int least_priority, greatest_priority;
+  orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority);
+  const int min_priority = std::min(least_priority, greatest_priority);
+  const int max_priority = std::max(least_priority, greatest_priority);
+  if (priority < min_priority || priority > max_priority) {
     return orErrorUnknown;
   }
 
@@ -491,10 +495,10 @@ orError_t orStreamCreateWithPriority(
 }
 
 orError_t orStreamCreate(orStream_t* stream) {
-  int min_p, max_p;
-  orDeviceGetStreamPriorityRange(&min_p, &max_p);
+  int least_priority, greatest_priority;
+  orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority);
 
-  return orStreamCreateWithPriority(stream, 0, max_p);
+  return orStreamCreateWithPriority(stream, 0, greatest_priority);
 }
 
 orError_t orStreamGetPriority(orStream_t stream, int* priority) {
@@ -569,8 +573,8 @@ orError_t orDeviceGetStreamPriorityRange(
     return orErrorUnknown;
   }
 
-  *leastPriority = 0;
-  *greatestPriority = 1;
+  *leastPriority = 1;
+  *greatestPriority = 0;
   return orSuccess;
 }
 

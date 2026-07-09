@@ -138,7 +138,7 @@ void initGlobalStreamState() {
   }
   int leastPriority = -1, greatestPriority = -1;
   MCPU_CHECK(orDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
-  auto range = greatestPriority - leastPriority + 1;
+  auto range = leastPriority - greatestPriority + 1;
   max_stream_priorities = range >= c10::mcpu::max_compile_time_stream_priorities
       ? c10::mcpu::max_compile_time_stream_priorities
       : range;
@@ -252,7 +252,7 @@ McpuStream getStreamFromPool(const int priority, DeviceIndex device_index) {
 
 McpuStream getStreamFromPool(const bool isHighPriority, DeviceIndex device) {
   initMcpuStreamsOnce();
-  int priority = isHighPriority ? max_stream_priorities - 1 : 0;
+  int priority = isHighPriority ? 0 : max_stream_priorities - 1;
   return getStreamFromPool(priority, device);
 }
 

@@ -111,7 +111,7 @@ class Stream(_TORCH_STREAM_BASE):
 
     @property
     def priority(self):
-        """Return the priority of this stream (0=normal, 1=high)."""
+        """Return the priority of this stream (0=high, 1=low)."""
         # Decode priority from stream_id encoding:
         # stream_id bits: [si | stream_type (3 bits) | native (1 bit)]
         # stream_type 0x6 = DEFAULT (treated as priority 0)
