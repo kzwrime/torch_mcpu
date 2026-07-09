@@ -73,6 +73,9 @@ struct orEvent {
 };
 
 orStream::orStream() {
+  for (std::uint64_t i = 0; i < kQueueCapacity; ++i) {
+    slots[i].sequence.store(i, std::memory_order_relaxed);
+  }
   worker = std::thread([this] {
     pin_this_thread_to_core(choose_worker_core());
     workerLoop();
@@ -90,18 +93,20 @@ orStream::~orStream() {
 void orStream::workerLoop() {
   std::uint64_t local_head = head.load(std::memory_order_relaxed);
   while (true) {
-    const auto local_tail = tail.load(std::memory_order_acquire);
-    if (local_head == local_tail) {
-      if (stop.load(std::memory_order_acquire)) {
+    auto& slot = slots[local_head & kQueueMask];
+    const auto sequence = slot.sequence.load(std::memory_order_acquire);
+    if (sequence != local_head + 1) {
+      if (stop.load(std::memory_order_acquire) &&
+          local_head == tail.load(std::memory_order_acquire)) {
         return;
       }
       openreg::cpu_relax();
       continue;
     }
 
-    auto& slot = slots[local_head & kQueueMask];
     slot.run(slot.storage);
     slot.destroy(slot.storage);
+    slot.sequence.store(local_head + kQueueCapacity, std::memory_order_release);
     ++local_head;
     head.store(local_head, std::memory_order_release);
     completed.store(local_head, std::memory_order_release);

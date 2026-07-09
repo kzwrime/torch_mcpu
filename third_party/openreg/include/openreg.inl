@@ -35,6 +35,7 @@ struct QueueSlot {
   using RunFn = void (*)(void*);
   using DestroyFn = void (*)(void*);
 
+  std::atomic<std::uint64_t> sequence{0};
   RunFn run = nullptr;
   DestroyFn destroy = nullptr;
   alignas(kQueueSlotStorageAlignment) unsigned char storage[256];
@@ -78,6 +79,10 @@ inline void destroyTask(void* ptr) {
   static_cast<Task*>(ptr)->~Task();
 }
 
+inline void runEmptyTask(void*) {}
+
+inline void destroyEmptyTask(void*) {}
+
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
 OPENREG_EXPORT bool isInKernelTask();
 OPENREG_EXPORT void setInKernelTask(bool enabled);
@@ -120,16 +125,40 @@ struct orStream {
         alignof(Task) <= openreg::kQueueSlotStorageAlignment,
         "openreg queued task alignment exceeds the slot alignment");
 
-    auto index = tail.load(std::memory_order_relaxed);
-    while (index - head.load(std::memory_order_acquire) >= kQueueCapacity) {
-      openreg::cpu_relax();
+    std::uint64_t index = 0;
+    openreg::QueueSlot* slot = nullptr;
+    while (true) {
+      index = tail.load(std::memory_order_relaxed);
+      slot = &slots[index & kQueueMask];
+      const auto sequence = slot->sequence.load(std::memory_order_acquire);
+      const auto diff = static_cast<std::int64_t>(sequence - index);
+      if (diff == 0) {
+        auto desired = index + 1;
+        if (tail.compare_exchange_weak(
+                index,
+                desired,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed)) {
+          break;
+        }
+      } else {
+        openreg::cpu_relax();
+      }
     }
 
-    auto& slot = slots[index & kQueueMask];
-    new (slot.storage) Task(std::forward<Func>(func), std::forward<Args>(args)...);
-    slot.run = &openreg::runTask<Task>;
-    slot.destroy = &openreg::destroyTask<Task>;
-    tail.store(index + 1, std::memory_order_release);
+    try {
+      new (slot->storage)
+          Task(std::forward<Func>(func), std::forward<Args>(args)...);
+      slot->run = &openreg::runTask<Task>;
+      slot->destroy = &openreg::destroyTask<Task>;
+    } catch (...) {
+      slot->run = &openreg::runEmptyTask;
+      slot->destroy = &openreg::destroyEmptyTask;
+      slot->sequence.store(index + 1, std::memory_order_release);
+      return orErrorUnknown;
+    }
+
+    slot->sequence.store(index + 1, std::memory_order_release);
     return orSuccess;
   }
 };
