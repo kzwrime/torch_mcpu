@@ -377,6 +377,27 @@ class TestFallback(TestCase):
             torch.div(int_x.cpu(), int_y.cpu()),
         )
 
+        floor_x = torch.tensor([5, -5, 5, -5], device="mcpu", dtype=torch.int64)
+        floor_y = torch.tensor([2, 2, -2, -2], device="mcpu", dtype=torch.int64)
+        floor_out = torch.empty_like(floor_x)
+        torch.floor_divide(floor_x, floor_y, out=floor_out)
+        self.assertEqual(
+            floor_out.cpu(), torch.floor_divide(floor_x.cpu(), floor_y.cpu())
+        )
+        self.assertEqual(
+            torch.floor_divide(floor_x, floor_y).cpu(),
+            torch.floor_divide(floor_x.cpu(), floor_y.cpu()),
+        )
+        self.assertEqual(
+            torch.floor_divide(floor_x, 2).cpu(),
+            torch.floor_divide(floor_x.cpu(), 2),
+        )
+        floor_inplace = floor_x.clone()
+        floor_inplace.floor_divide_(floor_y)
+        floor_inplace_cpu = floor_x.cpu().clone()
+        floor_inplace_cpu.floor_divide_(floor_y.cpu())
+        self.assertEqual(floor_inplace.cpu(), floor_inplace_cpu)
+
         mul_out = torch.empty_like(x)
         torch.mul(x, y, out=mul_out)
         self.assertEqual(mul_out.cpu(), torch.tensor([[40.0, 120.0], [217.0, 205.0]]))
@@ -1406,6 +1427,7 @@ class TestFallbackExtended(TestCase):
             sub_out = torch.empty_like(x)
             mul_out = torch.empty_like(x)
             div_out = torch.empty_like(x)
+            floor_divide_out = torch.empty_like(x)
             remainder_out = torch.empty_like(x)
             gt_out = torch.empty_like(x, dtype=torch.bool)
 
@@ -1413,16 +1435,26 @@ class TestFallbackExtended(TestCase):
             torch.sub(x, other, out=sub_out)
             torch.mul(x, other, out=mul_out)
             torch.div(x, other, out=div_out)
+            torch.floor_divide(x, other, out=floor_divide_out)
             torch.remainder(x, other, out=remainder_out)
             torch.gt(x, other, out=gt_out)
 
-            return add_out, sub_out, mul_out, div_out, remainder_out, gt_out
+            return (
+                add_out,
+                sub_out,
+                mul_out,
+                div_out,
+                floor_divide_out,
+                remainder_out,
+                gt_out,
+            )
 
         (
             add_out,
             sub_out,
             mul_out,
             div_out,
+            floor_divide_out,
             remainder_out,
             gt_out,
         ), event_names = self._timed_event_names(run_ops)
@@ -1432,6 +1464,7 @@ class TestFallbackExtended(TestCase):
         self.assertEqual(sub_out.cpu(), torch.sub(x_cpu, other))
         self.assertEqual(mul_out.cpu(), torch.mul(x_cpu, other))
         self.assertEqual(div_out.cpu(), torch.div(x_cpu, other))
+        self.assertEqual(floor_divide_out.cpu(), torch.floor_divide(x_cpu, other))
         self.assertEqual(remainder_out.cpu(), torch.remainder(x_cpu, other))
         self.assertEqual(gt_out.cpu(), torch.gt(x_cpu, other))
 
@@ -1439,6 +1472,7 @@ class TestFallbackExtended(TestCase):
         self.assertIn("mcpu::aten::sub.out", event_names)
         self.assertIn("mcpu::aten::mul.out", event_names)
         self.assertIn("mcpu::aten::div.out", event_names)
+        self.assertIn("mcpu::aten::floor_divide.out", event_names)
         self.assertIn("mcpu::aten::remainder.Tensor_out", event_names)
         self.assertIn("mcpu::aten::gt.Tensor_out", event_names)
 
@@ -1449,6 +1483,7 @@ class TestFallbackExtended(TestCase):
             "mcpu::aten::sub.Scalar.raw",
             "mcpu::aten::mul.raw",
             "mcpu::aten::div.raw",
+            "mcpu::aten::floor_divide.raw",
             "mcpu::aten::gt.Tensor.raw",
             "mcpu::aten::gt.Scalar.raw",
         ):
