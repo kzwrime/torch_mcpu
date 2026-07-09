@@ -394,7 +394,7 @@ class DeviceCachingAllocator {
     if (size <= kSmallSize) {
       return kSmallBuffer;
     } else if (size < kMinLargeAlloc) {
-      return kLargeBuffer;
+      return AcceleratorAllocatorConfig::large_segment_size();
     } else {
       return kRoundLarge * ((size + kRoundLarge - 1) / kRoundLarge);
     }
