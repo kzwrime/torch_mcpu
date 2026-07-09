@@ -5,7 +5,7 @@
 // For each token:
 //   1. If num_allowed > 0: set all logits to -inf, then restore allowed ones.
 //   2. Add logit bias values for specified token IDs.
-//   3. If pos < min_len: set stop token IDs to -inf.
+//   3. If pos + 1 < min_len: set stop token IDs to -inf.
 
 #include "common.h"
 
@@ -77,12 +77,12 @@ static void vllm_bias_kernel_typed(
       }
     }
 
-    // 3. Min tokens: mask stop tokens if pos < min_len
+    // 3. Min tokens: mask stop tokens if pos + 1 < min_len
     int32_t n_stop = n_stop_ptr[req];
     if (n_stop > 0) {
       int64_t cur_pos = pos_ptr[tok];
       int32_t min_len = min_lens_ptr[req];
-      if (cur_pos < min_len) {
+      if (cur_pos + 1 < min_len) {
         const int32_t* stop_row = stop_ptr + (int64_t)req * stop_stride;
         for (int32_t k = 0; k < n_stop; k++) {
           int32_t id = stop_row[k];

@@ -56,6 +56,25 @@ class TestVllmKernelLaunch(TestCase):
 
         self.assertEqual(out.cpu(), torch.tensor([22, 23, 11], dtype=torch.int64))
 
+    def test_get_num_sampled_and_rejected_returns_num_rejected(self):
+        num_sampled = torch.tensor([1, 2, 3], dtype=torch.int32, device="mcpu")
+        seq_lens = torch.tensor([5, 2, 8], dtype=torch.int32, device="mcpu")
+        cu_num_logits = torch.tensor([0, 4, 7, 12], dtype=torch.int32, device="mcpu")
+        idx_mapping = torch.tensor([0, 1, 2], dtype=torch.int32, device="mcpu")
+        prefill_len = torch.tensor([4, 6, 8], dtype=torch.int32, device="mcpu")
+
+        num_rejected = torch.ops.mcpu.vllm_get_num_sampled_and_rejected(
+            num_sampled,
+            seq_lens,
+            cu_num_logits,
+            idx_mapping,
+            prefill_len,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(num_sampled.cpu(), torch.tensor([1, 0, 3], dtype=torch.int32))
+        self.assertEqual(num_rejected.cpu(), torch.tensor([3, 0, 2], dtype=torch.int32))
+
 
 if __name__ == "__main__":
     run_tests()

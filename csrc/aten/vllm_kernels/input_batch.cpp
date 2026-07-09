@@ -110,13 +110,8 @@ void vllm_prepare_pos_seq_lens_impl(
 
   at::mcpu::launch_timed_kernel(
       "mcpu::vllm_prepare_pos_seq_lens",
-      [num_reqs,
-       max_num_reqs,
-       idx_ptr,
-       qs_ptr,
-       ncomp_ptr,
-       pos_ptr,
-       sl_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
+      [num_reqs, max_num_reqs, idx_ptr, qs_ptr, ncomp_ptr, pos_ptr, sl_ptr](
+          at::mcpu::kernel_timing::Event* timing_event) mutable {
         MCPU_KERNEL_TIMING_SCOPE_EVENT(
             "mcpu::vllm_prepare_pos_seq_lens", timing_event);
         at::mcpu::KernelPointerMemoryGuard guard(
@@ -238,15 +233,15 @@ void vllm_combine_sampled_and_draft_tokens_impl(
 // ---------------------------------------------------------------------------
 // get_num_sampled_and_rejected  → (num_sampled, num_rejected)
 // ---------------------------------------------------------------------------
-void vllm_get_num_sampled_and_rejected_impl(
+at::Tensor vllm_get_num_sampled_and_rejected_impl(
     at::Tensor& num_sampled, // [num_reqs], int32  (in/out)
-    at::Tensor& num_rejected, // [num_reqs], int32 (out)
     const at::Tensor& seq_lens, // [num_reqs], int32
     const at::Tensor& cu_num_logits, // [num_reqs+1], int32
     const at::Tensor& idx_mapping, // [num_reqs], int32
     const at::Tensor& prefill_len) { // [max_num_reqs], int32
 
   int64_t num_reqs = idx_mapping.size(0);
+  at::Tensor num_rejected = at::empty_like(num_sampled);
   VLLM_MCPU_CHECK_DIM(num_rejected, 1, "num_rejected");
   VLLM_MCPU_CHECK_DTYPE(num_rejected, at::kInt, "num_rejected");
   VLLM_MCPU_CHECK(
@@ -268,12 +263,14 @@ void vllm_get_num_sampled_and_rejected_impl(
       [num_reqs,
        ns_ptr,
        nr_ptr,
+       num_rejected,
        sl_ptr,
        cunl_ptr,
        idx_ptr,
        plen_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
         MCPU_KERNEL_TIMING_SCOPE_EVENT(
             "mcpu::vllm_get_num_sampled_and_rejected", timing_event);
+        (void)num_rejected;
         at::mcpu::KernelPointerMemoryGuard guard(
             {ns_ptr, nr_ptr, sl_ptr, cunl_ptr, idx_ptr, plen_ptr});
         for (int64_t r = 0; r < num_reqs; r++) {
@@ -290,6 +287,7 @@ void vllm_get_num_sampled_and_rejected_impl(
           }
         }
       });
+  return num_rejected;
 }
 
 // ---------------------------------------------------------------------------
@@ -416,8 +414,7 @@ void vllm_post_update_pool_impl(
           at::mcpu::kernel_timing::Event* timing_event) mutable {
         MCPU_KERNEL_TIMING_SCOPE_EVENT(
             "mcpu::vllm_post_update_pool", timing_event);
-        at::mcpu::KernelPointerMemoryGuard guard(
-            {idx_ptr, ncomp_ptr, qs_ptr});
+        at::mcpu::KernelPointerMemoryGuard guard({idx_ptr, ncomp_ptr, qs_ptr});
         for (int64_t r = 0; r < num_reqs; r++) {
           int32_t req = idx_ptr[r];
           int32_t qlen = qs_ptr[r + 1] - qs_ptr[r];
@@ -517,12 +514,11 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(
       "vllm_get_num_sampled_and_rejected("
       "Tensor(a!) num_sampled, "
-      "Tensor(b!) num_rejected, "
       "Tensor seq_lens, "
       "Tensor cu_num_logits, "
       "Tensor idx_mapping, "
       "Tensor prefill_len"
-      ") -> ()");
+      ") -> Tensor");
   m.def(
       "vllm_post_update("
       "Tensor idx_mapping, "
