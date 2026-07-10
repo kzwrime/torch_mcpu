@@ -153,6 +153,20 @@ class TestOps(TestCase):
         expected[:, ::2, :] = 3.5
         self.assertEqual(base.cpu(), expected)
 
+    def test_index_fill_inplace_scalar(self):
+        base_cpu = torch.arange(48, dtype=torch.float32).reshape(2, 6, 4)
+        index_cpu = torch.tensor([2, 0], dtype=torch.long)
+        expected = base_cpu.clone()
+        expected[:, ::2, :].index_fill_(-2, index_cpu, -2.5)
+
+        base = base_cpu.to("mcpu")
+        x = base[:, ::2, :]
+        index = index_cpu.to("mcpu")
+        result = torch.ops.aten.index_fill_.int_Scalar(x, -2, index, -2.5)
+
+        self.assertIs(result, x)
+        self.assertEqual(base.cpu(), expected)
+
 
 class TestSTUB(TestCase):
     def test_backend_dispatchstub(self):
