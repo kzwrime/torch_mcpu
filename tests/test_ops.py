@@ -107,13 +107,16 @@ class TestCopy(TestCase):
 
 
 class TestOps(TestCase):
-    def test_masked_select(self):
-        """Test masked_select does not silently fallback to CPU."""
+    def test_masked_select_uses_cpu_fallback(self):
         tensor_cpu = torch.randn(10)
         tensor_mcpu = tensor_cpu.to(device="mcpu")
         mask = tensor_mcpu.gt(0)
-        with self.assertRaisesRegex(RuntimeError, "aten::masked_select"):
-            torch.masked_select(tensor_mcpu, mask)
+        result = torch.masked_select(tensor_mcpu, mask)
+
+        self.assertEqual(result.device.type, "mcpu")
+        self.assertEqual(
+            result.cpu(), torch.masked_select(tensor_cpu, tensor_cpu.gt(0))
+        )
 
     def test_expand(self):
         """Test tensor expand operation"""
@@ -237,11 +240,59 @@ class TestAutogradFunction(TestCase):
 
 
 class TestFallback(TestCase):
-    def test_unimplemented_factory_does_not_fallback_to_cpu(self):
-        with self.assertRaisesRegex(
-            RuntimeError, "aten::triu_indices.*docs/how_to_impl_aten_ops.md"
+    def test_unimplemented_factory_falls_back_to_cpu(self):
+        expected = torch.triu_indices(4, 5, offset=1)
+
+        # Repeat to cover the lifetime of the temporary CPU result retained by
+        # the asynchronous CPU-to-mcpu copy.
+        for _ in range(10):
+            result = torch.triu_indices(4, 5, offset=1, device="mcpu")
+            self.assertEqual(result.device.type, "mcpu")
+            self.assertEqual(result.cpu(), expected)
+
+    def test_functional_fallback_preserves_output_stride(self):
+        input_cpu = torch.linspace(-1, 1, 12).reshape(3, 4).t()
+        input_mcpu = input_cpu.to("mcpu")
+
+        expected = torch.erf(input_cpu)
+        result = torch.erf(input_mcpu)
+
+        self.assertEqual(result.device.type, "mcpu")
+        self.assertEqual(result.stride(), expected.stride())
+        self.assertEqual(result.cpu(), expected)
+
+    def test_out_fallback_writes_strided_tensor_without_touching_gaps(self):
+        input_cpu = torch.linspace(-1, 1, 12).reshape(3, 4)
+        input_mcpu = input_cpu.to("mcpu")
+        base = torch.full((3, 8), -99.0, device="mcpu")
+        out = base[:, 1::2]
+        original_stride = out.stride()
+
+        result = torch.erf(input_mcpu, out=out)
+
+        expected_base = torch.full((3, 8), -99.0)
+        expected_base[:, 1::2] = torch.erf(input_cpu)
+        self.assertIs(result, out)
+        self.assertEqual(out.stride(), original_stride)
+        self.assertEqual(base.cpu(), expected_base)
+
+    def test_tensorlist_fallback_returns_and_mutates_mcpu_tensors(self):
+        inputs_cpu = [torch.tensor([0.0, 1.0]), torch.tensor([2.0, 3.0])]
+        inputs = [tensor.to("mcpu") for tensor in inputs_cpu]
+
+        outputs = torch._foreach_erf(inputs)
+        for output, expected in zip(outputs, torch._foreach_erf(inputs_cpu)):
+            self.assertEqual(output.device.type, "mcpu")
+            self.assertEqual(output.cpu(), expected)
+
+        data_ptrs = [tensor.data_ptr() for tensor in inputs]
+        mutated = torch._foreach_erf_(inputs)
+        for result, original, data_ptr, expected in zip(
+            mutated, inputs, data_ptrs, torch._foreach_erf_(inputs_cpu)
         ):
-            torch.triu_indices(3, 3, device="mcpu")
+            self.assertIs(result, original)
+            self.assertEqual(result.data_ptr(), data_ptr)
+            self.assertEqual(result.cpu(), expected)
 
     def test_tensor_ops_use_explicit_mcpu_kernels(self):
         x = torch.Tensor([[1, 2, 3], [2, 3, 4]]).to("mcpu")

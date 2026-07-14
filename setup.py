@@ -42,7 +42,7 @@ def get_mcpu_build_options():
             os.getenv("TORCH_MCPU_ENABLE_MEMORY_PROTECTION", "OFF")
         ),
         "TORCH_MCPU_ENABLE_CPU_FALLBACK": cmake_bool(
-            os.getenv("TORCH_MCPU_ENABLE_CPU_FALLBACK", "OFF")
+            os.getenv("TORCH_MCPU_ENABLE_CPU_FALLBACK", "ON")
         ),
     }
 

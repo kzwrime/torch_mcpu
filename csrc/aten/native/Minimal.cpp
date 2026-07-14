@@ -2,8 +2,8 @@
 #if TORCH_MCPU_ENABLE_CPU_FALLBACK
 #include "MCPUFallback.h"
 #endif
-#include "runtime/McpuKernelLaunch.h"
 #include <runtime/DeviceCachingAllocator.h>
+#include "runtime/McpuKernelLaunch.h"
 
 #include <ATen/MemoryOverlap.h>
 #include <ATen/WrapDimUtils.h>
@@ -144,7 +144,8 @@ void execute_memcpy_copy(
     const int64_t src_s0 = plan.src_byte_strides[0];
     const int64_t dst_s0 = plan.dst_byte_strides[0];
     for (int64_t i = 0; i < size0; ++i) {
-      std::memcpy(dst_base + i * dst_s0, src_base + i * src_s0, plan.copy_bytes);
+      std::memcpy(
+          dst_base + i * dst_s0, src_base + i * src_s0, plan.copy_bytes);
     }
   } else if (outer_ndim == 2) {
     const int64_t size0 = plan.outer_sizes[0];
@@ -166,7 +167,8 @@ void execute_memcpy_copy(
     int64_t src_offset = 0;
     int64_t dst_offset = 0;
     for (int64_t i = 0; i < plan.outer_count; ++i) {
-      std::memcpy(dst_base + dst_offset, src_base + src_offset, plan.copy_bytes);
+      std::memcpy(
+          dst_base + dst_offset, src_base + src_offset, plan.copy_bytes);
 
       for (int64_t dim = outer_ndim - 1; dim >= 0; --dim) {
         ++indices[dim];
@@ -188,14 +190,22 @@ void launch_async_memcpy_copy(
     const char* record_name,
     const void* src_ptr,
     void* dst_ptr,
-    MemcpyCopyPlan plan) {
+    MemcpyCopyPlan plan,
+    std::vector<at::Tensor> keep_alive = {}) {
   auto plan_ptr = std::make_shared<MemcpyCopyPlan>(std::move(plan));
   at::mcpu::launch_timed_kernel_on_stream(
       stream,
       record_name,
-      [src_ptr, dst_ptr, plan_ptr, record_name](
+      [src_ptr,
+       dst_ptr,
+       plan_ptr,
+       record_name,
+       keep_alive = std::move(keep_alive)](
           at::mcpu::kernel_timing::Event* timing_event) {
         MCPU_KERNEL_TIMING_SCOPE_EVENT(record_name, timing_event);
+        // Host allocations are not tracked by the mcpu caching allocator.
+        // Retain their Tensor owners until the queued memcpy has completed.
+        (void)keep_alive;
         at::mcpu::KernelPointerMemoryGuard guard({src_ptr, dst_ptr});
         execute_memcpy_copy(
             static_cast<const char*>(src_ptr),
@@ -264,10 +274,7 @@ void launch_async_same_device_copy_fallback(
         at::Tensor dst_as_cpu =
             at::from_blob(dst_ptr, dst_sizes, dst_strides, dst_options);
         const at::Tensor self_as_cpu = at::from_blob(
-            const_cast<void*>(src_ptr),
-            self_sizes,
-            self_strides,
-            self_options);
+            const_cast<void*>(src_ptr), self_sizes, self_strides, self_options);
         at::native::copy_(
             const_cast<at::Tensor&>(dst_as_cpu), self_as_cpu, non_blocking);
       });
@@ -292,7 +299,8 @@ bool try_launch_async_host_device_memcpy(
       "mcpu::_copy_from.host_device.memcpy",
       self.data_ptr(),
       dst.data_ptr(),
-      std::move(plan));
+      std::move(plan),
+      {self, dst});
   return true;
 }
 
@@ -560,7 +568,7 @@ void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         false, "Operator '", op_name, "' is not implemented for device mcpu.");
   } else {
     // Call our custom CPU fallback implementation instead of PyTorch's
-    at::native::mcpu::custom::cpu_fallback(op, stack);
+    at::native::mcpu::custom::cpu_fallback(op, stack, /*error_on_views=*/true);
   }
 }
 // LITERALINCLUDE END: FALLBACK IMPL

@@ -12,20 +12,80 @@
 #include <ATen/core/ivalue.h>
 #include <ATen/core/stack.h>
 
-#include <iostream>
+#include "runtime/OpenRegStream.h"
+
 #include <sstream>
+#include <unordered_set>
 #include <vector>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
 #else
-#include <ATen/ops/_copy_from_and_resize.h>
-#include <ATen/ops/_to_cpu.h>
+#include <ATen/ops/_copy_from.h>
+#include <ATen/ops/empty_strided.h>
 #endif
 
 namespace at::native::mcpu::custom {
 
-// convenience helper for converting tensors to cpu
+namespace {
+
+bool is_mcpu_tensor(const at::Tensor& tensor) {
+  return tensor.defined() &&
+      tensor.device().type() == c10::DeviceType::PrivateUse1;
+}
+
+class PendingInputCopies {
+ public:
+  void record_current_stream(const at::Tensor& tensor) {
+    const auto device_index = tensor.device().index();
+    auto stream = c10::mcpu::getCurrentMcpuStream(device_index);
+    if (recorded_streams_.insert(stream).second) {
+      streams_.push_back(stream);
+    }
+  }
+
+  void synchronize() {
+    // All D2H copies have already been queued behind preceding work on these
+    // streams. One synchronization per current stream makes every CPU input
+    // ready, regardless of how many tensors were copied from that stream.
+    for (const auto& stream : streams_) {
+      stream.synchronize();
+    }
+  }
+
+ private:
+  std::unordered_set<c10::mcpu::McpuStream> recorded_streams_;
+  std::vector<c10::mcpu::McpuStream> streams_;
+};
+
+at::Tensor queue_cpu_input_copy(
+    const at::Tensor& tensor,
+    PendingInputCopies& pending_copies) {
+  if (!is_mcpu_tensor(tensor)) {
+    return tensor;
+  }
+
+  at::Tensor cpu_tensor;
+  if (tensor.layout() == c10::Layout::Strided && !tensor.is_quantized()) {
+    cpu_tensor = at::empty_strided(
+        tensor.sizes(), tensor.strides(), tensor.options().device(at::kCPU));
+  } else {
+    // Quantized and non-strided tensors need their backend-specific metadata
+    // construction. Keep this transfer asynchronous as well.
+    pending_copies.record_current_stream(tensor);
+    return tensor.to(
+        tensor.options().device(at::kCPU),
+        /*non_blocking=*/true,
+        /*copy=*/false,
+        at::MemoryFormat::Preserve);
+  }
+
+  if (tensor.numel() != 0) {
+    pending_copies.record_current_stream(tensor);
+    at::_copy_from(tensor, cpu_tensor, /*non_blocking=*/true);
+  }
+  return cpu_tensor;
+}
 
 template <
     typename T,
@@ -33,58 +93,99 @@ template <
         std::is_same_v<T, at::Tensor> ||
             std::is_same_v<T, std::optional<at::Tensor>>,
         int> = 1>
-static std::vector<T> to_cpu(const std::vector<T>& tensors) {
-  // We can't just call at::to_cpu() on the entire list of Tensors
-  // Because it will break on undefined tensors. Separate out undefined tensors
-  // first.
-  const int num = tensors.size();
-  std::vector<T> cpu_tensors(num);
-  std::vector<at::Tensor> valid_tensors;
-  std::vector<bool> to_translate(num);
-  for (const auto i : c10::irange(num)) {
-    // Explicitly handling undefined tensors here instead of letting
-    // `at::_to_cpu` handle it. Otherwise, we'd need to require all backends
-    // with their own implementation of _to_cpu to properly handle undefined
-    // tensors.
+std::vector<T> queue_cpu_input_copies(
+    const std::vector<T>& tensors,
+    PendingInputCopies& pending_copies) {
+  std::vector<T> cpu_tensors;
+  cpu_tensors.reserve(tensors.size());
+  for (const auto& tensor : tensors) {
     if constexpr (std::is_same_v<T, std::optional<at::Tensor>>) {
-      if (tensors[i].has_value() && tensors[i].value().defined()) {
-        to_translate[i] = true;
-        valid_tensors.push_back(tensors[i].value());
+      if (tensor.has_value() && tensor->defined()) {
+        cpu_tensors.emplace_back(queue_cpu_input_copy(*tensor, pending_copies));
       } else {
-        cpu_tensors[i] = tensors[i];
+        cpu_tensors.push_back(tensor);
       }
+    } else if (tensor.defined()) {
+      cpu_tensors.push_back(queue_cpu_input_copy(tensor, pending_copies));
     } else {
-      if (tensors[i].defined()) {
-        to_translate[i] = true;
-        valid_tensors.push_back(tensors[i]);
-      } else {
-        cpu_tensors[i] = tensors[i];
-      }
-    }
-  }
-  auto cpu_valid_tensors = at::_to_cpu(valid_tensors);
-  for (int i = 0, defined_pos = 0; i < num; ++i) {
-    if (to_translate[i]) {
-      cpu_tensors[i] = std::move(cpu_valid_tensors[defined_pos++]);
+      cpu_tensors.push_back(tensor);
     }
   }
   return cpu_tensors;
 }
 
+at::Tensor copy_cpu_output_to_device(
+    const at::Tensor& cpu_tensor,
+    const c10::Device& target_device) {
+  if (!cpu_tensor.defined() || target_device.is_cpu()) {
+    return cpu_tensor;
+  }
+
+  // For ordinary strided outputs, allocate with the exact CPU result strides.
+  // Tensor::to() is allowed to make non-dense tensors contiguous, which loses
+  // observable output metadata even though the values remain correct.
+  if (cpu_tensor.layout() == c10::Layout::Strided &&
+      !cpu_tensor.is_quantized()) {
+    auto output = at::empty_strided(
+        cpu_tensor.sizes(),
+        cpu_tensor.strides(),
+        cpu_tensor.options().device(target_device));
+    at::_copy_from(cpu_tensor, output, /*non_blocking=*/true);
+    return output;
+  }
+
+  return cpu_tensor.to(
+      cpu_tensor.options().device(target_device),
+      /*non_blocking=*/true,
+      /*copy=*/false,
+      at::MemoryFormat::Preserve);
+}
+
+void copy_mutated_cpu_tensor_back(
+    const at::Tensor& cpu_tensor,
+    const at::Tensor& mcpu_tensor) {
+  if (!is_mcpu_tensor(mcpu_tensor)) {
+    // CPU inputs were passed directly to the CPU kernel and are already
+    // mutated in place.
+    return;
+  }
+  if (cpu_tensor.sizes() != mcpu_tensor.sizes()) {
+    // Metadata changes must be visible before returning from the boxed call.
+    // The data transfer itself can still be ordered on the current stream.
+    mcpu_tensor.resize_(cpu_tensor.sizes());
+  }
+  at::_copy_from(cpu_tensor, mcpu_tensor, /*non_blocking=*/true);
+}
+
+} // namespace
+
 static std::optional<c10::Device> compute_target_device(
-    std::vector<at::Tensor>& t_args,
-    const std::vector<c10::List<at::Tensor>>& tlist_args) {
+    const std::vector<at::Tensor>& t_args,
+    const std::vector<c10::List<at::Tensor>>& tlist_args,
+    const std::vector<c10::List<std::optional<at::Tensor>>>&
+        optional_tlist_args) {
   // Decide what device to move the output tensor(s) to.
   // The current convention is that we use the first tensor arg to pick the
   // device Barring that, we take the first tensor from a TensorList arg.
-  if (!t_args.empty()) {
-    return t_args[0].device();
-  } else {
-    // We need to loop through all of the (potentially multiple) TensorList
-    // arguments In case, e.g. the first one is empty but the second is not.
-    for (auto& tens_list : tlist_args) {
-      for (const auto i : c10::irange(tens_list.size())) {
+  for (const auto& tensor : t_args) {
+    if (is_mcpu_tensor(tensor)) {
+      return tensor.device();
+    }
+  }
+  // We need to loop through all of the (potentially multiple) TensorList
+  // arguments In case, e.g. the first one is empty but the second is not.
+  for (const auto& tens_list : tlist_args) {
+    for (const auto i : c10::irange(tens_list.size())) {
+      if (is_mcpu_tensor(tens_list.get(i))) {
         return tens_list.get(i).device();
+      }
+    }
+  }
+  for (const auto& tens_list : optional_tlist_args) {
+    for (const auto i : c10::irange(tens_list.size())) {
+      const auto tensor = tens_list.get(i);
+      if (tensor.has_value() && is_mcpu_tensor(*tensor)) {
+        return tensor->device();
       }
     }
   }
@@ -107,7 +208,6 @@ void cpu_fallback(
     torch::jit::Stack* stack,
     bool error_on_views,
     c10::DispatchKey cpu_dispatch_key) {
-  std::cerr << "[mcpu fallback] " << op.schema().operator_name() << std::endl;
   TORCH_CHECK(
       c10::BackendComponent::CPUBit ==
           c10::toBackendComponent(cpu_dispatch_key),
@@ -140,36 +240,45 @@ void cpu_fallback(
       tensor_args.push_back(ivalue.toTensor());
       tensor_args_indices.push_back(idx);
     } else if (ivalue.isTensorList()) {
-      // Note: we copy each TensorList argument to CPU individually out of
-      // convenience, but XLA would benefit from materializing all tensor and
-      // TensorList args onto the CPU at the same time. We can improve this if
-      // we need better perf for XLA's CPU fallbacks.
       tensorlist_args.push_back(ivalue.toTensorList());
       tensorlist_args_indices.push_back(idx);
-      auto cpu_ivalue =
-          c10::IValue(c10::List<at::Tensor>(to_cpu(ivalue.toTensorVector())));
-      tensorlist_cpu_args.push_back(cpu_ivalue);
-      (*stack)[arguments_begin + idx] = std::move(cpu_ivalue);
     } else if (ivalue.isOptionalTensorList()) {
       optional_tensorlist_args.push_back(ivalue.toOptionalTensorList());
       optional_tensorlist_args_indices.push_back(idx);
-      auto cpu_ivalue = c10::IValue(c10::List<std::optional<at::Tensor>>(
-          to_cpu(ivalue.toOptionalTensorVector())));
-      optional_tensorlist_cpu_args.push_back(cpu_ivalue);
-      (*stack)[arguments_begin + idx] = c10::IValue(cpu_ivalue);
     } else if (ivalue.isDevice()) {
       tgt_device = ivalue.toDevice();
       (*stack)[arguments_begin + idx] = c10::IValue(c10::Device(kCPU));
     }
   }
-  // XLA requires all of the tensor arguments to be gathered up and converted to
-  // CPU together.
-  auto cpu_tensors = to_cpu(tensor_args);
+  PendingInputCopies pending_input_copies;
+
+  for (const auto i : c10::irange(tensorlist_args.size())) {
+    auto cpu_ivalue = c10::IValue(c10::List<at::Tensor>(queue_cpu_input_copies(
+        tensorlist_args[i].vec(), pending_input_copies)));
+    tensorlist_cpu_args.push_back(cpu_ivalue);
+    (*stack)[arguments_begin + tensorlist_args_indices[i]] =
+        std::move(cpu_ivalue);
+  }
+  for (const auto i : c10::irange(optional_tensorlist_args.size())) {
+    auto cpu_ivalue =
+        c10::IValue(c10::List<std::optional<at::Tensor>>(queue_cpu_input_copies(
+            optional_tensorlist_args[i].vec(), pending_input_copies)));
+    optional_tensorlist_cpu_args.push_back(cpu_ivalue);
+    (*stack)[arguments_begin + optional_tensorlist_args_indices[i]] =
+        c10::IValue(cpu_ivalue);
+  }
+
+  auto cpu_tensors = queue_cpu_input_copies(tensor_args, pending_input_copies);
 
   for (const auto i : c10::irange(tensor_args_indices.size())) {
     auto idx = tensor_args_indices[i];
     (*stack)[arguments_begin + idx] = c10::IValue(cpu_tensors[i]);
   }
+
+  // This is the fallback's only host synchronization boundary for input data.
+  // CUDA-style cross-stream correctness remains the caller's responsibility:
+  // producer streams must be made visible to these current streams first.
+  pending_input_copies.synchronize();
 
   // Step 2: Call the underlying CPU implementation of the operator
   op.redispatchBoxed(c10::DispatchKeySet(cpu_dispatch_key), stack);
@@ -184,7 +293,7 @@ void cpu_fallback(
     if (alias_info != nullptr && alias_info->isWrite()) {
       if (!tensor_args[i].defined())
         continue;
-      at::_copy_from_and_resize(cpu_tensors[i], tensor_args[i]);
+      copy_mutated_cpu_tensor_back(cpu_tensors[i], tensor_args[i]);
     }
   }
 
@@ -198,7 +307,7 @@ void cpu_fallback(
       for (const auto idx : c10::irange(tensorlist_args[i].size())) {
         if (!cpu_tensors[idx].defined())
           continue;
-        at::_copy_from_and_resize(cpu_tensors[idx], tensorlist_args[i][idx]);
+        copy_mutated_cpu_tensor_back(cpu_tensors[idx], tensorlist_args[i][idx]);
       }
     }
   }
@@ -216,7 +325,7 @@ void cpu_fallback(
             cpu_tensors[idx].value().defined()) {
           const std::optional<at::Tensor>& optional_tensor =
               optional_tensorlist_args[i][idx];
-          at::_copy_from_and_resize(
+          copy_mutated_cpu_tensor_back(
               cpu_tensors[idx].value(), optional_tensor.value());
         }
       }
@@ -247,7 +356,8 @@ void cpu_fallback(
   const auto returns_begin = stack->size() - num_returns;
 
   if (!tgt_device.has_value()) {
-    tgt_device = compute_target_device(tensor_args, tensorlist_args);
+    tgt_device = compute_target_device(
+        tensor_args, tensorlist_args, optional_tensorlist_args);
   }
 
   for (const auto idx : c10::irange(returns.size())) {
@@ -352,8 +462,8 @@ void cpu_fallback(
       // tensors to schlep across devices anyway.
       if (tgt_device) {
         if (returns[idx].isTensor() && returns[idx].toTensor().defined()) {
-          (*stack)[returns_begin + idx] =
-              c10::IValue(returns[idx].toTensor().to(*tgt_device));
+          (*stack)[returns_begin + idx] = c10::IValue(
+              copy_cpu_output_to_device(returns[idx].toTensor(), *tgt_device));
         } else if (
             returns[idx].isTensorList() &&
             validate_tensor_list(returns[idx].toTensorList())) {
@@ -362,7 +472,7 @@ void cpu_fallback(
           tensors.reserve(cpu_tensors.size());
 
           for (const auto& tensor : cpu_tensors) {
-            tensors.push_back(tensor.to(*tgt_device));
+            tensors.push_back(copy_cpu_output_to_device(tensor, *tgt_device));
           }
           (*stack)[returns_begin + idx] =
               c10::IValue(c10::List<at::Tensor>(tensors));

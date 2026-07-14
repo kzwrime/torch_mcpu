@@ -83,6 +83,14 @@ torch_mcpu 中有 4 个 DSO，它们之间的依赖关系如下：
     - 按运算符 Fallback：参见 `sub.Tensor`
     - 全局 Fallback：参见 `wrapper_cpu_fallback`
 
+未手动接入的 ATen 算子默认启用通用 CPU fallback：先把所有输入的 D2H copy
+排入当前 mcpu stream，再按当前 stream 去重同步，在 host 线程执行 CPU
+kernel，最后按 CPU 输出的 size/stride 分配 mcpu tensor，并把回拷排入同一个
+stream。后续 mcpu launch 因此会自然排在回拷之后。与 CUDA 一致，跨 stream
+的数据依赖需要调用方通过 event 或 `wait_stream` 显式建立。涉及 storage alias
+的 view 算子不能通过跨设备复制保持语义，仍需手动实现；可通过
+`TORCH_MCPU_ENABLE_CPU_FALLBACK=OFF` 在构建时关闭通用 fallback。
+
 ### 自动加载
 
 当 `import torch` 时，已安装的加速器（如 `torch_mcpu`）将被自动加载，实现与内置后端相同的体验。

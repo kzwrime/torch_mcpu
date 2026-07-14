@@ -160,6 +160,70 @@ class TestStream(TestCase):
         self.assertEqual(torch.ops.mcpu.first_element_int(tensor), 7)
 
     @skipIfTorchDynamo()
+    def test_cpu_fallback_orders_with_current_stream_launches(self):
+        stream = torch.Stream(device="mcpu:0")
+        tensor = self._stream_test_tensor(value=0)
+
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(tensor, 2, 100)
+            fallback_result = torch.erf(tensor)
+            # sigmoid is an explicit mcpu launch. It must observe the fallback
+            # output copy queued immediately before it on this same stream.
+            launched_result = torch.sigmoid(fallback_result)
+            self.assertEqual(torch.mcpu.current_stream(), stream)
+
+        stream.synchronize()
+        expected = torch.sigmoid(torch.erf(torch.full((8,), 2, dtype=torch.int64)))
+        self.assertEqual(launched_result.cpu(), expected)
+
+    @skipIfTorchDynamo()
+    def test_cpu_fallback_batches_multiple_inputs_on_one_stream(self):
+        stream = torch.Stream(device="mcpu:0")
+        lhs = self._stream_test_tensor(value=0)
+        rhs = self._stream_test_tensor(value=0)
+
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(lhs, 2, 50)
+            torch.ops.mcpu.stream_sleep_fill_(rhs, 4, 50)
+            result = torch.atan2(lhs, rhs)
+            self.assertEqual(torch.mcpu.current_stream(), stream)
+
+        stream.synchronize()
+        expected = torch.atan2(
+            torch.full((8,), 2, dtype=torch.int64),
+            torch.full((8,), 4, dtype=torch.int64),
+        )
+        self.assertEqual(result.cpu(), expected)
+
+    @skipIfTorchDynamo()
+    def test_cpu_fallback_honors_explicit_cross_stream_dependencies(self):
+        producer_lhs = torch.Stream(device="mcpu:0")
+        producer_rhs = torch.Stream(device="mcpu:0")
+        consumer = torch.Stream(device="mcpu:0")
+        lhs = self._stream_test_tensor(value=0)
+        rhs = self._stream_test_tensor(value=0)
+
+        with producer_lhs:
+            torch.ops.mcpu.stream_sleep_fill_(lhs, 3, 100)
+        with producer_rhs:
+            torch.ops.mcpu.stream_sleep_fill_(rhs, 5, 100)
+
+        with consumer:
+            consumer.wait_stream(producer_lhs)
+            consumer.wait_stream(producer_rhs)
+            fallback_result = torch.atan2(lhs, rhs)
+            launched_result = torch.sigmoid(fallback_result)
+
+        consumer.synchronize()
+        expected = torch.sigmoid(
+            torch.atan2(
+                torch.full((8,), 3, dtype=torch.int64),
+                torch.full((8,), 5, dtype=torch.int64),
+            )
+        )
+        self.assertEqual(launched_result.cpu(), expected)
+
+    @skipIfTorchDynamo()
     def test_device_synchronize_waits_for_stream_native_op(self):
         stream = torch.Stream(device="mcpu:0")
         tensor = self._stream_test_tensor(value=0)
