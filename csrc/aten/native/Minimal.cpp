@@ -188,14 +188,22 @@ void launch_async_memcpy_copy(
     const char* record_name,
     const void* src_ptr,
     void* dst_ptr,
-    MemcpyCopyPlan plan) {
+    MemcpyCopyPlan plan,
+    std::vector<at::Tensor> keep_alive = {}) {
   auto plan_ptr = std::make_shared<MemcpyCopyPlan>(std::move(plan));
   at::mcpu::launch_timed_kernel_on_stream(
       stream,
       record_name,
-      [src_ptr, dst_ptr, plan_ptr, record_name](
+      [src_ptr,
+       dst_ptr,
+       plan_ptr,
+       record_name,
+       keep_alive = std::move(keep_alive)](
           at::mcpu::kernel_timing::Event* timing_event) {
         MCPU_KERNEL_TIMING_SCOPE_EVENT(record_name, timing_event);
+        // Host allocations are not tracked by the mcpu caching allocator.
+        // Retain their Tensor owners until the queued memcpy has completed.
+        (void)keep_alive;
         at::mcpu::KernelPointerMemoryGuard guard({src_ptr, dst_ptr});
         execute_memcpy_copy(
             static_cast<const char*>(src_ptr),
@@ -292,7 +300,8 @@ bool try_launch_async_host_device_memcpy(
       "mcpu::_copy_from.host_device.memcpy",
       self.data_ptr(),
       dst.data_ptr(),
-      std::move(plan));
+      std::move(plan),
+      {self, dst});
   return true;
 }
 
