@@ -26,8 +26,7 @@ static void vllm_penalties_kernel_typed(
     const int32_t* pbm_ptr,
     int64_t pbm_stride,
     const int32_t* obc_ptr,
-    int64_t obc_stride,
-    int64_t max_spec_len) {
+    int64_t obc_stride) {
   for (int64_t tok = 0; tok < num_tokens; tok++) {
     int32_t req = idx_ptr[tok];
     float rep_pen = rep_ptr[req];
@@ -47,7 +46,7 @@ static void vllm_penalties_kernel_typed(
     for (int64_t v = 0; v < vocab_size; v++) {
       int32_t cnt = obc_row[v];
 
-      if (pos > 0 && max_spec_len > 0) {
+      if (pos > 0) {
         for (int32_t prev = 0; prev < pos; prev++) {
           int32_t draft_tok = tids_ptr[start_idx + prev + 1];
           if (draft_tok == (int32_t)v)
@@ -98,8 +97,7 @@ void vllm_penalties_kernel_impl(
     const at::Tensor&
         prompt_bin_mask, // [max_num_reqs, cdiv(vocab_size,32)], int32
     const at::Tensor& output_bin_counts, // [max_num_reqs, vocab_size], int32
-    int64_t vocab_size,
-    int64_t max_spec_len) {
+    int64_t vocab_size) {
   VLLM_MCPU_CHECK_DIM(logits, 2, "logits");
   VLLM_MCPU_CHECK_FLOAT(logits, "logits");
   VLLM_MCPU_CHECK_DTYPE(expanded_idx_mapping, at::kInt, "expanded_idx_mapping");
@@ -140,8 +138,7 @@ void vllm_penalties_kernel_impl(
          pbm_ptr,
          pbm_stride,
          obc_ptr,
-         obc_stride,
-         max_spec_len](at::mcpu::kernel_timing::Event* timing_event) mutable {
+         obc_stride](at::mcpu::kernel_timing::Event* timing_event) mutable {
           MCPU_KERNEL_TIMING_SCOPE_EVENT(
               "mcpu::vllm_penalties_kernel", timing_event);
           at::mcpu::KernelPointerMemoryGuard guard(
@@ -168,8 +165,7 @@ void vllm_penalties_kernel_impl(
               pbm_ptr,
               pbm_stride,
               obc_ptr,
-              obc_stride,
-              max_spec_len);
+              obc_stride);
         });
   });
 }
@@ -264,8 +260,7 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "Tensor presence_penalty, "
       "Tensor prompt_bin_mask, "
       "Tensor output_bin_counts, "
-      "int vocab_size, "
-      "int max_spec_len"
+      "int vocab_size"
       ") -> ()");
   m.def(
       "vllm_bincount_kernel("

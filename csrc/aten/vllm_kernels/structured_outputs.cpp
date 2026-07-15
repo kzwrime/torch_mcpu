@@ -30,7 +30,7 @@ static void vllm_apply_grammar_bitmask_typed(
       int64_t base = w * 32;
       int lim = (int)((base + 32 <= vocab_size) ? 32 : vocab_size - base);
       for (int b = 0; b < lim; b++) {
-        if ((packed >> b) & 1u)
+        if (((packed >> b) & 1u) == 0)
           row_ptr[base + b] = neg_inf;
       }
     }

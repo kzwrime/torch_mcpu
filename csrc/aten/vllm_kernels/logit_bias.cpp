@@ -7,6 +7,7 @@
 //   2. Add logit bias values for specified token IDs.
 //   3. If pos + 1 < min_len: set stop token IDs to -inf.
 
+#include <vector>
 #include "common.h"
 
 namespace {
@@ -41,10 +42,9 @@ static void vllm_bias_kernel_typed(
     int32_t n_allowed = n_allowed_ptr[req];
     if (n_allowed > 0) {
       const int32_t* allowed_row = allowed_ptr + (int64_t)req * allowed_stride;
-      scalar_t saved[512];
-      int32_t saved_ids[512];
-      int32_t n_save = (n_allowed <= 512) ? n_allowed : 512;
-      for (int32_t k = 0; k < n_save; k++) {
+      std::vector<scalar_t> saved(n_allowed);
+      std::vector<int32_t> saved_ids(n_allowed);
+      for (int32_t k = 0; k < n_allowed; k++) {
         int32_t id = allowed_row[k];
         if (id < 0)
           id = 0;
@@ -55,7 +55,7 @@ static void vllm_bias_kernel_typed(
       }
       for (int64_t i = 0; i < vocab_size; i++)
         row[i] = neg_inf;
-      for (int32_t k = 0; k < n_save; k++)
+      for (int32_t k = 0; k < n_allowed; k++)
         row[saved_ids[k]] = saved[k];
     }
 

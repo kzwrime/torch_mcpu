@@ -146,17 +146,15 @@ void vllm_combine_sampled_and_draft_tokens_impl(
     const at::Tensor& seq_lens, // [num_reqs], int32
     const at::Tensor& prefill_len, // [max_num_reqs], int32
     const at::Tensor& draft_tokens, // [max_num_reqs, max_draft], int32
+    int64_t draft_tokens_stride,
     const at::Tensor& cu_num_logits, // [num_reqs+1], int32
-    int64_t num_logits,
-    at::Tensor& logits_indices) {
+    at::Tensor& logits_indices,
+    int64_t num_new_sampled_tokens) {
   int64_t num_reqs = idx_mapping.size(0);
 
   VLLM_MCPU_CHECK(
-      logits_indices.numel() == num_logits,
-      "logits_indices must have num_logits elements, got ",
-      logits_indices.numel(),
-      ", expected ",
-      num_logits);
+      num_new_sampled_tokens == 0 || num_new_sampled_tokens == 1,
+      "num_new_sampled_tokens must be 0 or 1");
   VLLM_MCPU_CHECK_DIM(logits_indices, 1, "logits_indices");
   VLLM_MCPU_CHECK(
       logits_indices.scalar_type() == at::kLong,
@@ -172,7 +170,6 @@ void vllm_combine_sampled_and_draft_tokens_impl(
   const int32_t* plen_ptr = prefill_len.data_ptr<int32_t>();
   const int64_t* draft_ptr = draft_tokens.data_ptr<int64_t>();
   const int32_t* cunl_ptr = cu_num_logits.data_ptr<int32_t>();
-  int64_t draft_stride = draft_tokens.stride(0);
 
   int64_t* li_ptr = logits_indices.data_ptr<int64_t>();
 
@@ -187,7 +184,8 @@ void vllm_combine_sampled_and_draft_tokens_impl(
        plen_ptr,
        draft_ptr,
        cunl_ptr,
-       draft_stride,
+       draft_tokens_stride,
+       num_new_sampled_tokens,
        li_ptr](at::mcpu::kernel_timing::Event* timing_event) mutable {
         MCPU_KERNEL_TIMING_SCOPE_EVENT(
             "mcpu::vllm_combine_sampled_and_draft_tokens", timing_event);
@@ -206,7 +204,7 @@ void vllm_combine_sampled_and_draft_tokens_impl(
           int32_t ls = cunl_ptr[r];
           int32_t le = cunl_ptr[r + 1];
           int32_t n_logits = le - ls;
-          int32_t n_draft = n_logits - 1;
+          int32_t n_draft = n_logits - num_new_sampled_tokens;
           int32_t qend = qs_ptr[r + 1];
           int32_t pos_start = qend - n_logits;
 
@@ -219,9 +217,10 @@ void vllm_combine_sampled_and_draft_tokens_impl(
           if (seq_len <= plen)
             continue; // chunked prefill
 
-          iids_ptr[qend - n_logits] = (int32_t)lst_ptr[req];
+          if (num_new_sampled_tokens > 0)
+            iids_ptr[qend - n_logits] = (int32_t)lst_ptr[req];
           if (n_draft > 0) {
-            const int64_t* dr = draft_ptr + (int64_t)req * draft_stride;
+            const int64_t* dr = draft_ptr + (int64_t)req * draft_tokens_stride;
             for (int32_t i = 0; i < n_draft; i++) {
               iids_ptr[qend - n_draft + i] = (int32_t)dr[i];
             }
@@ -233,15 +232,15 @@ void vllm_combine_sampled_and_draft_tokens_impl(
 // ---------------------------------------------------------------------------
 // get_num_sampled_and_rejected  → (num_sampled, num_rejected)
 // ---------------------------------------------------------------------------
-at::Tensor vllm_get_num_sampled_and_rejected_impl(
+void vllm_get_num_sampled_and_rejected_impl(
     at::Tensor& num_sampled, // [num_reqs], int32  (in/out)
+    at::Tensor& num_rejected, // [num_reqs], int32 (output)
     const at::Tensor& seq_lens, // [num_reqs], int32
     const at::Tensor& cu_num_logits, // [num_reqs+1], int32
     const at::Tensor& idx_mapping, // [num_reqs], int32
     const at::Tensor& prefill_len) { // [max_num_reqs], int32
 
   int64_t num_reqs = idx_mapping.size(0);
-  at::Tensor num_rejected = at::empty_like(num_sampled);
   VLLM_MCPU_CHECK_DIM(num_rejected, 1, "num_rejected");
   VLLM_MCPU_CHECK_DTYPE(num_rejected, at::kInt, "num_rejected");
   VLLM_MCPU_CHECK(
@@ -287,7 +286,6 @@ at::Tensor vllm_get_num_sampled_and_rejected_impl(
           }
         }
       });
-  return num_rejected;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,21 +294,24 @@ at::Tensor vllm_get_num_sampled_and_rejected_impl(
 void vllm_post_update_impl(
     const at::Tensor& idx_mapping, // [num_reqs], int32
     at::Tensor& num_computed_tokens, // [max_num_reqs], int32
-    at::Tensor& last_sampled_tokens, // [max_num_reqs, 1], int64
+    at::Tensor& last_sampled_tokens, // [max_num_reqs], int64
     const std::optional<at::Tensor>&
         output_bin_counts, // [max_num_reqs, vocab_size] or nullopt
+    int64_t output_bin_counts_stride,
     const at::Tensor& sampled_tokens, // [num_reqs, max_spec+1], int64
+    int64_t sampled_tokens_stride,
     const at::Tensor& num_sampled, // [num_reqs], int32
     const at::Tensor& num_rejected, // [num_reqs], int32
-    const at::Tensor& query_start_loc, // [num_reqs+1], int32
+    const std::optional<at::Tensor>&
+        query_start_loc, // [num_reqs+1], int32 or nullopt
     at::Tensor& all_token_ids, // [max_num_reqs, max_seq_len], int32
+    int64_t all_token_ids_stride,
     at::Tensor& total_len) { // [max_num_reqs], int32
 
   int64_t num_reqs = idx_mapping.size(0);
-  int64_t atids_stride = all_token_ids.stride(0);
-  int64_t st_stride = sampled_tokens.stride(0);
-  // last_sampled_tokens has shape [max_num_reqs, 1]; stride to offset into it
-  int64_t lst_stride = last_sampled_tokens.stride(0);
+  VLLM_MCPU_CHECK(
+      last_sampled_tokens.is_contiguous(),
+      "last_sampled_tokens must be contiguous");
 
   const int32_t* idx_ptr = idx_mapping.data_ptr<int32_t>();
   int32_t* ncomp_ptr = num_computed_tokens.data_ptr<int32_t>();
@@ -319,28 +320,23 @@ void vllm_post_update_impl(
   const int64_t* st_ptr = sampled_tokens.data_ptr<int64_t>();
   const int32_t* ns_ptr = num_sampled.data_ptr<int32_t>();
   const int32_t* nr_ptr = num_rejected.data_ptr<int32_t>();
-  const int32_t* qs_ptr = query_start_loc.data_ptr<int32_t>();
+  const int32_t* qs_ptr = nullptr;
+  if (query_start_loc.has_value() && query_start_loc->defined()) {
+    qs_ptr = query_start_loc->data_ptr<int32_t>();
+  }
   int32_t* atids_ptr =
       all_token_ids.data_ptr<int32_t>(); // all_token_ids is int32
   int32_t* tlen_ptr = total_len.data_ptr<int32_t>();
 
   int32_t* obc_ptr = nullptr;
-  int64_t obc_stride = 0;
   if (output_bin_counts.has_value() && output_bin_counts->defined()) {
     obc_ptr = output_bin_counts->data_ptr<int32_t>();
-    obc_stride = output_bin_counts->stride(0);
   }
-  int64_t obc_vocab =
-      output_bin_counts.has_value() && output_bin_counts->defined()
-      ? output_bin_counts->size(1)
-      : 0;
-
   at::mcpu::launch_timed_kernel(
       "mcpu::vllm_post_update",
       [num_reqs,
-       atids_stride,
-       st_stride,
-       lst_stride,
+       all_token_ids_stride,
+       sampled_tokens_stride,
        idx_ptr,
        ncomp_ptr,
        lst_ptr,
@@ -351,8 +347,8 @@ void vllm_post_update_impl(
        atids_ptr,
        tlen_ptr,
        obc_ptr,
-       obc_stride,
-       obc_vocab](at::mcpu::kernel_timing::Event* timing_event) mutable {
+       output_bin_counts_stride](
+          at::mcpu::kernel_timing::Event* timing_event) mutable {
         MCPU_KERNEL_TIMING_SCOPE_EVENT("mcpu::vllm_post_update", timing_event);
         at::mcpu::KernelPointerMemoryGuard guard(
             {idx_ptr,
@@ -367,30 +363,31 @@ void vllm_post_update_impl(
              obc_ptr});
         for (int64_t r = 0; r < num_reqs; r++) {
           int32_t req = idx_ptr[r];
+          if (req < 0)
+            continue;
           int32_t n = ns_ptr[r];
           int32_t tlen = tlen_ptr[req];
 
           if (n > 0) {
-            const int64_t* st_row = st_ptr + r * st_stride;
-            lst_ptr[(int64_t)req * lst_stride] = st_row[n - 1];
+            const int64_t* st_row = st_ptr + r * sampled_tokens_stride;
+            lst_ptr[req] = st_row[n - 1];
             tlen_ptr[req] = tlen + n;
-            int32_t* dst = atids_ptr + (int64_t)req * atids_stride + tlen;
+            int32_t* dst =
+                atids_ptr + (int64_t)req * all_token_ids_stride + tlen;
             for (int32_t i = 0; i < n; i++) {
               dst[i] = (int32_t)st_row[i];
               if (obc_ptr != nullptr) {
                 int32_t tok = (int32_t)st_row[i];
-                if (tok >= 0 && tok < (int32_t)obc_vocab) {
-                  obc_ptr[(int64_t)req * obc_stride + tok]++;
-                }
+                obc_ptr[(int64_t)req * output_bin_counts_stride + tok]++;
               }
             }
           }
 
-          int32_t qstart = qs_ptr[r];
-          int32_t qend = qs_ptr[r + 1];
-          int32_t qlen = qend - qstart;
+          int32_t qlen = qs_ptr == nullptr ? 0 : qs_ptr[r + 1] - qs_ptr[r];
           int32_t nr = nr_ptr[r];
-          ncomp_ptr[req] = ncomp_ptr[req] + qlen - nr;
+          int32_t computed_delta = qlen - nr;
+          if (computed_delta != 0)
+            ncomp_ptr[req] += computed_delta;
         }
       });
 }
@@ -507,30 +504,35 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "Tensor seq_lens, "
       "Tensor prefill_len, "
       "Tensor draft_tokens, "
+      "int draft_tokens_stride, "
       "Tensor cu_num_logits, "
-      "int num_logits, "
-      "Tensor(a!) logits_indices"
+      "Tensor(a!) logits_indices, "
+      "int num_new_sampled_tokens"
       ") -> ()");
   m.def(
       "vllm_get_num_sampled_and_rejected("
       "Tensor(a!) num_sampled, "
+      "Tensor(b!) num_rejected, "
       "Tensor seq_lens, "
       "Tensor cu_num_logits, "
       "Tensor idx_mapping, "
       "Tensor prefill_len"
-      ") -> Tensor");
+      ") -> ()");
   m.def(
       "vllm_post_update("
       "Tensor idx_mapping, "
       "Tensor(a!) num_computed_tokens, "
       "Tensor(b!) last_sampled_tokens, "
-      "Tensor? output_bin_counts, "
+      "Tensor(c!)? output_bin_counts, "
+      "int output_bin_counts_stride, "
       "Tensor sampled_tokens, "
+      "int sampled_tokens_stride, "
       "Tensor num_sampled, "
       "Tensor num_rejected, "
-      "Tensor query_start_loc, "
-      "Tensor(c!) all_token_ids, "
-      "Tensor(d!) total_len"
+      "Tensor? query_start_loc, "
+      "Tensor(d!) all_token_ids, "
+      "int all_token_ids_stride, "
+      "Tensor(e!) total_len"
       ") -> ()");
   m.def(
       "vllm_post_update_pool("
