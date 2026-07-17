@@ -110,6 +110,27 @@ void prepare_rope_positions_kernel_impl(
   VLLM_MCPU_CHECK(num_dims > 0, "num_dims must be positive");
   VLLM_MCPU_CHECK(
       positions.size(0) >= num_dims, "positions must cover num_dims rows");
+  VLLM_MCPU_CHECK(
+      positions_stride == positions.stride(0),
+      "positions_stride must match positions row stride");
+  VLLM_MCPU_CHECK(
+      positions.stride(1) == 1, "positions columns must have unit stride");
+  // The V2 Triton ABI stores prefill positions as
+  // [max_num_reqs * NUM_DIMS, max_model_len]. Its stride0 is the distance
+  // between requests and stride1 is the distance between RoPE dimensions,
+  // rather than the two ordinary Tensor strides.
+  VLLM_MCPU_CHECK(
+      prefill_positions_stride1 == prefill_positions.stride(0),
+      "prefill_positions_stride1 must match the row stride");
+  VLLM_MCPU_CHECK(
+      prefill_positions_stride0 == num_dims * prefill_positions_stride1,
+      "prefill_positions_stride0 must span NUM_DIMS rows");
+  VLLM_MCPU_CHECK(
+      prefill_positions.stride(1) == 1,
+      "prefill_positions columns must have unit stride");
+  VLLM_MCPU_CHECK(
+      prefill_positions.size(0) % num_dims == 0,
+      "prefill_positions rows must be divisible by num_dims");
 
   const int64_t num_reqs = idx_mapping.size(0);
   int64_t* __restrict__ positions_ptr = positions.data_ptr<int64_t>();
@@ -146,9 +167,8 @@ void prepare_rope_positions_kernel_impl(
                            prefill_lens_ptr,
                            num_computed_tokens_ptr,
                            num_reqs,
-                           num_dims](
-                              at::mcpu::kernel_timing::Event*
-                                  timing_event) mutable {
+                           num_dims](at::mcpu::kernel_timing::Event*
+                                         timing_event) mutable {
                             MCPU_KERNEL_TIMING_SCOPE_EVENT(
                                 "mcpu::prepare_rope_positions_kernel",
                                 timing_event);
