@@ -8,6 +8,700 @@ from torch.testing._internal.common_utils import TestCase, run_tests
 
 
 class TestVllmKernelLaunch(TestCase):
+    def test_autoregressive_prepare_prefill_inputs_matches_triton(self):
+        last_indices = torch.full((4,), -1, dtype=torch.int64, device="mcpu")
+        current_step = torch.tensor(3, dtype=torch.int64, device="mcpu")
+        draft_ids = torch.full((8,), -9, dtype=torch.int32, device="mcpu")
+        draft_positions = torch.full(
+            (8,), -9, dtype=torch.int64, device="mcpu"
+        )
+        draft_query = torch.full((5,), -9, dtype=torch.int32, device="mcpu")
+        draft_seq_lens = torch.full((4,), -9, dtype=torch.int32, device="mcpu")
+        target_ids = torch.tensor(
+            [10, 11, 12, 99, 20, 21, 22, 88],
+            dtype=torch.int32,
+            device="mcpu",
+        )
+        target_positions = torch.arange(8, dtype=torch.int64, device="mcpu")
+        idx_mapping = torch.tensor([2, 0], dtype=torch.int32, device="mcpu")
+        last_sampled = torch.tensor(
+            [[30], [31], [42], [33]], dtype=torch.int64, device="mcpu"
+        )
+        next_prefill = torch.tensor(
+            [77, 71, 72, 73], dtype=torch.int32, device="mcpu"
+        )
+        num_sampled = torch.tensor([2, 0], dtype=torch.int32, device="mcpu")
+        num_rejected = torch.tensor([1, 0], dtype=torch.int32, device="mcpu")
+        query_start = torch.tensor([0, 4, 7], dtype=torch.int32, device="mcpu")
+        seq_lens = torch.tensor([100, 200], dtype=torch.int32, device="mcpu")
+
+        torch.ops.mcpu.vllm_autoregressive_prepare_prefill_inputs(
+            last_indices,
+            current_step,
+            draft_ids,
+            draft_positions,
+            draft_query,
+            draft_seq_lens,
+            target_ids,
+            target_positions,
+            idx_mapping,
+            last_sampled,
+            next_prefill,
+            num_sampled,
+            num_rejected,
+            query_start,
+            seq_lens,
+            4,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            last_indices.cpu(), torch.tensor([2, 6, 0, 0], dtype=torch.int64)
+        )
+        self.assertEqual(current_step.cpu(), torch.tensor(0, dtype=torch.int64))
+        self.assertEqual(
+            draft_ids.cpu(),
+            torch.tensor([11, 12, 42, -9, 21, 22, 77, -9], dtype=torch.int32),
+        )
+        self.assertEqual(
+            draft_positions.cpu(),
+            torch.tensor([0, 1, 2, -9, 4, 5, 6, -9], dtype=torch.int64),
+        )
+        self.assertEqual(
+            draft_query.cpu(), torch.tensor([0, 4, 7, 7, 7], dtype=torch.int32)
+        )
+        self.assertEqual(
+            draft_seq_lens.cpu(),
+            torch.tensor([100, 200, 0, 0], dtype=torch.int32),
+        )
+
+    def test_autoregressive_prepare_decode_inputs_matches_triton(self):
+        draft_tokens = torch.tensor(
+            [[101, 102], [201, 202]], dtype=torch.int64, device="mcpu"
+        )
+        target_seq_lens = torch.tensor(
+            [9, 10], dtype=torch.int32, device="mcpu"
+        )
+        num_rejected = torch.tensor([2, 0], dtype=torch.int32, device="mcpu")
+        input_ids = torch.full((4,), -9, dtype=torch.int32, device="mcpu")
+        positions = torch.tensor([4, 9, -9, -9], device="mcpu")
+        query_start = torch.full((5,), -9, dtype=torch.int32, device="mcpu")
+        seq_lens = torch.full((4,), -9, dtype=torch.int32, device="mcpu")
+
+        torch.ops.mcpu.vllm_autoregressive_prepare_decode_inputs(
+            draft_tokens,
+            draft_tokens.stride(0),
+            target_seq_lens,
+            num_rejected,
+            input_ids,
+            positions,
+            query_start,
+            seq_lens,
+            10,
+            4,
+            True,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            input_ids.cpu(), torch.tensor([101, 201, -9, -9], dtype=torch.int32)
+        )
+        self.assertEqual(
+            positions.cpu(), torch.tensor([5, 9, -9, -9], dtype=torch.int64)
+        )
+        self.assertEqual(
+            query_start.cpu(), torch.tensor([0, 1, 2, 2, 2], dtype=torch.int32)
+        )
+        self.assertEqual(
+            seq_lens.cpu(), torch.tensor([8, 10, 0, 0], dtype=torch.int32)
+        )
+
+        # Gemma4 MTP uses the same token/padding writes without advancing
+        # positions or active sequence lengths.
+        positions.fill_(7)
+        seq_lens.fill_(6)
+        torch.ops.mcpu.vllm_autoregressive_prepare_decode_inputs(
+            draft_tokens,
+            draft_tokens.stride(0),
+            target_seq_lens,
+            num_rejected,
+            input_ids,
+            positions,
+            query_start,
+            seq_lens,
+            10,
+            4,
+            False,
+        )
+        torch.mcpu.synchronize()
+        self.assertEqual(
+            positions.cpu(), torch.tensor([7, 7, 7, 7], dtype=torch.int64)
+        )
+        self.assertEqual(
+            seq_lens.cpu(), torch.tensor([6, 6, 0, 0], dtype=torch.int32)
+        )
+
+    def test_autoregressive_update_draft_inputs_matches_triton(self):
+        output_tokens = torch.full(
+            (2, 3), -1, dtype=torch.int64, device="mcpu"
+        )
+        next_hidden = torch.full(
+            (2, 4), -9, dtype=torch.bfloat16, device="mcpu"
+        )
+        input_ids = torch.full((2,), -9, dtype=torch.int32, device="mcpu")
+        positions = torch.tensor([8, 9], dtype=torch.int64, device="mcpu")
+        seq_lens = torch.tensor([9, 10], dtype=torch.int32, device="mcpu")
+        draft_tokens = torch.tensor(
+            [101, 201], dtype=torch.int64, device="mcpu"
+        )
+        current_step = torch.tensor(1, dtype=torch.int64, device="mcpu")
+        hidden = torch.tensor(
+            [[1, 2, 3, 4], [5, 6, 7, 8]],
+            dtype=torch.bfloat16,
+            device="mcpu",
+        )
+
+        torch.ops.mcpu.vllm_autoregressive_update_draft_inputs(
+            output_tokens,
+            output_tokens.stride(0),
+            next_hidden,
+            next_hidden.stride(0),
+            input_ids,
+            positions,
+            seq_lens,
+            draft_tokens,
+            current_step,
+            hidden,
+            hidden.stride(0),
+            hidden.shape[1],
+            10,
+            3,
+            True,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            output_tokens.cpu(),
+            torch.tensor([[-1, 101, -1], [-1, 201, -1]], dtype=torch.int64),
+        )
+        self.assertEqual(
+            input_ids.cpu(), torch.tensor([101, 201], dtype=torch.int32)
+        )
+        self.assertEqual(next_hidden.cpu(), hidden.cpu())
+        self.assertEqual(
+            positions.cpu(), torch.tensor([9, 9], dtype=torch.int64)
+        )
+        self.assertEqual(seq_lens.cpu(), torch.tensor([10, 10], dtype=torch.int32))
+
+        # The final speculative step records its token and returns before
+        # changing any next-forward input, exactly like the Triton kernel.
+        current_step.fill_(2)
+        draft_tokens.add_(1)
+        input_ids.fill_(-7)
+        next_hidden.fill_(-7)
+        positions.fill_(4)
+        seq_lens.fill_(5)
+        torch.ops.mcpu.vllm_autoregressive_update_draft_inputs(
+            output_tokens,
+            output_tokens.stride(0),
+            next_hidden,
+            next_hidden.stride(0),
+            input_ids,
+            positions,
+            seq_lens,
+            draft_tokens,
+            current_step,
+            hidden,
+            hidden.stride(0),
+            hidden.shape[1],
+            10,
+            3,
+            False,
+        )
+        torch.mcpu.synchronize()
+        self.assertEqual(
+            output_tokens.cpu(),
+            torch.tensor(
+                [[-1, 101, 102], [-1, 201, 202]], dtype=torch.int64
+            ),
+        )
+        self.assertEqual(
+            input_ids.cpu(), torch.tensor([-7, -7], dtype=torch.int32)
+        )
+        self.assertEqual(
+            next_hidden.cpu(),
+            torch.full((2, 4), -7, dtype=torch.bfloat16),
+        )
+        self.assertEqual(
+            positions.cpu(), torch.tensor([4, 4], dtype=torch.int64)
+        )
+        self.assertEqual(seq_lens.cpu(), torch.tensor([5, 5], dtype=torch.int32))
+
+    def test_eagle_prepare_next_token_padded_matches_triton_validity_rules(self):
+        sampled = torch.tensor(
+            [[10, 11, -1, -1], [5, -2, 100, 7], [30, 31, 32, 33]],
+            dtype=torch.int32,
+            device="mcpu",
+        )
+        discard = torch.tensor([False, False, True], device="mcpu")
+        backup = torch.tensor([90, 91, 92], dtype=torch.int32, device="mcpu")
+        next_tokens = torch.empty(3, dtype=torch.int32, device="mcpu")
+        valid_counts = torch.empty(3, dtype=torch.int32, device="mcpu")
+
+        torch.ops.mcpu.vllm_eagle_prepare_next_token_padded(
+            sampled,
+            discard,
+            backup,
+            next_tokens,
+            valid_counts,
+            100,
+            4,
+            3,
+        )
+        torch.mcpu.synchronize()
+
+        # Triton treats -1 as the only negative sentinel; -2 remains valid.
+        self.assertEqual(
+            next_tokens.cpu(), torch.tensor([11, 7, 92], dtype=torch.int32)
+        )
+        self.assertEqual(
+            valid_counts.cpu(), torch.tensor([2, 3, 0], dtype=torch.int32)
+        )
+
+    def test_eagle_prepare_inputs_padded_handles_empty_draft_request(self):
+        cu_draft = torch.tensor([2, 2, 5], dtype=torch.int32, device="mcpu")
+        valid = torch.tensor([2, 0, 3], dtype=torch.int32, device="mcpu")
+        query_start = torch.tensor([0, 4, 5, 10], dtype=torch.int32, device="mcpu")
+        indices = torch.empty(3, dtype=torch.int32, device="mcpu")
+        rejected = torch.empty(3, dtype=torch.int32, device="mcpu")
+
+        torch.ops.mcpu.vllm_eagle_prepare_inputs_padded(
+            cu_draft, valid, query_start, indices, rejected, 3
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(indices.cpu(), torch.tensor([2, 4, 8], dtype=torch.int32))
+        self.assertEqual(rejected.cpu(), torch.tensor([1, 0, 1], dtype=torch.int32))
+
+    def test_eagle_step_slot_mapping_metadata_clamps_and_pads_grid(self):
+        positions = torch.tensor([2, 9], dtype=torch.int64, device="mcpu")
+        block_table = torch.tensor(
+            [[10, 11], [20, 21]], dtype=torch.int32, device="mcpu"
+        )
+        seq_lens = torch.tensor([3, 10], dtype=torch.int32, device="mcpu")
+        out_positions = torch.full((2,), 99, dtype=torch.int64, device="mcpu")
+        slots = torch.full((4,), 99, dtype=torch.int64, device="mcpu")
+
+        torch.ops.mcpu.vllm_eagle_step_slot_mapping_metadata(
+            positions,
+            block_table,
+            seq_lens,
+            out_positions,
+            slots,
+            4,
+            10,
+            2,
+            -1,
+            2,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            out_positions.cpu(), torch.tensor([3, 0], dtype=torch.int64)
+        )
+        self.assertEqual(seq_lens.cpu(), torch.tensor([4, 1], dtype=torch.int32))
+        self.assertEqual(
+            slots.cpu(), torch.tensor([43, -1, -1, -1], dtype=torch.int64)
+        )
+
+    def test_rejection_sampler_expand_float_and_zero_length_request(self):
+        values = torch.tensor([0.5, 0.0, 0.25], device="mcpu")
+        cu_num_tokens = torch.tensor([2, 2, 5], dtype=torch.int32, device="mcpu")
+        output = torch.empty(5, device="mcpu")
+
+        torch.ops.mcpu.vllm_rejection_sampler_expand(
+            output, values, cu_num_tokens, 0, 1, 128
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            output.cpu(), torch.tensor([0.5, 0.5, 0.25, 0.25, 0.25])
+        )
+
+    def test_rejection_sampler_expand_int_and_replace(self):
+        values = torch.tensor([4, 0, 7], dtype=torch.int32, device="mcpu")
+        cu_num_tokens = torch.tensor([1, 3, 4], dtype=torch.int32, device="mcpu")
+        output = torch.empty(4, dtype=torch.int32, device="mcpu")
+
+        torch.ops.mcpu.vllm_rejection_sampler_expand(
+            output, values, cu_num_tokens, 0, 9, 128
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            output.cpu(), torch.tensor([4, 9, 9, 7], dtype=torch.int32)
+        )
+
+    def test_rejection_sampler_expand_honors_runtime_max_num_tokens(self):
+        values = torch.tensor([4, 7], dtype=torch.int32, device="mcpu")
+        cu_num_tokens = torch.tensor([3, 7], dtype=torch.int32, device="mcpu")
+        output = torch.full((7,), -1, dtype=torch.int32, device="mcpu")
+
+        torch.ops.mcpu.vllm_rejection_sampler_expand(
+            output, values, cu_num_tokens, 0, 9, 2
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            output.cpu(),
+            torch.tensor([4, 4, -1, 7, 7, -1, -1], dtype=torch.int32),
+        )
+
+    def test_rejection_compute_block_stats_matches_triton_semantics(self):
+        vocab_size = 8200
+        target_cpu = torch.linspace(
+            -4.0, 4.0, 4 * vocab_size, dtype=torch.float32
+        ).reshape(4, vocab_size)
+        target_cpu[0, 17] = 8.0
+        target_cpu[0, 8195] = 7.0
+        target_cpu[1, 31] = 9.0
+        target_cpu[1, 8197] = 10.0
+        draft_cpu = (target_cpu.reshape(2, 2, vocab_size) * 0.75).contiguous()
+
+        target = target_cpu.to(device="mcpu", dtype=torch.bfloat16)
+        draft = draft_cpu.to(device="mcpu", dtype=torch.bfloat16)
+        mapping = torch.tensor([1, 0, 1, 0], dtype=torch.int32, device="mcpu")
+        local_pos = torch.tensor([0, 1, 2, 3], dtype=torch.int32, device="mcpu")
+        temperature = torch.tensor([0.0, 0.8], device="mcpu")
+        shape = (4, 2)
+        target_argmax = torch.full(shape, -1, dtype=torch.int64, device="mcpu")
+        target_max = torch.full(shape, -123.0, device="mcpu")
+        target_sumexp = torch.full(shape, -123.0, device="mcpu")
+        draft_max = torch.full(shape, -123.0, device="mcpu")
+        draft_sumexp = torch.full(shape, -123.0, device="mcpu")
+
+        torch.ops.mcpu.vllm_rejection_compute_block_stats(
+            target_argmax,
+            target_max,
+            target_sumexp,
+            draft_max,
+            draft_sumexp,
+            target,
+            draft,
+            mapping,
+            local_pos,
+            temperature,
+            vocab_size,
+            2,
+            8192,
+        )
+        torch.mcpu.synchronize()
+
+        target_ref = target.cpu().float()
+        draft_ref = draft.cpu().float()
+        # Row 0 is non-greedy and uses draft request 1, step 0.
+        for block, bounds in enumerate(((0, 8192), (8192, vocab_size))):
+            begin, end = bounds
+            target_block = target_ref[0, begin:end]
+            draft_block = draft_ref[1, 0, begin:end]
+            self.assertAlmostEqual(
+                target_max[0, block].cpu().item(),
+                target_block.max().item(),
+                places=5,
+            )
+            self.assertAlmostEqual(
+                target_sumexp[0, block].cpu().item(),
+                torch.exp(target_block - target_block.max()).sum().item(),
+                delta=2e-2,
+            )
+            self.assertAlmostEqual(
+                draft_max[0, block].cpu().item(),
+                draft_block.max().item(),
+                places=5,
+            )
+            self.assertAlmostEqual(
+                draft_sumexp[0, block].cpu().item(),
+                torch.exp(draft_block - draft_block.max()).sum().item(),
+                delta=5e-2,
+            )
+
+        # Row 1 is greedy: only target max/argmax are written.
+        self.assertEqual(
+            target_argmax[1].cpu(),
+            torch.tensor([31, 8197], dtype=torch.int64),
+        )
+        self.assertEqual(target_sumexp[1].cpu(), torch.full((2,), -123.0))
+        self.assertEqual(draft_max[1].cpu(), torch.full((2,), -123.0))
+        self.assertEqual(draft_sumexp[1].cpu(), torch.full((2,), -123.0))
+
+        # Rows 2 and 3 are bonus positions and remain completely untouched.
+        self.assertEqual(
+            target_argmax[2:].cpu(),
+            torch.full((2, 2), -1, dtype=torch.int64),
+        )
+        for output in (target_max, target_sumexp, draft_max, draft_sumexp):
+            self.assertEqual(output[2:].cpu(), torch.full((2, 2), -123.0))
+
+    def test_rejection_compute_block_stats_without_draft_leaves_draft_outputs(self):
+        target = torch.tensor(
+            [[1.0, 3.0, 2.0]], dtype=torch.float32, device="mcpu"
+        )
+        mapping = torch.tensor([0], dtype=torch.int32, device="mcpu")
+        local_pos = torch.tensor([0], dtype=torch.int32, device="mcpu")
+        temperature = torch.tensor([1.0], device="mcpu")
+        target_argmax = torch.full((1, 1), -1, dtype=torch.int64, device="mcpu")
+        target_max = torch.full((1, 1), -1.0, device="mcpu")
+        target_sumexp = torch.full((1, 1), -1.0, device="mcpu")
+        draft_max = torch.full((1, 1), -7.0, device="mcpu")
+        draft_sumexp = torch.full((1, 1), -7.0, device="mcpu")
+
+        torch.ops.mcpu.vllm_rejection_compute_block_stats(
+            target_argmax,
+            target_max,
+            target_sumexp,
+            draft_max,
+            draft_sumexp,
+            target,
+            None,
+            mapping,
+            local_pos,
+            temperature,
+            3,
+            1,
+            8192,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(target_max.cpu(), torch.tensor([[3.0]]))
+        self.assertAlmostEqual(
+            target_sumexp.cpu().item(),
+            (torch.exp(torch.tensor(-2.0)) + 1 + torch.exp(torch.tensor(-1.0))).item(),
+            places=5,
+        )
+        self.assertEqual(draft_max.cpu(), torch.tensor([[-7.0]]))
+        self.assertEqual(draft_sumexp.cpu(), torch.tensor([[-7.0]]))
+
+    def test_rejection_v2_greedy_pipeline_handles_rejection_and_bonus(self):
+        target = torch.zeros((6, 5), dtype=torch.float32, device="mcpu")
+        for row, token in enumerate((1, 2, 3, 4, 1, 2)):
+            target[row, token] = 10.0
+        draft_sampled = torch.tensor(
+            [-1, 1, 2, -1, 0, 1], dtype=torch.int32, device="mcpu"
+        )
+        cu_logits = torch.tensor([0, 3, 6], dtype=torch.int32, device="mcpu")
+        idx_mapping = torch.tensor([0, 1], dtype=torch.int32, device="mcpu")
+        expanded_mapping = torch.tensor(
+            [0, 0, 0, 1, 1, 1], dtype=torch.int32, device="mcpu"
+        )
+        local_pos = torch.tensor(
+            [0, 1, 2, 0, 1, 2], dtype=torch.int32, device="mcpu"
+        )
+        temperature = torch.zeros(2, dtype=torch.float32, device="mcpu")
+        seed = torch.tensor([11, 22], dtype=torch.int64, device="mcpu")
+        pos = torch.arange(6, dtype=torch.int64, device="mcpu")
+        block_shape = (6, 1)
+        target_argmax = torch.empty(block_shape, dtype=torch.int64, device="mcpu")
+        target_max = torch.empty(block_shape, device="mcpu")
+        target_sumexp = torch.empty(block_shape, device="mcpu")
+        draft_max = torch.empty(block_shape, device="mcpu")
+        draft_sumexp = torch.empty(block_shape, device="mcpu")
+        torch.ops.mcpu.vllm_rejection_compute_block_stats(
+            target_argmax,
+            target_max,
+            target_sumexp,
+            draft_max,
+            draft_sumexp,
+            target,
+            None,
+            expanded_mapping,
+            local_pos,
+            temperature,
+            5,
+            2,
+            8192,
+        )
+
+        sampled = torch.full((2, 3), -99, dtype=torch.int64, device="mcpu")
+        num_sampled = torch.empty(2, dtype=torch.int32, device="mcpu")
+        target_lse = torch.empty(2, device="mcpu")
+        draft_lse = torch.empty(2, device="mcpu")
+        torch.ops.mcpu.vllm_rejection(
+            sampled,
+            num_sampled,
+            target_lse,
+            draft_lse,
+            target,
+            target_argmax,
+            target_max,
+            target_sumexp,
+            draft_sampled,
+            None,
+            draft_max,
+            draft_sumexp,
+            cu_logits,
+            idx_mapping,
+            temperature,
+            seed,
+            pos,
+            1,
+        )
+
+        resampled_argmax = torch.full(
+            (2, 1), -1, dtype=torch.int64, device="mcpu"
+        )
+        resampled_max = torch.full((2, 1), -1.0, device="mcpu")
+        torch.ops.mcpu.vllm_rejection_resample(
+            resampled_argmax,
+            resampled_max,
+            target,
+            target_lse,
+            None,
+            draft_lse,
+            num_sampled,
+            cu_logits,
+            expanded_mapping,
+            draft_sampled,
+            temperature,
+            seed,
+            pos,
+            5,
+            1024,
+            False,
+        )
+        torch.ops.mcpu.vllm_rejection_insert(
+            sampled,
+            num_sampled,
+            resampled_argmax,
+            resampled_max,
+            cu_logits,
+            expanded_mapping,
+            temperature,
+            1,
+        )
+        flat_sampled = torch.zeros(6, dtype=torch.int64, device="mcpu")
+        torch.ops.mcpu.vllm_rejection_flatten(
+            flat_sampled, sampled, num_sampled, cu_logits
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(num_sampled.cpu(), torch.tensor([3, 1], dtype=torch.int32))
+        self.assertEqual(sampled[0].cpu(), torch.tensor([1, 2, 3]))
+        self.assertEqual(sampled[1, 0].cpu(), torch.tensor(4))
+        self.assertEqual(flat_sampled.cpu(), torch.tensor([1, 2, 3, 4, 0, 0]))
+
+    def test_rejection_greedy_matches_mixed_batch_semantics(self):
+        output = torch.full((3, 4), -1, dtype=torch.int32, device="mcpu")
+        cu_tokens = torch.tensor([2, 4, 4], dtype=torch.int32, device="mcpu")
+        draft_ids = torch.tensor([1, 2, 3, 9], dtype=torch.int32, device="mcpu")
+        target_argmax = torch.tensor([1, 5, 3, 4], device="mcpu")
+        bonus_ids = torch.tensor([[8], [7], [6]], dtype=torch.int32, device="mcpu")
+        is_greedy = torch.tensor([True, False, True], device="mcpu")
+
+        torch.ops.mcpu.vllm_rejection_greedy(
+            output,
+            cu_tokens,
+            draft_ids,
+            target_argmax,
+            bonus_ids,
+            is_greedy,
+            3,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            output.cpu(),
+            torch.tensor(
+                [[1, 5, -1, -1], [-1, -1, -1, -1], [6, -1, -1, -1]],
+                dtype=torch.int32,
+            ),
+        )
+
+    def test_sample_recovered_matches_adjusted_probability_argmax(self):
+        cu_tokens = torch.tensor([1, 2], dtype=torch.int32, device="mcpu")
+        draft_ids = torch.tensor([0, 1], dtype=torch.int32, device="mcpu")
+        target_probs = torch.tensor(
+            [[0.1, 0.6, 0.3], [0.5, 0.2, 0.3]],
+            dtype=torch.float32,
+            device="mcpu",
+        )
+        draft_probs = torch.tensor(
+            [[0.05, 0.5, 0.1], [0.4, 0.1, 0.3]],
+            dtype=torch.float32,
+            device="mcpu",
+        )
+        inv_q = torch.tensor(
+            [[1.0, 1.0, 1.0], [1.0, 3.0, 1.0]],
+            dtype=torch.float64,
+            device="mcpu",
+        )
+        output = torch.empty(2, dtype=torch.int32, device="mcpu")
+
+        torch.ops.mcpu.vllm_sample_recovered(
+            output,
+            cu_tokens,
+            draft_ids,
+            draft_probs,
+            target_probs,
+            inv_q,
+            3,
+        )
+        torch.mcpu.synchronize()
+        self.assertEqual(output.cpu(), torch.tensor([2, 1], dtype=torch.int32))
+
+        # With no draft distribution, Triton masks only the proposed token.
+        torch.ops.mcpu.vllm_sample_recovered(
+            output,
+            cu_tokens,
+            draft_ids,
+            None,
+            target_probs,
+            inv_q.float(),
+            3,
+        )
+        torch.mcpu.synchronize()
+        self.assertEqual(output.cpu(), torch.tensor([1, 0], dtype=torch.int32))
+
+    def test_rejection_random_handles_padding_rejection_and_bonus(self):
+        output = torch.full((2, 3), -1, dtype=torch.int32, device="mcpu")
+        cu_tokens = torch.tensor([2, 4], dtype=torch.int32, device="mcpu")
+        draft_ids = torch.tensor([1, -1, 2, 0], dtype=torch.int32, device="mcpu")
+        target_probs = torch.tensor(
+            [
+                [0.1, 0.8, 0.1],
+                [0.2, 0.3, 0.5],
+                [0.05, 0.05, 0.9],
+                [0.8, 0.1, 0.1],
+            ],
+            dtype=torch.float32,
+            device="mcpu",
+        )
+        bonus_ids = torch.tensor([[8], [9]], dtype=torch.int32, device="mcpu")
+        recovered = torch.tensor([6, 7, 5, 4], dtype=torch.int32, device="mcpu")
+        uniform = torch.tensor(
+            [0.2, 0.0, 0.2, 0.2], dtype=torch.float64, device="mcpu"
+        )
+        is_greedy = torch.tensor([False, False], device="mcpu")
+
+        torch.ops.mcpu.vllm_rejection_random(
+            output,
+            cu_tokens,
+            draft_ids,
+            None,
+            target_probs,
+            bonus_ids,
+            recovered,
+            uniform,
+            is_greedy,
+            2,
+            3,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(
+            output.cpu(),
+            torch.tensor([[1, 7, -1], [2, 0, 9]], dtype=torch.int32),
+        )
+
     def test_temperature_kernel(self):
         logits = torch.tensor(
             [[2.0, 4.0, 6.0], [1.0, 3.0, 5.0]], device="mcpu"
