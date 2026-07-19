@@ -224,6 +224,25 @@ class TestStream(TestCase):
         self.assertEqual(launched_result.cpu(), expected)
 
     @skipIfTorchDynamo()
+    def test_sync_kernel_launch_build_option(self):
+        definitions = torch_mcpu.get_compile_definitions()
+        if definitions.get("TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH") != "1":
+            self.skipTest("synchronous kernel launch is disabled in this build")
+
+        stream = torch.Stream(device="mcpu:0")
+        src = self._stream_test_tensor(value=0)
+        dst = self._stream_test_tensor(value=-1)
+
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(src, 19, 100)
+            self.assertTrue(stream.query())
+            self.assertEqual(torch.ops.mcpu.first_element_int(src), 19)
+
+            torch.ops.mcpu.stream_sleep_copy_(dst, src, 100)
+            self.assertTrue(stream.query())
+            self.assertEqual(torch.ops.mcpu.first_element_int(dst), 19)
+
+    @skipIfTorchDynamo()
     def test_device_synchronize_waits_for_stream_native_op(self):
         stream = torch.Stream(device="mcpu:0")
         tensor = self._stream_test_tensor(value=0)

@@ -176,7 +176,8 @@ Result run_queue(
     std::vector<Payload>& payloads,
     const std::vector<uint64_t>& outputs,
     const Config& cfg,
-    bool wrap_in_lambda) {
+    bool wrap_in_lambda,
+    bool synchronize_each_task = false) {
   uint64_t total_ns = 0;
   uint64_t checksum = 0;
   const int total_iterations = cfg.warmup + cfg.iterations;
@@ -197,8 +198,13 @@ Result run_queue(
             orLaunchKernel(stream, lightweight_task, payload_ptr),
             "orLaunchKernel");
       }
+      if (synchronize_each_task) {
+        check(orStreamSynchronize(stream), "orStreamSynchronize");
+      }
     }
-    check(orStreamSynchronize(stream), "orStreamSynchronize");
+    if (!synchronize_each_task) {
+      check(orStreamSynchronize(stream), "orStreamSynchronize");
+    }
     const uint64_t elapsed = now_ns() - start;
 
     checksum ^= consume_outputs(outputs);
@@ -235,6 +241,8 @@ int main(int argc, char** argv) {
         run_queue(stream, queue_payloads, queue_outputs, cfg, false);
     const Result queued_lambda =
         run_queue(stream, queue_payloads, queue_outputs, cfg, true);
+    const Result synchronous_lambda =
+        run_queue(stream, queue_payloads, queue_outputs, cfg, true, true);
 
     check(orStreamDestroy(stream), "orStreamDestroy");
 
@@ -254,7 +262,10 @@ int main(int argc, char** argv) {
               << queued_func_args.task_ns << "\n";
     std::cout << std::setw(12) << "lambda" << std::setw(18)
               << queued_lambda.batch_ns << std::setw(18)
-              << queued_lambda.task_ns << "\n\n";
+              << queued_lambda.task_ns << "\n";
+    std::cout << std::setw(12) << "sync_lambda" << std::setw(18)
+              << synchronous_lambda.batch_ns << std::setw(18)
+              << synchronous_lambda.task_ns << "\n\n";
 
     std::cout << std::setprecision(2);
     std::cout << "func_args/direct batch ratio: "
@@ -265,12 +276,18 @@ int main(int argc, char** argv) {
               << queued_lambda.batch_ns / direct.batch_ns << "x\n";
     std::cout << "lambda extra per task: "
               << queued_lambda.task_ns - direct.task_ns << " ns\n";
+    std::cout << "sync wait extra vs batched lambda: "
+              << synchronous_lambda.task_ns - queued_lambda.task_ns
+              << " ns/task\n";
     std::cout << std::hex;
     std::cout << "direct checksum: 0x" << direct.checksum << "\n";
     std::cout << "func_args checksum: 0x" << queued_func_args.checksum << "\n";
     std::cout << "lambda checksum: 0x" << queued_lambda.checksum << "\n";
+    std::cout << "sync lambda checksum: 0x" << synchronous_lambda.checksum
+              << "\n";
     if (direct.checksum != queued_func_args.checksum ||
-        direct.checksum != queued_lambda.checksum) {
+        direct.checksum != queued_lambda.checksum ||
+        direct.checksum != synchronous_lambda.checksum) {
       std::cerr << "checksum mismatch\n";
       return 1;
     }

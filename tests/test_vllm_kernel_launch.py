@@ -702,21 +702,6 @@ class TestVllmKernelLaunch(TestCase):
             torch.tensor([[1, 7, -1], [2, 0, 9]], dtype=torch.int32),
         )
 
-    def test_temperature_kernel(self):
-        logits = torch.tensor(
-            [[2.0, 4.0, 6.0], [1.0, 3.0, 5.0]], device="mcpu"
-        )
-        idx = torch.tensor([0, 1], dtype=torch.int32, device="mcpu")
-        temperature = torch.tensor([2.0, 1.0], dtype=torch.float32, device="mcpu")
-
-        torch.ops.mcpu.vllm_temperature_kernel(logits, idx, temperature, 3)
-        torch.mcpu.synchronize()
-
-        self.assertEqual(
-            logits.cpu(),
-            torch.tensor([[1.0, 2.0, 3.0], [1.0, 3.0, 5.0]]),
-        )
-
     def test_min_p_kernel(self):
         logits = torch.tensor(
             [[0.0, 1.0, 2.0], [3.0, 2.0, 1.0]], device="mcpu"

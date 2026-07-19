@@ -33,7 +33,7 @@ from torch._inductor.utils import (
 )
 
 import torch_mcpu  # noqa: F401 – registers the mcpu backend with PyTorch
-from torch_mcpu.compile_flags import get_compile_definitions
+from torch_mcpu.compile_flags import get_compile_definitions, get_compile_flags
 from torch_mcpu.inductor.extension_codegen_backend import (
     McpuCppWrapperCodegen,
     McpuScheduling,
@@ -97,6 +97,16 @@ class TestMcpuInductorRegistration(unittest.TestCase):
 
     def test_cpu_cpp_device_build_options_include_mcpu_flags(self):
         self._assert_cpp_device_build_options_include_mcpu_flags("cpu")
+
+    def test_sync_kernel_launch_definition_is_exported(self):
+        definitions = get_compile_definitions()
+        self.assertIn("TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH", definitions)
+        value = definitions["TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH"]
+        self.assertIn(value, {"0", "1"})
+        self.assertIn(
+            f"-DTORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH={value}",
+            get_compile_flags(),
+        )
 
     @staticmethod
     def _make_cpp_codegen_for_int_array_tests():
