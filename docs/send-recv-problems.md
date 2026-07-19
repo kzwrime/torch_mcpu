@@ -16,7 +16,7 @@
 
   可行修法不是换 stream，而是改成 host progress：
 
-  - send/recv/recvAnysource 不走 launch_kernel_task 执行 blocking Gloo work。
+  - send/recv/recvAnysource 不进入 mcpu stream worker 执行 blocking Gloo work。
   - 提交时记录当前 mcpu stream 的 ready event。
   - 后台 host 线程等待这个 event 完成，再进入 KernelTaskScope/解除 memory protection，创建 CPU view，调用底层 Gloo P2P work 并 wait。
   - 完成后标记自定义 Work 完成；Work.wait() 对 P2P 应该等待 host 线程完成，而不是只插 stream event。

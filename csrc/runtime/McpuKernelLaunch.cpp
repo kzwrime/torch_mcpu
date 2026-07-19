@@ -96,12 +96,4 @@ orStream_t get_kernel_launch_stream(const at::Tensor& stream_tensor) {
   return c10::mcpu::getCurrentMcpuStream(stream_tensor.device().index());
 }
 
-[[deprecated("use launch_kernel or launch_kernel_on_stream instead")]]
-void launch_kernel_task(
-    const at::Tensor& stream_tensor,
-    std::function<void()> task) {
-  MCPU_CHECK(
-      orLaunchKernel(get_kernel_launch_stream(stream_tensor), std::move(task)));
-}
-
 } // namespace at::mcpu::detail

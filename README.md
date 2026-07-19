@@ -120,6 +120,24 @@ python -m pip install --no-build-isolation -e . # 用于开发
 python -m pip install --no-build-isolation . # 用于安装
 ```
 
+调试异步算子错误时，可以构建同步启动版本。该选项会在每次 MCPU
+算子提交后同步等待其所在 stream 完成；默认关闭，不影响普通构建的异步行为。
+
+```bash
+TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH=ON \
+  python -m pip install --no-build-isolation -e .
+```
+
+构建树中通过 CMake target 链接 `torch_mcpu` 的第三方 target 会继承该宏。
+独立构建的第三方扩展应读取已安装包的 `torch_mcpu.get_compile_flags()`，
+并把返回值加入其 C/C++ 编译参数，以保持同步启动、内存保护等构建配置一致。
+
+算子启动辅助函数是公共头文件中的内联模板，宏分支会被编译进调用方。因此，
+切换 `TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH` 后，本库内的算子会随本库重编而
+生效，但使用这些启动辅助函数的既有第三方二进制不会自动改变，必须使用新的
+编译参数重新编译。仅通过 dispatcher 调用本库已注册算子的第三方代码不受此
+限制，因为实际启动点位于本库。
+
 完成安装后，开发者必须在仓库根目录执行一次以下命令安装 Git hook：
 
 ```bash

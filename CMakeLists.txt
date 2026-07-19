@@ -21,6 +21,8 @@ option(TORCH_MCPU_ENABLE_MEMORY_PROTECTION
        "Enable page-level protection for simulated mcpu device memory" OFF)
 option(TORCH_MCPU_ENABLE_CPU_FALLBACK
        "Enable boxed CPU fallback for unimplemented mcpu operators" OFF)
+option(TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH
+       "Synchronize the launch stream after every mcpu kernel launch" OFF)
 
 if(APPLE)
   set(CMAKE_INSTALL_RPATH "@loader_path/lib;@loader_path;${PYTORCH_INSTALL_DIR}/lib")
