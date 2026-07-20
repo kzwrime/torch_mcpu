@@ -285,6 +285,27 @@ def _bidirectional_p2p_worker(
 
 
 class TestDistributed(TestCase):
+    def test_destroy_process_group_releases_gloo_with_gil(self):
+        with tempfile.NamedTemporaryFile(delete=False) as rendezvous:
+            init_file = rendezvous.name
+
+        try:
+            dist.init_process_group(
+                "cpu:gloo,mcpu:mcpu",
+                init_method=f"file://{init_file}",
+                rank=0,
+                world_size=1,
+            )
+            tensor = torch.ones(1, device="mcpu")
+            dist.all_reduce(tensor)
+            dist.destroy_process_group()
+            self.assertEqual(tensor.cpu().item(), 1)
+        finally:
+            if dist.is_initialized():
+                dist.destroy_process_group()
+            if os.path.exists(init_file):
+                os.unlink(init_file)
+
     def test_mcpu_backend_is_registered(self):
         self.assertTrue(dist.is_backend_available("mcpu"))
         self.assertEqual(

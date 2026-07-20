@@ -5,8 +5,10 @@
 
 #include <ATen/ATen.h>
 #include <c10/core/InferenceMode.h>
+#include <c10/core/SafePyObject.h>
 #include <c10/util/Exception.h>
 #include <torch/csrc/Exceptions.h>
+#include <torch/csrc/PyInterpreter.h>
 #include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/python_numbers.h>
 
@@ -270,11 +272,15 @@ class McpuBackend final : public Backend {
       : Backend(static_cast<int>(rank), static_cast<int>(size)),
         options_(c10::make_intrusive<Options>(
             std::chrono::milliseconds(timeout_ms))),
-        gloo_backend_(create_gloo_backend(
-            py::cast(store),
-            static_cast<int>(rank),
-            static_cast<int>(size),
-            std::chrono::milliseconds(timeout_ms))) {}
+        gloo_backend_(
+            create_gloo_backend(
+                py::cast(store),
+                static_cast<int>(rank),
+                static_cast<int>(size),
+                std::chrono::milliseconds(timeout_ms))
+                .release()
+                .ptr(),
+            getPyInterpreter()) {}
 
   std::vector<at::Tensor> toCpuViews(
       const std::vector<at::Tensor>& tensors) const {
@@ -389,7 +395,7 @@ class McpuBackend final : public Backend {
   void setTimeout(std::chrono::milliseconds timeout) override {
     options_->timeout = timeout;
     py::gil_scoped_acquire gil;
-    gloo_backend_.attr("setTimeout")(timeout);
+    gloo_backend().attr("setTimeout")(timeout);
   }
 
   c10::intrusive_ptr<Work> broadcast(
@@ -399,7 +405,7 @@ class McpuBackend final : public Backend {
         OpType::BROADCAST, tensors, [this, tensors, opts]() mutable {
           auto cpu_tensors = toCpuViews(tensors);
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("broadcast")(cpu_tensors, opts);
+          auto work = gloo_backend().attr("broadcast")(cpu_tensors, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
         });
@@ -412,7 +418,7 @@ class McpuBackend final : public Backend {
         OpType::ALLREDUCE, tensors, [this, tensors, opts]() mutable {
           auto cpu_tensors = toCpuViews(tensors);
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("allreduce")(cpu_tensors, opts);
+          auto work = gloo_backend().attr("allreduce")(cpu_tensors, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
         });
@@ -427,7 +433,7 @@ class McpuBackend final : public Backend {
           auto cpu_tensors = toCpuViews(tensors);
           py::gil_scoped_acquire gil;
           auto work =
-              gloo_backend_.attr("allreduce_coalesced")(cpu_tensors, opts);
+              gloo_backend().attr("allreduce_coalesced")(cpu_tensors, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
         });
@@ -439,7 +445,7 @@ class McpuBackend final : public Backend {
     return submitOp(OpType::REDUCE, tensors, [this, tensors, opts]() mutable {
       auto cpu_tensors = toCpuViews(tensors);
       py::gil_scoped_acquire gil;
-      auto work = gloo_backend_.attr("reduce")(cpu_tensors, opts);
+      auto work = gloo_backend().attr("reduce")(cpu_tensors, opts);
       work.attr("wait")();
       copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
     });
@@ -467,7 +473,7 @@ class McpuBackend final : public Backend {
           }
           py::gil_scoped_acquire gil;
           auto work =
-              gloo_backend_.attr("allgather")(cpu_outputs, cpu_inputs, opts);
+              gloo_backend().attr("allgather")(cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -485,7 +491,7 @@ class McpuBackend final : public Backend {
           auto cpu_output = outputBuffer.to(c10::DeviceType::CPU);
           auto cpu_input = inputBuffer.to(c10::DeviceType::CPU);
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("_allgather_base")(
+          auto work = gloo_backend().attr("_allgather_base")(
               cpu_output, cpu_input, opts);
           work.attr("wait")();
           copy_cpu_tensor_to_mcpu(outputBuffer, cpu_output);
@@ -511,7 +517,7 @@ class McpuBackend final : public Backend {
             tensor = tensor.to(c10::DeviceType::CPU);
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("allgather_into_tensor_coalesced")(
+          auto work = gloo_backend().attr("allgather_into_tensor_coalesced")(
               cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputs, cpu_outputs);
@@ -540,7 +546,7 @@ class McpuBackend final : public Backend {
           }
           py::gil_scoped_acquire gil;
           auto work =
-              gloo_backend_.attr("gather")(cpu_outputs, cpu_inputs, opts);
+              gloo_backend().attr("gather")(cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -569,7 +575,7 @@ class McpuBackend final : public Backend {
           }
           py::gil_scoped_acquire gil;
           auto work =
-              gloo_backend_.attr("scatter")(cpu_outputs, cpu_inputs, opts);
+              gloo_backend().attr("scatter")(cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -597,7 +603,7 @@ class McpuBackend final : public Backend {
             }
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("reduce_scatter")(
+          auto work = gloo_backend().attr("reduce_scatter")(
               cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
@@ -616,7 +622,7 @@ class McpuBackend final : public Backend {
           auto cpu_output = outputBuffer.to(c10::DeviceType::CPU);
           auto cpu_input = inputBuffer.to(c10::DeviceType::CPU);
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("_reduce_scatter_base")(
+          auto work = gloo_backend().attr("_reduce_scatter_base")(
               cpu_output, cpu_input, opts);
           work.attr("wait")();
           copy_cpu_tensor_to_mcpu(outputBuffer, cpu_output);
@@ -643,7 +649,7 @@ class McpuBackend final : public Backend {
           }
           py::gil_scoped_acquire gil;
           auto work =
-              gloo_backend_.attr("alltoall")(cpu_outputs, cpu_inputs, opts);
+              gloo_backend().attr("alltoall")(cpu_outputs, cpu_inputs, opts);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(outputTensors, cpu_outputs);
         });
@@ -668,7 +674,7 @@ class McpuBackend final : public Backend {
           auto cpu_output = outputBuffer.to(c10::DeviceType::CPU);
           auto cpu_input = inputBuffer.to(c10::DeviceType::CPU);
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("alltoall_base")(
+          auto work = gloo_backend().attr("alltoall_base")(
               cpu_output, cpu_input, outputSplitSizes, inputSplitSizes, opts);
           work.attr("wait")();
           copy_cpu_tensor_to_mcpu(outputBuffer, cpu_output);
@@ -690,7 +696,7 @@ class McpuBackend final : public Backend {
             tensor = tensor.to(c10::DeviceType::CPU);
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("send")(cpu_tensors, dstRank, tag);
+          auto work = gloo_backend().attr("send")(cpu_tensors, dstRank, tag);
           work.attr("wait")();
         });
   }
@@ -710,7 +716,7 @@ class McpuBackend final : public Backend {
             tensor = tensor.to(c10::DeviceType::CPU);
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("recv")(cpu_tensors, srcRank, tag);
+          auto work = gloo_backend().attr("recv")(cpu_tensors, srcRank, tag);
           work.attr("wait")();
           copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
         },
@@ -732,7 +738,7 @@ class McpuBackend final : public Backend {
             tensor = tensor.to(c10::DeviceType::CPU);
           }
           py::gil_scoped_acquire gil;
-          auto work = gloo_backend_.attr("recv_anysource")(cpu_tensors, tag);
+          auto work = gloo_backend().attr("recv_anysource")(cpu_tensors, tag);
           work.attr("wait")();
           *source_rank_result = work.attr("_source_rank")().cast<int>();
           copy_cpu_tensors_to_mcpu(tensors, cpu_tensors);
@@ -754,13 +760,18 @@ class McpuBackend final : public Backend {
         tensor = tensor.to(c10::DeviceType::CPU);
       }
       py::gil_scoped_acquire gil;
-      auto work = gloo_backend_.attr("barrier")(opts);
+      auto work = gloo_backend().attr("barrier")(opts);
       work.attr("wait")();
     });
   }
 
   c10::intrusive_ptr<Options> options_;
-  py::object gloo_backend_;
+  c10::SafePyObject gloo_backend_;
+
+  py::object gloo_backend() const {
+    return py::reinterpret_borrow<py::object>(
+        gloo_backend_.ptr(getPyInterpreter()));
+  }
 };
 
 void registerMcpuDistributedBindings(PyObject* module) {
