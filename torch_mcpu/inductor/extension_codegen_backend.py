@@ -41,7 +41,6 @@ from torch._inductor.custom_graph_pass import (
 )
 from torch._inductor.scheduler import BaseScheduling
 from torch._inductor.virtualized import V
-from torch_mcpu.compile_flags import get_compile_flags
 from torch_mcpu.paths import get_include
 
 
@@ -271,21 +270,9 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
     def get_device_include_path(device: str) -> str:
         include_dir = Path(get_include())
         header = include_dir / "cpp_wrapper" / "mcpu.h"
-        
+
         if not header.exists():
             raise FileNotFoundError(f"Failed to find header file: {header}")
-
-        aoti_flags = [
-            f"-I{include_dir}",
-            *get_compile_flags(),
-        ]
-        extra_cflags = os.environ.get("AOTI_EXTRA_CFLAGS", "")
-        existing_flags = extra_cflags.split()
-        missing_flags = [flag for flag in aoti_flags if flag not in existing_flags]
-        if missing_flags:
-            os.environ["AOTI_EXTRA_CFLAGS"] = " ".join(
-                [*missing_flags, *existing_flags]
-            )
 
         return f'#include "{header}"'
 

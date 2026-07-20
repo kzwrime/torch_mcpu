@@ -99,6 +99,18 @@ class TestMcpuInductorRegistration(unittest.TestCase):
     def test_cpu_cpp_device_build_options_include_mcpu_flags(self):
         self._assert_cpp_device_build_options_include_mcpu_flags("cpu")
 
+    def test_cpp_wrapper_include_path_does_not_mutate_aoti_flags(self):
+        original_flags = "-include /tmp/external_aoti_header.h"
+        codegen = object.__new__(McpuCppWrapperCodegen)
+
+        with patch.dict(
+            os.environ, {"AOTI_EXTRA_CFLAGS": original_flags}, clear=False
+        ):
+            include = codegen.get_device_include_path("mcpu")
+            self.assertEqual(os.environ["AOTI_EXTRA_CFLAGS"], original_flags)
+
+        self.assertIn(str(Path(get_include()) / "cpp_wrapper" / "mcpu.h"), include)
+
     def test_sync_kernel_launch_definition_is_exported(self):
         definitions = get_compile_definitions()
         self.assertIn("TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH", definitions)
