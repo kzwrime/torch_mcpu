@@ -7,6 +7,7 @@ to generate and execute fused C++ kernels for mcpu tensors.
 """
 
 import os
+import tempfile
 import unittest
 from importlib.util import find_spec
 from itertools import count
@@ -502,6 +503,53 @@ class TestMcpuCompile(unittest.TestCase):
         )
         self.assertIn(
             "aoti_torch_mcpu_fused_sigmoid_mul_3d_lastdim_bf16",
+            code_text,
+        )
+
+    def test_aot_compile_direct_dispatch_fusion(self):
+        """Cover vLLM's Dynamo AOT artifact path with direct dispatch."""
+
+        try:
+            import torch_xcpu  # noqa: F401
+        except ImportError:
+            self.skipTest("torch_xcpu is not available")
+
+        def pointwise(input2, input1, input3):
+            return input1 * input2.sigmoid() + input3
+
+        args = (
+            torch.full((4, 1), 1, device="mcpu", dtype=torch.bfloat16),
+            torch.full((4, 8), 2, device="mcpu", dtype=torch.bfloat16),
+            torch.full((4, 8), 3, device="mcpu", dtype=torch.bfloat16),
+        )
+        ref = pointwise(*args).to("cpu")
+
+        with (
+            tempfile.TemporaryDirectory(prefix="mcpu-aot-") as cache_dir,
+            patch.dict(
+                os.environ,
+                {
+                    **_torch_xcpu_aoti_env(),
+                    "TORCHINDUCTOR_CACHE_DIR": cache_dir,
+                },
+                clear=False,
+            ),
+            torch._dynamo.config.patch(enable_aot_compile=True),
+            inductor_config.patch({"cpp_wrapper": True}),
+        ):
+            compiled = torch.compile(pointwise, fullgraph=True, dynamic=False)
+            aot_fn, code = run_and_get_cpp_code(compiled.aot_compile, (args, {}))
+            res = aot_fn(*args)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertTrue(torch.allclose(ref, res.to("cpu")))
+        self.assertIn(
+            "aoti_torch_mcpu_fused_sigmoid_mul_add_3d_lastdim_bf16",
+            code_text,
+        )
+        self.assertNotIn(
+            'aoti_torch_call_dispatcher("torch_xcpu::'
+            'fused_sigmoid_mul_add_3d_lastdim_bf16"',
             code_text,
         )
 
