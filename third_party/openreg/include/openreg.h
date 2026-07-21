@@ -15,7 +15,8 @@ extern "C" {
 typedef enum orError_t {
   orSuccess = 0,
   orErrorUnknown = 1,
-  orErrorNotReady = 2
+  orErrorNotReady = 2,
+  orErrorTimeout = 3
 } orError_t;
 
 typedef enum orMemcpyKind {

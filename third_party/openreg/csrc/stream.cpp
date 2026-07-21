@@ -46,6 +46,13 @@ thread_local bool g_in_kernel_task = false;
 #define TORCH_MCPU_STREAM_IDLE_SPIN_ITERS 5000
 #endif
 
+static constexpr std::int64_t kDefaultStreamSyncTimeoutMs = 300000;
+static constexpr std::uint32_t kStreamSyncClockCheckInterval = 16384;
+static_assert(
+    (kStreamSyncClockCheckInterval &
+     (kStreamSyncClockCheckInterval - 1)) == 0,
+    "stream sync clock check interval must be a power of two");
+
 #define TORCH_MCPU_STREAM_IDLE_POLICY_VALID(policy) \
   ((policy) == TORCH_MCPU_STREAM_IDLE_BUSY ||       \
    (policy) == TORCH_MCPU_STREAM_IDLE_HYBRID ||     \
@@ -100,6 +107,25 @@ static int parse_worker_core(const char* value, const char* env_name) {
     return -1;
   }
   return core;
+}
+
+static std::int64_t parse_timeout_ms(
+    const char* env_name,
+    std::int64_t default_value) {
+  const char* value = std::getenv(env_name);
+  if (!value || *value == '\0') {
+    return default_value;
+  }
+
+  char* end = nullptr;
+  errno = 0;
+  const long long parsed = std::strtoll(value, &end, 10);
+  if (errno != 0 || end == value || *end != '\0' || parsed < 0) {
+    std::cerr << "Invalid " << env_name << "='" << value
+              << "'; using default " << default_value << " ms\n";
+    return default_value;
+  }
+  return static_cast<std::int64_t>(parsed);
 }
 
 static int choose_worker_core(bool is_default_stream) {
@@ -202,7 +228,15 @@ orStream::orStream(int stream_priority, bool default_stream)
       is_default_stream(default_stream),
       idle_policy(choose_idle_policy(stream_priority, default_stream)),
       spin_iters(choose_spin_iters()),
-      affinity_core(choose_worker_core(default_stream)) {
+      affinity_core(choose_worker_core(default_stream)),
+      sync_timeout_ms(parse_timeout_ms(
+          "TORCH_MCPU_STREAM_SYNC_TIMEOUT_MS",
+          kDefaultStreamSyncTimeoutMs)),
+      launch_timeout_ms(
+          parse_timeout_ms("TORCH_MCPU_STREAM_LAUNCH_TIMEOUT_MS", 0)) {
+  if (std::getenv("TORCH_MCPU_STREAM_LAUNCH_TIMEOUT_MS") == nullptr) {
+    launch_timeout_ms = sync_timeout_ms;
+  }
   for (std::uint64_t i = 0; i < kQueueCapacity; ++i) {
     slots[i].sequence.store(i, std::memory_order_relaxed);
   }
@@ -284,11 +318,68 @@ void orStream::workerLoop() {
   }
 }
 
-void orStream::synchronize() {
+orError_t orStream::synchronize() {
   const auto target = tail.load(std::memory_order_acquire);
+  if (completed.load(std::memory_order_acquire) >= target) {
+    return orSuccess;
+  }
+
+  if (sync_timeout_ms == 0) {
+    while (completed.load(std::memory_order_acquire) < target) {
+      openreg::cpu_relax();
+    }
+    return orSuccess;
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(sync_timeout_ms);
+  std::uint32_t spins = 0;
   while (completed.load(std::memory_order_acquire) < target) {
     openreg::cpu_relax();
+    ++spins;
+    if ((spins & (kStreamSyncClockCheckInterval - 1)) == 0 &&
+        std::chrono::steady_clock::now() >= deadline) {
+      if (completed.load(std::memory_order_acquire) < target) {
+        reportTimeout("synchronize", target);
+        return orErrorTimeout;
+      }
+    }
   }
+  return orSuccess;
+}
+
+void orStream::reportTimeout(
+    const char* operation,
+    std::uint64_t target,
+    const char* enqueue_name) const {
+  const auto completed_snapshot = completed.load(std::memory_order_acquire);
+  const auto head_snapshot = head.load(std::memory_order_acquire);
+  const auto tail_snapshot = tail.load(std::memory_order_acquire);
+  const auto& blocking_slot = slots[head_snapshot & kQueueMask];
+  const auto blocking_sequence =
+      blocking_slot.sequence.load(std::memory_order_acquire);
+  const bool blocking_slot_published = blocking_sequence == head_snapshot + 1;
+  const char* blocking_name = blocking_slot_published
+      ? blocking_slot.debug_name.load(std::memory_order_relaxed)
+      : "<slot not published>";
+
+  std::cerr << "torch_mcpu stream " << operation << " timeout: stream="
+            << static_cast<const void*>(this) << " device=" << device_index
+            << " timeout_ms="
+            << (std::strcmp(operation, "launch") == 0
+                    ? launch_timeout_ms
+                    : sync_timeout_ms)
+            << " target=" << target << " head=" << head_snapshot
+            << " tail=" << tail_snapshot
+            << " completed=" << completed_snapshot
+            << " pending=" << (tail_snapshot - completed_snapshot)
+            << " blocking_seq=" << head_snapshot
+            << " blocking_name="
+            << (blocking_name ? blocking_name : "<null>");
+  if (enqueue_name) {
+    std::cerr << " enqueue_name=" << enqueue_name;
+  }
+  std::cerr << '\n';
 }
 
 bool orStream::idle() const {
@@ -356,14 +447,15 @@ orError_t orEventRecord(orEvent_t event, orStream_t stream) {
     event_impl->latest_record = record;
   }
 
-  return orLaunchKernel(stream, [record, timing_enabled]() {
-    std::lock_guard<std::mutex> lock(record->mtx);
-    if (timing_enabled) {
-      record->completion_time = std::chrono::high_resolution_clock::now();
-    }
-    record->completed = true;
-    record->cv.notify_all();
-  });
+  return orLaunchKernelNamed(
+      stream, "openreg::event_record", [record, timing_enabled]() {
+        std::lock_guard<std::mutex> lock(record->mtx);
+        if (timing_enabled) {
+          record->completion_time = std::chrono::high_resolution_clock::now();
+        }
+        record->completed = true;
+        record->cv.notify_all();
+      });
 }
 
 orError_t orEventSynchronize(orEvent_t event) {
@@ -513,6 +605,14 @@ orError_t orStreamDestroy(orStream_t stream) {
   if (!stream)
     return orErrorUnknown;
 
+  const orError_t sync_status = stream->synchronize();
+  if (sync_status != orSuccess) {
+    // The worker may still be executing the blocking task. Keep the stream
+    // registered and alive so the caller can resolve the stall and retry;
+    // joining that worker here would turn a reported timeout back into a hang.
+    return sync_status;
+  }
+
   {
     std::lock_guard<std::mutex> lock(g_mutex);
 
@@ -539,8 +639,7 @@ orError_t orStreamSynchronize(orStream_t stream) {
   if (!stream)
     return orErrorUnknown;
 
-  stream->synchronize();
-  return orSuccess;
+  return stream->synchronize();
 }
 
 orError_t orStreamWaitEvent(orStream_t stream, orEvent_t event, unsigned int) {
@@ -558,7 +657,7 @@ orError_t orStreamWaitEvent(orStream_t stream, orEvent_t event, unsigned int) {
     return orSuccess;
   }
 
-  return orLaunchKernel(stream, [record]() {
+  return orLaunchKernelNamed(stream, "openreg::stream_wait_event", [record]() {
     std::unique_lock<std::mutex> lock(record->mtx);
     record->cv.wait(lock, [&] {
       return record->completed;

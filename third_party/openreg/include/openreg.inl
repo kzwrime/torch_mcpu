@@ -3,6 +3,7 @@
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -38,6 +39,7 @@ struct QueueSlot {
   using DestroyFn = void (*)(void*);
 
   std::atomic<std::uint64_t> sequence{0};
+  std::atomic<const char*> debug_name{"openreg::unnamed"};
   RunFn run = nullptr;
   DestroyFn destroy = nullptr;
   alignas(kQueueSlotStorageAlignment) unsigned char storage[256];
@@ -115,17 +117,24 @@ struct orStream {
   IdlePolicy idle_policy = IdlePolicy::Busy;
   std::uint64_t spin_iters = 0;
   int affinity_core = -1;
+  std::int64_t sync_timeout_ms = 0;
+  std::int64_t launch_timeout_ms = 0;
 
   OPENREG_EXPORT orStream();
   OPENREG_EXPORT orStream(int priority, bool is_default_stream);
   OPENREG_EXPORT ~orStream();
   OPENREG_EXPORT void workerLoop();
-  OPENREG_EXPORT void synchronize();
+  OPENREG_EXPORT orError_t synchronize();
   OPENREG_EXPORT bool idle() const;
   OPENREG_EXPORT void notifyWorker();
+  OPENREG_EXPORT void reportTimeout(
+      const char* operation,
+      std::uint64_t target,
+      const char* enqueue_name = nullptr) const;
 
   template <typename Func, typename... Args>
-  inline orError_t launch(Func&& func, Args&&... args) {
+  inline orError_t launchNamed(
+      const char* debug_name, Func&& func, Args&&... args) {
     using Task = openreg::TupleTask<
         typename openreg::StoredCallable<Func>::type,
         typename std::decay<Args>::type...>;
@@ -139,6 +148,8 @@ struct orStream {
 
     std::uint64_t index = 0;
     openreg::QueueSlot* slot = nullptr;
+    std::chrono::steady_clock::time_point full_since;
+    bool queue_was_full = false;
     while (true) {
       index = tail.load(std::memory_order_relaxed);
       slot = &slots[index & kQueueMask];
@@ -154,10 +165,28 @@ struct orStream {
           break;
         }
       } else {
+        const bool queue_is_full =
+            index - head.load(std::memory_order_acquire) >= kQueueCapacity;
+        if (launch_timeout_ms > 0 && queue_is_full) {
+          const auto now = std::chrono::steady_clock::now();
+          if (!queue_was_full) {
+            full_since = now;
+            queue_was_full = true;
+          } else if (now - full_since >=
+              std::chrono::milliseconds(launch_timeout_ms)) {
+            reportTimeout("launch", index + 1, debug_name);
+            return orErrorTimeout;
+          }
+        } else {
+          queue_was_full = false;
+        }
         openreg::cpu_relax();
       }
     }
 
+    slot->debug_name.store(
+        debug_name ? debug_name : "openreg::unnamed",
+        std::memory_order_relaxed);
     try {
       new (slot->storage)
           Task(std::forward<Func>(func), std::forward<Args>(args)...);
@@ -175,6 +204,14 @@ struct orStream {
     notifyWorker();
     return orSuccess;
   }
+
+  template <typename Func, typename... Args>
+  inline orError_t launch(Func&& func, Args&&... args) {
+    return launchNamed(
+        "openreg::unnamed",
+        std::forward<Func>(func),
+        std::forward<Args>(args)...);
+  }
 };
 
 namespace openreg {
@@ -185,6 +222,15 @@ inline orError_t addTaskToStream(orStream* stream, Func&& task) {
     return orErrorUnknown;
   }
   return stream->launch(std::forward<Func>(task));
+}
+
+template <typename Func>
+inline orError_t addNamedTaskToStream(
+    orStream* stream, const char* debug_name, Func&& task) {
+  if (!stream) {
+    return orErrorUnknown;
+  }
+  return stream->launchNamed(debug_name, std::forward<Func>(task));
 }
 
 } // namespace openreg
@@ -199,4 +245,19 @@ OPENREG_EXPORT inline orError_t orLaunchKernel(
   }
   return stream->launch(
       std::forward<Func>(kernel_func), std::forward<Args>(args)...);
+}
+
+template <typename Func, typename... Args>
+OPENREG_EXPORT inline orError_t orLaunchKernelNamed(
+    orStream* stream,
+    const char* debug_name,
+    Func&& kernel_func,
+    Args&&... args) {
+  if (!stream) {
+    return orErrorUnknown;
+  }
+  return stream->launchNamed(
+      debug_name,
+      std::forward<Func>(kernel_func),
+      std::forward<Args>(args)...);
 }

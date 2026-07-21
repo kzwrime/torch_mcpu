@@ -18,6 +18,9 @@ target_compile_definitions(${LIBRARY_NAME} PUBLIC
     TORCH_MCPU_ENABLE_MEMORY_PROTECTION=$<BOOL:${TORCH_MCPU_ENABLE_MEMORY_PROTECTION}>
 )
 
+add_executable(stream_timeout_demo example/stream_timeout_demo.cpp)
+target_link_libraries(stream_timeout_demo PRIVATE ${LIBRARY_NAME})
+
 install(TARGETS ${LIBRARY_NAME}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

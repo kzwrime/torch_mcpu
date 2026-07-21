@@ -118,6 +118,103 @@ TEST_F(StreamTest, StreamTaskExecution) {
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
 
+TEST_F(StreamTest, StreamTimeoutDefaultsToFiveMinutes) {
+  EnvGuard sync_timeout("TORCH_MCPU_STREAM_SYNC_TIMEOUT_MS", nullptr);
+  EnvGuard launch_timeout("TORCH_MCPU_STREAM_LAUNCH_TIMEOUT_MS", nullptr);
+  orStream_t stream = nullptr;
+  ASSERT_EQ(orStreamCreate(&stream), orSuccess);
+
+  EXPECT_EQ(stream->sync_timeout_ms, 300000);
+  EXPECT_EQ(stream->launch_timeout_ms, 300000);
+  EXPECT_EQ(orStreamDestroy(stream), orSuccess);
+}
+
+TEST_F(StreamTest, StreamSynchronizeTimeoutReportsBlockingTask) {
+  EnvGuard sync_timeout("TORCH_MCPU_STREAM_SYNC_TIMEOUT_MS", "20");
+  EnvGuard launch_timeout("TORCH_MCPU_STREAM_LAUNCH_TIMEOUT_MS", "0");
+  orStream_t stream = nullptr;
+  ASSERT_EQ(orStreamCreate(&stream), orSuccess);
+
+  std::atomic<bool> release{false};
+  ASSERT_EQ(
+      openreg::addNamedTaskToStream(stream, "test::stuck_kernel", [&] {
+        while (!release.load(std::memory_order_acquire)) {
+          openreg::cpu_relax();
+        }
+      }),
+      orSuccess);
+
+  testing::internal::CaptureStderr();
+  EXPECT_EQ(orStreamSynchronize(stream), orErrorTimeout);
+  const std::string diagnostic = testing::internal::GetCapturedStderr();
+  EXPECT_NE(diagnostic.find("stream synchronize timeout"), std::string::npos);
+  EXPECT_NE(diagnostic.find("blocking_name=test::stuck_kernel"),
+            std::string::npos);
+  EXPECT_NE(diagnostic.find("pending=1"), std::string::npos);
+
+  release.store(true, std::memory_order_release);
+  EXPECT_EQ(orStreamSynchronize(stream), orSuccess);
+  EXPECT_EQ(orStreamDestroy(stream), orSuccess);
+}
+
+TEST_F(StreamTest, StreamDestroyReturnsTimeoutWithoutJoiningStuckWorker) {
+  EnvGuard sync_timeout("TORCH_MCPU_STREAM_SYNC_TIMEOUT_MS", "20");
+  EnvGuard launch_timeout("TORCH_MCPU_STREAM_LAUNCH_TIMEOUT_MS", "0");
+  orStream_t stream = nullptr;
+  ASSERT_EQ(orStreamCreate(&stream), orSuccess);
+
+  std::atomic<bool> release{false};
+  ASSERT_EQ(
+      openreg::addNamedTaskToStream(stream, "test::destroy_stall", [&] {
+        while (!release.load(std::memory_order_acquire)) {
+          openreg::cpu_relax();
+        }
+      }),
+      orSuccess);
+
+  testing::internal::CaptureStderr();
+  EXPECT_EQ(orStreamDestroy(stream), orErrorTimeout);
+  const std::string diagnostic = testing::internal::GetCapturedStderr();
+  EXPECT_NE(diagnostic.find("blocking_name=test::destroy_stall"),
+            std::string::npos);
+
+  release.store(true, std::memory_order_release);
+  EXPECT_EQ(orStreamDestroy(stream), orSuccess);
+}
+
+TEST_F(StreamTest, StreamLaunchTimeoutReportsEnqueueAndBlockingTasks) {
+  EnvGuard sync_timeout("TORCH_MCPU_STREAM_SYNC_TIMEOUT_MS", "0");
+  EnvGuard launch_timeout("TORCH_MCPU_STREAM_LAUNCH_TIMEOUT_MS", "20");
+  orStream_t stream = nullptr;
+  ASSERT_EQ(orStreamCreate(&stream), orSuccess);
+
+  std::atomic<bool> release{false};
+  ASSERT_EQ(
+      openreg::addNamedTaskToStream(stream, "test::queue_blocker", [&] {
+        while (!release.load(std::memory_order_acquire)) {
+          openreg::cpu_relax();
+        }
+      }),
+      orSuccess);
+  for (std::uint64_t i = 1; i < orStream::kQueueCapacity; ++i) {
+    ASSERT_EQ(openreg::addTaskToStream(stream, [] {}), orSuccess);
+  }
+
+  testing::internal::CaptureStderr();
+  EXPECT_EQ(
+      openreg::addNamedTaskToStream(stream, "test::overflow", [] {}),
+      orErrorTimeout);
+  const std::string diagnostic = testing::internal::GetCapturedStderr();
+  EXPECT_NE(diagnostic.find("stream launch timeout"), std::string::npos);
+  EXPECT_NE(diagnostic.find("blocking_name=test::queue_blocker"),
+            std::string::npos);
+  EXPECT_NE(diagnostic.find("enqueue_name=test::overflow"), std::string::npos);
+
+  release.store(true, std::memory_order_release);
+  EXPECT_EQ(orStreamSynchronize(stream), orSuccess);
+  EXPECT_EQ(orStreamDestroy(stream), orSuccess);
+}
+
 TEST_F(StreamTest, BlockingIdleWorkerWakesForPublishedTask) {
   orStream_t stream = nullptr;
   int least_priority = 0;

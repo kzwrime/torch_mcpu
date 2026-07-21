@@ -118,6 +118,35 @@ Simulating creation, release and synchronization for event and steam:
 2. **Stream**: When each stream is requested, a new thread is created, which sequentially processes each task in the task queue within the stream structure. Tasks can be wrappers around kernel functions or events.
 3. **Synchronization**: Synchronization between streams and events is achieved using multithreading, condition variables, and mutexes.
 
+### Stream timeout diagnostics
+
+The stream synchronization timeout defaults to 300 seconds. Set
+`TORCH_MCPU_STREAM_SYNC_TIMEOUT_MS` to another millisecond value, or set it to
+`0` to disable the timeout. `orStreamSynchronize` and `orDeviceSynchronize`
+return `orErrorTimeout` when the limit is reached. The diagnostic printed to
+stderr includes the stream, queue positions, pending task count, and the name
+and sequence of the first task that has not completed. Set the variable before
+the stream is created (normally before starting the process).
+
+`orStreamDestroy` uses the same bounded wait. On timeout it leaves the stream
+alive and returns `orErrorTimeout`, allowing the caller to resolve the stalled
+task and retry destruction without blocking forever in a worker-thread join.
+
+`TORCH_MCPU_STREAM_LAUNCH_TIMEOUT_MS` similarly bounds the time a host producer
+can wait for a full stream queue. When it is unset, it inherits the sync
+timeout; setting it to `0` disables only the launch timeout. Named runtime work
+should use `orLaunchKernelNamed` so timeout reports identify the operation.
+
+Build and run the self-contained timeout example with:
+
+```Shell
+cmake --build build --target stream_timeout_demo
+./build/third_party/openreg/stream_timeout_demo
+```
+
+The example uses a one-second timeout inside its own process. It deliberately
+stalls a named task, verifies the timeout, releases the task, and exits normally.
+
 ## Usage Example
 
 Please refer to [example](example/example.cpp) for example.

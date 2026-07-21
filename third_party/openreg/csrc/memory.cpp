@@ -282,8 +282,15 @@ orError_t orMemcpyAsync(
 
   auto& mm = MemoryManager::getInstance();
 
-  return orLaunchKernel(
-      stream, &MemoryManager::memcpy, &mm, dst, src, count, kind);
+  return orLaunchKernelNamed(
+      stream,
+      "openreg::memcpy_async",
+      &MemoryManager::memcpy,
+      &mm,
+      dst,
+      src,
+      count,
+      kind);
 }
 
 orError_t orPointerGetAttributes(

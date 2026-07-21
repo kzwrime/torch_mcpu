@@ -205,13 +205,14 @@ class KernelMemoryGuard {
 template <typename Func>
 inline void launch_kernel_on_stream(orStream_t stream, Func&& func) {
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
-  auto status =
-      orLaunchKernel(stream, [func = std::forward<Func>(func)]() mutable {
+  auto status = orLaunchKernelNamed(
+      stream, "mcpu_kernel", [func = std::forward<Func>(func)]() mutable {
         KernelTaskScope kernel_task;
         std::invoke(func);
       });
 #else
-  auto status = orLaunchKernel(stream, std::forward<Func>(func));
+  auto status =
+      orLaunchKernelNamed(stream, "mcpu_kernel", std::forward<Func>(func));
 #endif
   TORCH_CHECK(status == orSuccess, "orLaunchKernel failed");
 #if TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH
@@ -220,13 +221,27 @@ inline void launch_kernel_on_stream(orStream_t stream, Func&& func) {
 }
 
 template <typename Func>
-[[deprecated("record_name is ignored for ordinary launch; use launch_kernel_on_stream(stream, lambda) or launch_timed_kernel_on_stream(stream, name, lambda(Event*))")]]
+[[deprecated("use launch_timed_kernel_on_stream(stream, name, lambda(Event*)) for production kernels")]]
 inline void launch_kernel_on_stream(
     orStream_t stream,
     const char* record_name,
     Func&& func) {
-  (void)record_name;
-  launch_kernel_on_stream(stream, std::forward<Func>(func));
+#if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
+  auto status = orLaunchKernelNamed(
+      stream,
+      record_name,
+      [func = std::forward<Func>(func)]() mutable {
+        KernelTaskScope kernel_task;
+        std::invoke(func);
+      });
+#else
+  auto status = orLaunchKernelNamed(
+      stream, record_name, std::forward<Func>(func));
+#endif
+  TORCH_CHECK(status == orSuccess, "orLaunchKernelNamed failed");
+#if TORCH_MCPU_ENABLE_SYNC_KERNEL_LAUNCH
+  detail::synchronize_kernel_launch_stream(stream);
+#endif
 }
 
 template <typename Func>
@@ -238,14 +253,17 @@ inline void launch_timed_kernel_on_stream(
       record_name,
       static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(stream)));
 #if TORCH_MCPU_ENABLE_MEMORY_PROTECTION
-  auto status =
-      orLaunchKernel(stream, [event_slot, func = std::forward<Func>(func)]() mutable {
+  auto status = orLaunchKernelNamed(
+      stream,
+      record_name,
+      [event_slot, func = std::forward<Func>(func)]() mutable {
         KernelTaskScope kernel_task;
         std::invoke(func, event_slot);
       });
 #else
-  auto status = orLaunchKernel(
+  auto status = orLaunchKernelNamed(
       stream,
+      record_name,
       std::forward<Func>(func),
       event_slot);
 #endif
@@ -274,7 +292,7 @@ inline void launch_timed_kernel(
 }
 
 template <typename Func>
-[[deprecated("record_name is ignored for ordinary launch; use launch_kernel(lambda) or launch_timed_kernel(name, lambda(Event*))")]]
+[[deprecated("use launch_timed_kernel(name, lambda(Event*)) for production kernels")]]
 inline void launch_kernel(
     const char* record_name,
     Func&& func,
@@ -283,7 +301,7 @@ inline void launch_kernel(
 }
 
 template <typename Func>
-[[deprecated("record_name is ignored for ordinary launch; use launch_kernel(stream_tensor, lambda) or launch_timed_kernel_on_stream(stream, name, lambda(Event*))")]]
+[[deprecated("use a timed launch helper for production kernels")]]
 inline void launch_kernel(
     const at::Tensor& stream_tensor,
     const char* record_name,
