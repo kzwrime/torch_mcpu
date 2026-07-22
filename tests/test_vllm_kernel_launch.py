@@ -1039,6 +1039,35 @@ class TestVllmKernelLaunch(TestCase):
         self.assertEqual(input_ids.cpu(), torch.full((3,), 9, dtype=torch.int32))
         self.assertEqual(logits_indices.cpu(), torch.tensor([1, 2]))
 
+    def test_combine_sampled_and_draft_tokens_preserves_prompt_tail(self):
+        input_ids = torch.tensor([41, 42], dtype=torch.int32, device="mcpu")
+        idx_mapping = torch.tensor([0], dtype=torch.int32, device="mcpu")
+        last_sampled = torch.tensor([100], dtype=torch.int64, device="mcpu")
+        query_start = torch.tensor([0, 2], dtype=torch.int32, device="mcpu")
+        seq_lens = torch.tensor([5], dtype=torch.int32, device="mcpu")
+        prefill_len = torch.tensor([4], dtype=torch.int32, device="mcpu")
+        drafts = torch.tensor([[10]], dtype=torch.int64, device="mcpu")
+        cu_num_logits = torch.tensor([0, 2], dtype=torch.int32, device="mcpu")
+        logits_indices = torch.empty(2, dtype=torch.int64, device="mcpu")
+
+        torch.ops.mcpu.vllm_combine_sampled_and_draft_tokens(
+            input_ids,
+            idx_mapping,
+            last_sampled,
+            query_start,
+            seq_lens,
+            prefill_len,
+            drafts,
+            drafts.stride(0),
+            cu_num_logits,
+            logits_indices,
+            1,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(input_ids.cpu(), torch.tensor([41, 10], dtype=torch.int32))
+        self.assertEqual(logits_indices.cpu(), torch.tensor([0, 1]))
+
     def test_post_update_skips_negative_mapping_and_updates_state(self):
         idx_mapping = torch.tensor([-1, 1, 0], dtype=torch.int32, device="mcpu")
         num_computed = torch.tensor([10, 20], dtype=torch.int32, device="mcpu")

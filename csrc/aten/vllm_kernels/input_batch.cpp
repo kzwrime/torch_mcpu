@@ -217,7 +217,8 @@ void vllm_combine_sampled_and_draft_tokens_impl(
           if (seq_len <= plen)
             continue; // chunked prefill
 
-          if (num_new_sampled_tokens > 0)
+          int32_t first_logit_seq_pos = seq_len - n_logits;
+          if (num_new_sampled_tokens > 0 && first_logit_seq_pos >= plen)
             iids_ptr[qend - n_logits] = (int32_t)lst_ptr[req];
           if (n_draft > 0) {
             const int64_t* dr = draft_ptr + (int64_t)req * draft_tokens_stride;
