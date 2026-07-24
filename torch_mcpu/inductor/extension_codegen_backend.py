@@ -44,6 +44,34 @@ from torch._inductor.virtualized import V
 from torch_mcpu.paths import get_include
 
 
+def _patch_get_current_backend() -> None:
+    """Make Inductor classify mcpu as a C++ backend."""
+    import sys
+
+    from torch._inductor import config as inductor_config
+    from torch._inductor import utils as inductor_utils
+
+    original = inductor_utils.get_current_backend
+
+    def get_current_backend(device_type=None):
+        if not device_type:
+            try:
+                device_type = V.graph.get_current_device_or_throw().type
+            except Exception:
+                return original(device_type)
+        if device_type in {"mcpu", "privateuseone"}:
+            return inductor_config.cpu_backend
+        return original(device_type)
+
+    inductor_utils.get_current_backend = get_current_backend
+    for module in list(sys.modules.values()):
+        if getattr(module, "get_current_backend", None) is original:
+            module.get_current_backend = get_current_backend
+
+
+_patch_get_current_backend()
+
+
 _MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
     {
         torch.ops.aten.arange.default,
@@ -58,6 +86,7 @@ _MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
         torch.ops.aten.ones.names,
         torch.ops.aten.ones_like.default,
         torch.ops.aten.cat.default,
+        torch.ops.aten.slice.Tensor,
         torch.ops.aten.zero.default,
         torch.ops.aten.zeros.default,
         torch.ops.aten.zeros.names,

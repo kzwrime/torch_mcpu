@@ -74,6 +74,15 @@ class TestMcpuInductorRegistration(unittest.TestCase):
     def test_scheduling_registered(self):
         self.assertIs(get_scheduling_for_device("mcpu"), McpuScheduling)
 
+    def test_mcpu_uses_cpp_backend(self):
+        """Inductor must not classify mcpu as the Triton backend."""
+        from torch._inductor.utils import get_current_backend
+
+        with inductor_config.patch(cpu_backend="cpp", cuda_backend="triton"):
+            self.assertEqual(get_current_backend("mcpu"), "cpp")
+            self.assertEqual(get_current_backend("privateuseone"), "cpp")
+            self.assertEqual(get_current_backend("cuda"), "triton")
+
     def test_python_wrapper_registered(self):
         self.assertIs(get_wrapper_codegen_for_device("mcpu"), McpuWrapperCodegen)
 
@@ -269,6 +278,29 @@ class TestMcpuCompile(unittest.TestCase):
         }):
             opt_fn = torch.compile(concat_hidden_inputs)
             res, code = run_and_get_code(opt_fn, hidden_states, inputs_embeds)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
+
+    def test_codegen_keeps_mcpu_slice_as_aten_fallback(self):
+        """A view slice must not become a host C++ copy over mcpu memory."""
+
+        def slice_hidden_states(hidden_states):
+            return hidden_states[: hidden_states.shape[0], :]
+
+        hidden_states = torch.empty(
+            32, 2048, device="mcpu", dtype=torch.bfloat16
+        ).fill_(2)
+        expected = slice_hidden_states(hidden_states).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": False,
+            "fallback_by_default": False,
+        }):
+            opt_fn = torch.compile(slice_hidden_states)
+            res, code = run_and_get_code(opt_fn, hidden_states)
 
         code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
         self.assertEqual(res.device.type, "mcpu")

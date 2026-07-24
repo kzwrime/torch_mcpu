@@ -98,6 +98,7 @@ def _register_mcpu_aoti_fallback_shims() -> None:
     inductor_fallback_ops.setdefault("aten.index.Tensor", {})
     inductor_fallback_ops.setdefault("aten.index_select.default", {})
     inductor_fallback_ops.setdefault("aten.index_select.out", {})
+    inductor_fallback_ops.setdefault("aten.slice.Tensor", {})
     inductor_fallback_ops.setdefault("aten.sigmoid.default", {})
 
 
@@ -109,6 +110,7 @@ def _register_mcpu_inductor_fallback_lowerings() -> None:
         torch.ops.aten.index.Tensor,
         torch.ops.aten.index_select.default,
         torch.ops.aten.index_select.out,
+        torch.ops.aten.slice.Tensor,
     )
     for op in fallback_ops:
         lowering.add_needs_realized_inputs(op)
