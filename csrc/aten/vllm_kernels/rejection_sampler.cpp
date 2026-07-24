@@ -48,7 +48,7 @@ void launch_vllm_rejection_block_stats(
   const int64_t draft_sumexp_stride = draft_local_sumexp.stride(0);
 
   MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::vllm_rejection_compute_block_stats",
+      "mcpu::vllm_rejection_compute_local_logits_stats",
       ([
         target_argmax,
         target_max,
@@ -153,7 +153,7 @@ void launch_vllm_rejection_block_stats(
       });
 }
 
-void vllm_rejection_compute_block_stats_impl(
+void vllm_rejection_compute_local_logits_stats_impl(
     at::Tensor& target_local_argmax,
     at::Tensor& target_local_max,
     at::Tensor& target_local_sumexp,
@@ -235,7 +235,7 @@ void vllm_rejection_compute_block_stats_impl(
   }
 
   VLLM_MCPU_DISPATCH_FLOAT(
-      target_logits, "vllm_rejection_compute_block_stats", {
+      target_logits, "vllm_rejection_compute_local_logits_stats", {
         launch_vllm_rejection_block_stats<scalar_t>(
             target_local_argmax,
             target_local_max,
@@ -315,6 +315,250 @@ inline float block_global_lse(
 }
 
 template <typename scalar_t>
+void vllm_rejection_cumulative_log_p_typed(
+    at::Tensor& output,
+    const at::Tensor& target_logits,
+    const at::Tensor& target_local_max,
+    const at::Tensor& target_local_sumexp,
+    const at::Tensor& draft_sampled,
+    const std::optional<at::Tensor>& draft_logits,
+    const at::Tensor& draft_local_max,
+    const at::Tensor& draft_local_sumexp,
+    const at::Tensor& cu_num_logits,
+    const at::Tensor& idx_mapping,
+    const at::Tensor& temperature,
+    int64_t vocab_num_blocks) {
+  auto* out = output.data_ptr<float>();
+  const auto* target = target_logits.data_ptr<scalar_t>();
+  const auto* target_max = target_local_max.data_ptr<float>();
+  const auto* target_sum = target_local_sumexp.data_ptr<float>();
+  const auto* sampled = draft_sampled.data_ptr<int32_t>();
+  const auto* draft =
+      draft_logits ? draft_logits->data_ptr<scalar_t>() : nullptr;
+  const auto* draft_max = draft_local_max.data_ptr<float>();
+  const auto* draft_sum = draft_local_sumexp.data_ptr<float>();
+  const auto* cu = cu_num_logits.data_ptr<int32_t>();
+  const auto* mapping = idx_mapping.data_ptr<int32_t>();
+  const auto* temp = temperature.data_ptr<float>();
+  const int64_t target_stride = target_logits.stride(0);
+  const int64_t target_max_stride = target_local_max.stride(0);
+  const int64_t target_sum_stride = target_local_sumexp.stride(0);
+  const int64_t draft_stride0 = draft_logits ? draft_logits->stride(0) : 0;
+  const int64_t draft_stride1 = draft_logits ? draft_logits->stride(1) : 0;
+  const int64_t draft_max_stride = draft_local_max.stride(0);
+  const int64_t draft_sum_stride = draft_local_sumexp.stride(0);
+  const int64_t num_reqs = idx_mapping.numel();
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::vllm_rejection_cumulative_log_p", ([=]), {
+    at::mcpu::KernelPointerMemoryGuard guard(
+        {out,
+         target,
+         target_max,
+         target_sum,
+         sampled,
+         draft,
+         draft_max,
+         draft_sum,
+         cu,
+         mapping,
+         temp});
+#pragma omp parallel for schedule(static)
+    for (int64_t req = 0; req < num_reqs; ++req) {
+      const int64_t state = mapping[req];
+      if (temp[state] == 0.0f)
+        continue;
+      float log_p = 0.0f;
+      for (int64_t i = cu[req]; i < cu[req + 1] - 1; ++i) {
+        const int64_t step = i - cu[req];
+        const int64_t token = sampled[i + 1];
+        const float target_lse = block_global_lse(
+            target_max,
+            target_max_stride,
+            target_sum,
+            target_sum_stride,
+            i,
+            vocab_num_blocks);
+        const float target_lp =
+            static_cast<float>(target[i * target_stride + token]) - target_lse;
+        float draft_lp = 0.0f;
+        if (draft) {
+          const float draft_lse = block_global_lse(
+              draft_max,
+              draft_max_stride,
+              draft_sum,
+              draft_sum_stride,
+              i,
+              vocab_num_blocks);
+          draft_lp =
+              static_cast<float>(
+                  draft[state * draft_stride0 + step * draft_stride1 + token]) -
+              draft_lse;
+        }
+        log_p = std::min(log_p + target_lp - draft_lp, 0.0f);
+        out[i] = log_p;
+      }
+    }
+  });
+}
+
+void vllm_rejection_cumulative_log_p_impl(
+    at::Tensor& output,
+    const at::Tensor& target_logits,
+    const at::Tensor& target_local_max,
+    const at::Tensor& target_local_sumexp,
+    const at::Tensor& draft_sampled,
+    const std::optional<at::Tensor>& draft_logits,
+    const at::Tensor& draft_local_max,
+    const at::Tensor& draft_local_sumexp,
+    const at::Tensor& cu_num_logits,
+    const at::Tensor& idx_mapping,
+    const at::Tensor& temperature,
+    int64_t vocab_num_blocks) {
+  VLLM_MCPU_CHECK_DTYPE(output, at::kFloat, "cumulative_log_p");
+  VLLM_MCPU_CHECK(
+      output.numel() == target_logits.size(0), "output size mismatch");
+  VLLM_MCPU_DISPATCH_FLOAT(target_logits, "vllm_rejection_cumulative_log_p", {
+    vllm_rejection_cumulative_log_p_typed<scalar_t>(
+        output,
+        target_logits,
+        target_local_max,
+        target_local_sumexp,
+        draft_sampled,
+        draft_logits,
+        draft_local_max,
+        draft_local_sumexp,
+        cu_num_logits,
+        idx_mapping,
+        temperature,
+        vocab_num_blocks);
+  });
+}
+
+template <typename scalar_t>
+void vllm_rejection_local_residual_mass_typed(
+    at::Tensor& output,
+    const at::Tensor& cumulative_log_p,
+    const at::Tensor& target_logits,
+    const at::Tensor& target_local_max,
+    const at::Tensor& target_local_sumexp,
+    const at::Tensor& draft_logits,
+    const at::Tensor& draft_local_max,
+    const at::Tensor& draft_local_sumexp,
+    const at::Tensor& expanded_idx_mapping,
+    const at::Tensor& expanded_local_pos,
+    const at::Tensor& temperature,
+    int64_t vocab_size,
+    int64_t num_speculative_steps) {
+  auto* out = output.data_ptr<float>();
+  const auto* cumulative = cumulative_log_p.data_ptr<float>();
+  const auto* target = target_logits.data_ptr<scalar_t>();
+  const auto* draft = draft_logits.data_ptr<scalar_t>();
+  const auto* target_max = target_local_max.data_ptr<float>();
+  const auto* target_sum = target_local_sumexp.data_ptr<float>();
+  const auto* draft_max = draft_local_max.data_ptr<float>();
+  const auto* draft_sum = draft_local_sumexp.data_ptr<float>();
+  const auto* mapping = expanded_idx_mapping.data_ptr<int32_t>();
+  const auto* local_pos = expanded_local_pos.data_ptr<int32_t>();
+  const auto* temp = temperature.data_ptr<float>();
+  const int64_t num_logits = target_logits.size(0);
+  const int64_t num_blocks = output.size(1);
+  const int64_t block_size = 8192;
+  const int64_t output_stride = output.stride(0);
+  const int64_t target_stride = target_logits.stride(0);
+  const int64_t target_max_stride = target_local_max.stride(0);
+  const int64_t target_sum_stride = target_local_sumexp.stride(0);
+  const int64_t draft_stride0 = draft_logits.stride(0);
+  const int64_t draft_stride1 = draft_logits.stride(1);
+  const int64_t draft_max_stride = draft_local_max.stride(0);
+  const int64_t draft_sum_stride = draft_local_sumexp.stride(0);
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::vllm_rejection_local_residual_mass", ([=]), {
+    at::mcpu::KernelPointerMemoryGuard guard(
+        {out,
+         cumulative,
+         target,
+         draft,
+         target_max,
+         target_sum,
+         draft_max,
+         draft_sum,
+         mapping,
+         local_pos,
+         temp});
+#pragma omp parallel for schedule(static)
+    for (int64_t program = 0; program < num_logits * num_blocks; ++program) {
+      const int64_t row = program / num_blocks;
+      const int64_t block = program % num_blocks;
+      const int64_t step = local_pos[row];
+      const int64_t state = mapping[row];
+      if (step == 0 || step >= num_speculative_steps || temp[state] == 0.0f)
+        continue;
+      const float target_lse = block_global_lse(
+          target_max,
+          target_max_stride,
+          target_sum,
+          target_sum_stride,
+          row,
+          num_blocks);
+      const float draft_lse = block_global_lse(
+          draft_max,
+          draft_max_stride,
+          draft_sum,
+          draft_sum_stride,
+          row,
+          num_blocks);
+      const float p = std::exp(cumulative[row - 1]);
+      float partial = 0.0f;
+      const int64_t begin = block * block_size;
+      const int64_t end = std::min(begin + block_size, vocab_size);
+      for (int64_t token = begin; token < end; ++token) {
+        const float mb = std::exp(
+            static_cast<float>(target[row * target_stride + token]) -
+            target_lse);
+        const float ms = std::exp(
+            static_cast<float>(
+                draft[state * draft_stride0 + step * draft_stride1 + token]) -
+            draft_lse);
+        partial += std::max(p * mb - ms, 0.0f);
+      }
+      out[row * output_stride + block] = partial;
+    }
+  });
+}
+
+void vllm_rejection_local_residual_mass_impl(
+    at::Tensor& output,
+    const at::Tensor& cumulative_log_p,
+    const at::Tensor& target_logits,
+    const at::Tensor& target_local_max,
+    const at::Tensor& target_local_sumexp,
+    const at::Tensor& draft_logits,
+    const at::Tensor& draft_local_max,
+    const at::Tensor& draft_local_sumexp,
+    const at::Tensor& expanded_idx_mapping,
+    const at::Tensor& expanded_local_pos,
+    const at::Tensor& temperature,
+    int64_t vocab_size,
+    int64_t num_speculative_steps) {
+  VLLM_MCPU_CHECK_DTYPE(output, at::kFloat, "local_residual_mass");
+  VLLM_MCPU_DISPATCH_FLOAT(
+      target_logits, "vllm_rejection_local_residual_mass", {
+        vllm_rejection_local_residual_mass_typed<scalar_t>(
+            output,
+            cumulative_log_p,
+            target_logits,
+            target_local_max,
+            target_local_sumexp,
+            draft_logits,
+            draft_local_max,
+            draft_local_sumexp,
+            expanded_idx_mapping,
+            expanded_local_pos,
+            temperature,
+            vocab_size,
+            num_speculative_steps);
+      });
+}
+
+template <typename scalar_t>
 void launch_vllm_rejection(
     at::Tensor& sampled,
     at::Tensor& rejected_steps,
@@ -333,6 +577,9 @@ void launch_vllm_rejection(
     const at::Tensor& temperature,
     const at::Tensor& seed,
     const at::Tensor& pos,
+    const std::optional<at::Tensor>& cumulative_log_p,
+    const std::optional<at::Tensor>& local_residual_mass,
+    bool use_block_verification,
     int64_t vocab_num_blocks) {
   auto* sampled_ptr = sampled.data_ptr<int64_t>();
   auto* rejected_ptr = rejected_steps.data_ptr<int32_t>();
@@ -352,6 +599,14 @@ void launch_vllm_rejection(
   const auto* temp_ptr = temperature.data_ptr<float>();
   const auto* seed_ptr = seed.data_ptr<int64_t>();
   const auto* pos_ptr = pos.data_ptr<int64_t>();
+  const auto* cumulative_ptr =
+      cumulative_log_p ? cumulative_log_p->data_ptr<float>() : nullptr;
+  const auto* residual_ptr =
+      local_residual_mass ? local_residual_mass->data_ptr<float>() : nullptr;
+  const int64_t residual_stride =
+      local_residual_mass ? local_residual_mass->stride(0) : 0;
+  const int64_t encoded_num_blocks =
+      use_block_verification ? -vocab_num_blocks : vocab_num_blocks;
   const int64_t num_reqs = idx_mapping.numel();
   const int64_t sampled_stride = sampled.stride(0);
   const int64_t target_stride = target_logits.stride(0);
@@ -381,9 +636,13 @@ void launch_vllm_rejection(
          mapping_ptr,
          temp_ptr,
          seed_ptr,
-         pos_ptr});
+         pos_ptr,
+         cumulative_ptr,
+         residual_ptr});
 #pragma omp parallel for schedule(static)
     for (int64_t req = 0; req < num_reqs; ++req) {
+      const bool block_verification = encoded_num_blocks < 0;
+      const int64_t num_blocks = std::abs(encoded_num_blocks);
       const int64_t req_state = mapping_ptr[req];
       const int64_t start = cu_ptr[req];
       const int64_t end = cu_ptr[req + 1];
@@ -393,14 +652,48 @@ void launch_vllm_rejection(
       float target_lse = 0.0f;
       float draft_lse = 0.0f;
       for (int64_t step = 0; step < end - start - 1; ++step) {
-        if (!accepted)
+        if (!block_verification && !accepted)
           break;
         const int64_t logit_idx = start + step;
         int64_t draft_token = draft_sampled_ptr[logit_idx + 1];
-        if (temp == 0.0f) {
+        if (block_verification && temp != 0.0f) {
+          const float prefix_ratio = std::exp(cumulative_ptr[logit_idx]);
+          float h = prefix_ratio;
+          if (step < end - start - 2) {
+            float residual_mass = 0.0f;
+            if (draft_ptr) {
+              for (int64_t block = 0; block < num_blocks; ++block)
+                residual_mass +=
+                    residual_ptr[(logit_idx + 1) * residual_stride + block];
+            } else {
+              const int64_t next_token = draft_sampled_ptr[logit_idx + 2];
+              const float next_lse = block_global_lse(
+                  target_max_ptr,
+                  target_max_stride,
+                  target_sumexp_ptr,
+                  target_sumexp_stride,
+                  logit_idx + 1,
+                  num_blocks);
+              const float mb = std::exp(
+                  static_cast<float>(
+                      target_ptr
+                          [(logit_idx + 1) * target_stride + next_token]) -
+                  next_lse);
+              residual_mass = prefix_ratio * (1.0f - mb);
+            }
+            const float denom = residual_mass + 1.0f - prefix_ratio;
+            h = denom > 0.0f ? residual_mass / denom : 1.0f;
+          }
+          const float u = triton_rand32(
+              static_cast<uint64_t>(seed_ptr[req_state]),
+              static_cast<uint64_t>(pos_ptr[logit_idx]));
+          if (u <= h)
+            rejected_step = step + 1;
+          sampled_ptr[req * sampled_stride + step] = draft_token;
+        } else if (temp == 0.0f) {
           int64_t best_block = 0;
           float best_value = -std::numeric_limits<float>::infinity();
-          for (int64_t block = 0; block < vocab_num_blocks; ++block) {
+          for (int64_t block = 0; block < num_blocks; ++block) {
             const float value =
                 target_max_ptr[logit_idx * target_max_stride + block];
             if (value > best_value) {
@@ -424,7 +717,7 @@ void launch_vllm_rejection(
               target_sumexp_ptr,
               target_sumexp_stride,
               logit_idx,
-              vocab_num_blocks);
+              num_blocks);
           float draft_log_prob = 0.0f;
           if (draft_ptr) {
             const float draft_logit =
@@ -437,7 +730,7 @@ void launch_vllm_rejection(
                 draft_sumexp_ptr,
                 draft_sumexp_stride,
                 logit_idx,
-                vocab_num_blocks);
+                num_blocks);
             draft_log_prob = draft_logit - draft_lse;
           }
           const float u = triton_rand32(
@@ -447,7 +740,27 @@ void launch_vllm_rejection(
               target_logit - target_lse > std::log(u) + draft_log_prob;
           sampled_ptr[req * sampled_stride + step] = draft_token;
         }
-        rejected_step += accepted ? 1 : 0;
+        if (!block_verification)
+          rejected_step += accepted ? 1 : 0;
+      }
+      if (block_verification && temp != 0.0f &&
+          rejected_step < end - start - 1) {
+        const int64_t rejected_idx = start + rejected_step;
+        target_lse = block_global_lse(
+            target_max_ptr,
+            target_max_stride,
+            target_sumexp_ptr,
+            target_sumexp_stride,
+            rejected_idx,
+            num_blocks);
+        if (draft_ptr)
+          draft_lse = block_global_lse(
+              draft_max_ptr,
+              draft_max_stride,
+              draft_sumexp_ptr,
+              draft_sumexp_stride,
+              rejected_idx,
+              num_blocks);
       }
       rejected_ptr[req] = rejected_step;
       target_rejected_ptr[req] = target_lse;
@@ -474,6 +787,9 @@ void vllm_rejection_impl(
     const at::Tensor& temperature,
     const at::Tensor& seed,
     const at::Tensor& pos,
+    const std::optional<at::Tensor>& cumulative_log_p,
+    const std::optional<at::Tensor>& local_residual_mass,
+    bool use_block_verification,
     int64_t vocab_num_blocks) {
   VLLM_MCPU_CHECK_DIM(sampled, 2, "sampled");
   VLLM_MCPU_CHECK_DIM(rejected_steps, 1, "rejected_steps");
@@ -538,6 +854,9 @@ void vllm_rejection_impl(
         temperature,
         seed,
         pos,
+        cumulative_log_p,
+        local_residual_mass,
+        use_block_verification,
         vocab_num_blocks);
   });
 }
@@ -565,8 +884,10 @@ void launch_vllm_rejection_resample(
     const at::Tensor& temperature,
     const at::Tensor& seed,
     const at::Tensor& pos,
+    const std::optional<at::Tensor>& cumulative_log_p,
     int64_t vocab_size,
-    int64_t block_size) {
+    int64_t block_size,
+    bool use_block_verification) {
   auto* argmax_ptr = local_argmax.data_ptr<int64_t>();
   auto* max_ptr = local_max.data_ptr<out_t>();
   const auto* target_ptr = target_logits.data_ptr<scalar_t>();
@@ -581,6 +902,8 @@ void launch_vllm_rejection_resample(
   const auto* temp_ptr = temperature.data_ptr<float>();
   const auto* seed_ptr = seed.data_ptr<int64_t>();
   const auto* pos_ptr = pos.data_ptr<int64_t>();
+  const auto* cumulative_ptr =
+      cumulative_log_p ? cumulative_log_p->data_ptr<float>() : nullptr;
   const int64_t num_reqs = rejected_step.numel();
   const int64_t num_blocks = local_argmax.size(1);
   const int64_t argmax_stride = local_argmax.stride(0);
@@ -603,7 +926,8 @@ void launch_vllm_rejection_resample(
          draft_sampled_ptr,
          temp_ptr,
          seed_ptr,
-         pos_ptr});
+         pos_ptr,
+         cumulative_ptr});
     const int64_t programs = num_reqs * num_blocks;
 #pragma omp parallel for schedule(static)
     for (int64_t program = 0; program < programs; ++program) {
@@ -636,7 +960,9 @@ void launch_vllm_rejection_resample(
             static_cast<float>(target_ptr[token_idx * target_stride + token]);
         float residual = target_logit;
         if (!is_bonus && draft_ptr) {
-          const float target_log_prob = target_logit - target_lse_ptr[req];
+          float target_log_prob = target_logit - target_lse_ptr[req];
+          if (use_block_verification && resample_idx > 0)
+            target_log_prob += cumulative_ptr[token_idx - 1];
           const float draft_log_prob =
               static_cast<float>(draft_ptr
                                      [req_state * draft_stride_0 +
@@ -683,9 +1009,11 @@ void vllm_rejection_resample_impl(
     const at::Tensor& temperature,
     const at::Tensor& seed,
     const at::Tensor& pos,
+    const std::optional<at::Tensor>& cumulative_log_p,
     int64_t vocab_size,
     int64_t block_size,
-    bool use_fp64) {
+    bool use_fp64,
+    bool use_block_verification) {
   VLLM_MCPU_CHECK_DIM(local_argmax, 2, "local_argmax");
   VLLM_MCPU_CHECK_DIM(local_max, 2, "local_max");
   VLLM_MCPU_CHECK_DTYPE(local_argmax, at::kLong, "local_argmax");
@@ -735,8 +1063,10 @@ void vllm_rejection_resample_impl(
           temperature,
           seed,
           pos,
+          cumulative_log_p,
           vocab_size,
-          block_size);
+          block_size,
+          use_block_verification);
     } else {
       launch_vllm_rejection_resample<scalar_t, float>(
           local_argmax,
@@ -752,8 +1082,10 @@ void vllm_rejection_resample_impl(
           temperature,
           seed,
           pos,
+          cumulative_log_p,
           vocab_size,
-          block_size);
+          block_size,
+          use_block_verification);
     }
   });
 }
@@ -1341,7 +1673,7 @@ void vllm_rejection_sampler_expand_impl(
 
 TORCH_LIBRARY_FRAGMENT(mcpu, m) {
   m.def(
-      "vllm_rejection_compute_block_stats("
+      "vllm_rejection_compute_local_logits_stats("
       "Tensor(a!) target_local_argmax, "
       "Tensor(b!) target_local_max, "
       "Tensor(c!) target_local_sumexp, "
@@ -1357,6 +1689,20 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "int block_size"
       ") -> ()");
   m.def(
+      "vllm_rejection_cumulative_log_p("
+      "Tensor(a!) output, Tensor target_logits, Tensor target_local_max, "
+      "Tensor target_local_sumexp, Tensor draft_sampled, Tensor? draft_logits, "
+      "Tensor draft_local_max, Tensor draft_local_sumexp, "
+      "Tensor cu_num_logits, Tensor idx_mapping, Tensor temperature, "
+      "int vocab_num_blocks) -> ()");
+  m.def(
+      "vllm_rejection_local_residual_mass("
+      "Tensor(a!) output, Tensor cumulative_log_p, Tensor target_logits, "
+      "Tensor target_local_max, Tensor target_local_sumexp, Tensor draft_logits, "
+      "Tensor draft_local_max, Tensor draft_local_sumexp, "
+      "Tensor expanded_idx_mapping, Tensor expanded_local_pos, "
+      "Tensor temperature, int vocab_size, int num_speculative_steps) -> ()");
+  m.def(
       "vllm_rejection("
       "Tensor(a!) sampled, Tensor(b!) rejected_steps, "
       "Tensor(c!) target_rejected_lse, Tensor(d!) draft_rejected_lse, "
@@ -1365,7 +1711,9 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "Tensor draft_sampled, Tensor? draft_logits, "
       "Tensor draft_local_max, Tensor draft_local_sumexp, "
       "Tensor cu_num_logits, Tensor idx_mapping, Tensor temperature, "
-      "Tensor seed, Tensor pos, int vocab_num_blocks"
+      "Tensor seed, Tensor pos, Tensor? cumulative_log_p, "
+      "Tensor? local_residual_mass, bool use_block_verification, "
+      "int vocab_num_blocks"
       ") -> ()");
   m.def(
       "vllm_rejection_resample("
@@ -1375,7 +1723,8 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "Tensor rejected_step, Tensor cu_num_logits, "
       "Tensor expanded_idx_mapping, Tensor draft_sampled, "
       "Tensor temperature, Tensor seed, Tensor pos, "
-      "int vocab_size, int block_size, bool use_fp64"
+      "Tensor? cumulative_log_p, int vocab_size, int block_size, "
+      "bool use_fp64, bool use_block_verification"
       ") -> ()");
   m.def(
       "vllm_rejection_insert("
@@ -1408,8 +1757,13 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
 
 TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
   m.impl(
-      "vllm_rejection_compute_block_stats",
-      &vllm_rejection_compute_block_stats_impl);
+      "vllm_rejection_compute_local_logits_stats",
+      &vllm_rejection_compute_local_logits_stats_impl);
+  m.impl(
+      "vllm_rejection_cumulative_log_p", &vllm_rejection_cumulative_log_p_impl);
+  m.impl(
+      "vllm_rejection_local_residual_mass",
+      &vllm_rejection_local_residual_mass_impl);
   m.impl("vllm_rejection", &vllm_rejection_impl);
   m.impl("vllm_rejection_resample", &vllm_rejection_resample_impl);
   m.impl("vllm_rejection_insert", &vllm_rejection_insert_impl);

@@ -357,7 +357,7 @@ class TestVllmKernelLaunch(TestCase):
             torch.tensor([4, 4, -1, 7, 7, -1, -1], dtype=torch.int32),
         )
 
-    def test_rejection_compute_block_stats_matches_triton_semantics(self):
+    def test_rejection_compute_local_logits_stats_matches_triton_semantics(self):
         vocab_size = 8200
         target_cpu = torch.linspace(
             -4.0, 4.0, 4 * vocab_size, dtype=torch.float32
@@ -380,7 +380,7 @@ class TestVllmKernelLaunch(TestCase):
         draft_max = torch.full(shape, -123.0, device="mcpu")
         draft_sumexp = torch.full(shape, -123.0, device="mcpu")
 
-        torch.ops.mcpu.vllm_rejection_compute_block_stats(
+        torch.ops.mcpu.vllm_rejection_compute_local_logits_stats(
             target_argmax,
             target_max,
             target_sumexp,
@@ -442,7 +442,7 @@ class TestVllmKernelLaunch(TestCase):
         for output in (target_max, target_sumexp, draft_max, draft_sumexp):
             self.assertEqual(output[2:].cpu(), torch.full((2, 2), -123.0))
 
-    def test_rejection_compute_block_stats_without_draft_leaves_draft_outputs(self):
+    def test_rejection_compute_local_logits_stats_without_draft_leaves_outputs(self):
         target = torch.tensor(
             [[1.0, 3.0, 2.0]], dtype=torch.float32, device="mcpu"
         )
@@ -455,7 +455,7 @@ class TestVllmKernelLaunch(TestCase):
         draft_max = torch.full((1, 1), -7.0, device="mcpu")
         draft_sumexp = torch.full((1, 1), -7.0, device="mcpu")
 
-        torch.ops.mcpu.vllm_rejection_compute_block_stats(
+        torch.ops.mcpu.vllm_rejection_compute_local_logits_stats(
             target_argmax,
             target_max,
             target_sumexp,
@@ -505,7 +505,7 @@ class TestVllmKernelLaunch(TestCase):
         target_sumexp = torch.empty(block_shape, device="mcpu")
         draft_max = torch.empty(block_shape, device="mcpu")
         draft_sumexp = torch.empty(block_shape, device="mcpu")
-        torch.ops.mcpu.vllm_rejection_compute_block_stats(
+        torch.ops.mcpu.vllm_rejection_compute_local_logits_stats(
             target_argmax,
             target_max,
             target_sumexp,
@@ -543,6 +543,9 @@ class TestVllmKernelLaunch(TestCase):
             temperature,
             seed,
             pos,
+            None,
+            None,
+            False,
             1,
         )
 
@@ -564,8 +567,10 @@ class TestVllmKernelLaunch(TestCase):
             temperature,
             seed,
             pos,
+            None,
             5,
             1024,
+            False,
             False,
         )
         torch.ops.mcpu.vllm_rejection_insert(
@@ -588,6 +593,104 @@ class TestVllmKernelLaunch(TestCase):
         self.assertEqual(sampled[0].cpu(), torch.tensor([1, 2, 3]))
         self.assertEqual(sampled[1, 0].cpu(), torch.tensor(4))
         self.assertEqual(flat_sampled.cpu(), torch.tensor([1, 2, 3, 4, 0, 0]))
+
+    def test_rejection_block_verification_matches_equal_distributions(self):
+        target = torch.tensor(
+            [[1.0, 3.0, 2.0], [2.0, 1.0, 3.0], [0.0, 0.0, 0.0]],
+            device="mcpu",
+        )
+        draft = target[:2].reshape(1, 2, 3).clone()
+        draft_sampled = torch.tensor([-1, 1, 2], dtype=torch.int32, device="mcpu")
+        mapping = torch.zeros(3, dtype=torch.int32, device="mcpu")
+        local_pos = torch.tensor([0, 1, 2], dtype=torch.int32, device="mcpu")
+        temperature = torch.ones(1, device="mcpu")
+        shape = (3, 1)
+        target_argmax = torch.empty(shape, dtype=torch.int64, device="mcpu")
+        target_max = torch.empty(shape, device="mcpu")
+        target_sumexp = torch.empty(shape, device="mcpu")
+        draft_max = torch.empty(shape, device="mcpu")
+        draft_sumexp = torch.empty(shape, device="mcpu")
+        torch.ops.mcpu.vllm_rejection_compute_local_logits_stats(
+            target_argmax,
+            target_max,
+            target_sumexp,
+            draft_max,
+            draft_sumexp,
+            target,
+            draft,
+            mapping,
+            local_pos,
+            temperature,
+            3,
+            2,
+            8192,
+        )
+        cu_logits = torch.tensor([0, 3], dtype=torch.int32, device="mcpu")
+        idx_mapping = torch.tensor([0], dtype=torch.int32, device="mcpu")
+        cumulative = torch.full((3,), -99.0, device="mcpu")
+        torch.ops.mcpu.vllm_rejection_cumulative_log_p(
+            cumulative,
+            target,
+            target_max,
+            target_sumexp,
+            draft_sampled,
+            draft,
+            draft_max,
+            draft_sumexp,
+            cu_logits,
+            idx_mapping,
+            temperature,
+            1,
+        )
+        residual = torch.full(shape, -99.0, device="mcpu")
+        torch.ops.mcpu.vllm_rejection_local_residual_mass(
+            residual,
+            cumulative,
+            target,
+            target_max,
+            target_sumexp,
+            draft,
+            draft_max,
+            draft_sumexp,
+            mapping,
+            local_pos,
+            temperature,
+            3,
+            2,
+        )
+        sampled = torch.full((1, 3), -1, dtype=torch.int64, device="mcpu")
+        num_sampled = torch.empty(1, dtype=torch.int32, device="mcpu")
+        target_lse = torch.empty(1, device="mcpu")
+        draft_lse = torch.empty(1, device="mcpu")
+        torch.ops.mcpu.vllm_rejection(
+            sampled,
+            num_sampled,
+            target_lse,
+            draft_lse,
+            target,
+            target_argmax,
+            target_max,
+            target_sumexp,
+            draft_sampled,
+            draft,
+            draft_max,
+            draft_sumexp,
+            cu_logits,
+            idx_mapping,
+            temperature,
+            torch.tensor([7], dtype=torch.int64, device="mcpu"),
+            torch.tensor([11, 12, 13], dtype=torch.int64, device="mcpu"),
+            cumulative,
+            residual,
+            True,
+            1,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(cumulative[:2].cpu(), torch.zeros(2))
+        self.assertAlmostEqual(residual[1, 0].cpu().item(), 0.0, places=6)
+        self.assertEqual(num_sampled.cpu(), torch.tensor([2], dtype=torch.int32))
+        self.assertEqual(sampled[0, :2].cpu(), torch.tensor([1, 2]))
 
     def test_rejection_greedy_matches_mixed_batch_semantics(self):
         output = torch.full((3, 4), -1, dtype=torch.int32, device="mcpu")
