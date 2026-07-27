@@ -6,6 +6,15 @@ file(GLOB_RECURSE SOURCE_FILES
 
 add_library(${LIBRARY_NAME} SHARED ${SOURCE_FILES})
 
+# ATen's OpenMP parallel_for implementation is header-only and is enabled by
+# the compiler's _OPENMP feature macro. Keep this local to the RNG kernel so
+# enabling uniform_ parallelism does not change unrelated torch_mcpu operators.
+set_source_files_properties(
+    "${CMAKE_CURRENT_SOURCE_DIR}/aten/ops/uniform.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fopenmp"
+)
+target_link_options(${LIBRARY_NAME} PRIVATE "-fopenmp")
+
 target_link_libraries(${LIBRARY_NAME} PRIVATE torch_cpu_library openreg)
 target_include_directories(${LIBRARY_NAME} PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}

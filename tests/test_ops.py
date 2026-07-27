@@ -905,6 +905,20 @@ class TestFallback(TestCase):
         self.assertTrue((uniform_cpu >= -1.0).all())
         self.assertTrue((uniform_cpu < 2.0).all())
 
+        uniform_generator = torch.Generator(device="mcpu").manual_seed(123)
+        uniform_with_generator = torch.empty(2, 8, device="mcpu")
+        uniform_with_generator[0].uniform_(
+            -1.0, 2.0, generator=uniform_generator
+        )
+        torch.mcpu.synchronize()
+        uniform_with_generator_cpu = uniform_with_generator[0].cpu()
+
+        uniform_generator.manual_seed(123)
+        uniform_repeat = torch.empty(8, device="mcpu")
+        uniform_repeat.uniform_(-1.0, 2.0, generator=uniform_generator)
+        torch.mcpu.synchronize()
+        self.assertEqual(uniform_with_generator_cpu, uniform_repeat.cpu())
+
         uniform_out = torch.empty_like(uniform_sample)
         torch.ops.aten.uniform.out(uniform_sample, -1.0, 2.0, out=uniform_out)
         uniform_out_cpu = uniform_out.cpu()

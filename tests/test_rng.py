@@ -76,6 +76,130 @@ class TestRNG(TestCase):
         seed = torch.mcpu.initial_seed()
         self.assertEqual(seed, 5678)
 
+    def test_uniform_reserves_generator_state_at_submission(self):
+        generator = torch.Generator(device="mcpu:0").manual_seed(123)
+        state_before = generator.get_state()
+        blocker = torch.empty(1, device="mcpu:0", dtype=torch.int64)
+
+        torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 100)
+        torch.empty(16, device="mcpu:0").uniform_(generator=generator)
+        state_after_submission = generator.get_state()
+
+        self.assertNotEqual(state_before, state_after_submission)
+        torch.mcpu.synchronize()
+
+    def test_uniform_reseed_does_not_change_submitted_work(self):
+        expected_generator = torch.Generator(device="mcpu:0").manual_seed(123)
+        expected = torch.empty(16, device="mcpu:0")
+        expected.uniform_(generator=expected_generator)
+        torch.mcpu.synchronize()
+
+        generator = torch.Generator(device="mcpu:0").manual_seed(123)
+        blocker = torch.empty(1, device="mcpu:0", dtype=torch.int64)
+        actual = torch.empty_like(expected)
+
+        torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 100)
+        actual.uniform_(generator=generator)
+        generator.manual_seed(456)
+        torch.mcpu.synchronize()
+
+        self.assertEqual(actual.cpu(), expected.cpu())
+
+    def test_uniform_generator_state_restore(self):
+        generator = torch.Generator(device="mcpu:0").manual_seed(123)
+        state = generator.get_state()
+        first = torch.empty(257, device="mcpu:0")
+        repeat = torch.empty_like(first)
+
+        first.uniform_(-3.0, 5.0, generator=generator)
+        torch.mcpu.synchronize()
+        generator.set_state(state)
+        repeat.uniform_(-3.0, 5.0, generator=generator)
+        torch.mcpu.synchronize()
+
+        self.assertEqual(first.cpu(), repeat.cpu())
+
+    def test_uniform_is_independent_of_parallel_schedule(self):
+        original_threads = torch.get_num_threads()
+        try:
+            generator = torch.Generator(device="mcpu:0").manual_seed(123)
+            torch.set_num_threads(1)
+            serial = torch.empty(1_000_003, device="mcpu:0")
+            serial.uniform_(generator=generator)
+            torch.mcpu.synchronize()
+
+            generator.manual_seed(123)
+            torch.set_num_threads(16)
+            parallel = torch.empty_like(serial)
+            parallel.uniform_(generator=generator)
+            torch.mcpu.synchronize()
+        finally:
+            torch.set_num_threads(original_threads)
+
+        self.assertEqual(serial.cpu(), parallel.cpu())
+
+    def test_uniform_empty_does_not_advance_generator(self):
+        generator = torch.Generator(device="mcpu:0").manual_seed(123)
+        state = generator.get_state()
+
+        torch.empty(0, device="mcpu:0").uniform_(generator=generator)
+
+        self.assertEqual(generator.get_state(), state)
+
+    def test_uniform_rejects_cpu_generator(self):
+        generator = torch.Generator(device="cpu").manual_seed(123)
+        with self.assertRaisesRegex(RuntimeError, "Expected an mcpu generator"):
+            torch.empty(4, device="mcpu:0").uniform_(generator=generator)
+
+    def test_uniform_invalid_bounds_fail_before_submission(self):
+        generator = torch.Generator(device="mcpu:0").manual_seed(123)
+        state = generator.get_state()
+
+        with self.assertRaisesRegex(RuntimeError, "from=2.*> to=1"):
+            torch.empty(4, device="mcpu:0").uniform_(
+                2.0, 1.0, generator=generator
+            )
+
+        self.assertEqual(generator.get_state(), state)
+
+    def test_uniform_noncontiguous_view_updates_base(self):
+        base = torch.full((17, 18), -9.0, device="mcpu:0")
+        view = base[:, ::2]
+        generator = torch.Generator(device="mcpu:0").manual_seed(123)
+
+        view.uniform_(-2.0, 3.0, generator=generator)
+        torch.mcpu.synchronize()
+        result = base.cpu()
+
+        self.assertTrue((result[:, ::2] >= -2.0).all())
+        self.assertTrue((result[:, ::2] < 3.0).all())
+        self.assertEqual(result[:, 1::2], torch.full((17, 9), -9.0))
+
+    def test_uniform_supported_dtypes_and_bounds(self):
+        for dtype in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+            generator = torch.Generator(device="mcpu:0").manual_seed(123)
+            result = torch.empty(4099, device="mcpu:0", dtype=dtype)
+
+            result.uniform_(-0.75, 1.25, generator=generator)
+            torch.mcpu.synchronize()
+            cpu_result = result.cpu()
+
+            self.assertTrue(torch.isfinite(cpu_result).all())
+            self.assertTrue((cpu_result >= -0.75).all())
+            self.assertTrue((cpu_result < 1.25).all())
+
+    def test_uniform_low_precision_uses_rounded_bounds(self):
+        for dtype in (torch.float16, torch.bfloat16):
+            result = torch.empty(1_000_003, device="mcpu:0", dtype=dtype)
+            result.uniform_(0.1, 0.2)
+            torch.mcpu.synchronize()
+            cpu_result = result.cpu()
+            rounded_from = torch.tensor(0.1, dtype=dtype)
+            rounded_to = torch.tensor(0.2, dtype=dtype)
+
+            self.assertTrue((cpu_result >= rounded_from).all())
+            self.assertTrue((cpu_result < rounded_to).all())
+
     @unittest.skip("mcpu backend does not implement per-device RNG yet")
     def test_generator_different_devices(self):
         """Test generators on different devices"""
