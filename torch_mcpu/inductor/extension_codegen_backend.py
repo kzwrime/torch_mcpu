@@ -86,7 +86,6 @@ _MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
         torch.ops.aten.ones.names,
         torch.ops.aten.ones_like.default,
         torch.ops.aten.cat.default,
-        torch.ops.aten.slice.Tensor,
         torch.ops.aten.zero.default,
         torch.ops.aten.zeros.default,
         torch.ops.aten.zeros.names,
@@ -158,7 +157,8 @@ class McpuDisableComputeFusionPass(CustomGraphModulePass):
     launch-kernel/page-protection model. Marking pointwise and reduction ATen
     nodes with ``should_fallback`` uses Inductor's selective lowering mechanism
     to keep graph compilation and AOTI wrapper generation while avoiding CPU
-    fused-loop codegen for mcpu compute and tensor factory fills.
+    fused-loop codegen for mcpu compute and tensor factory fills. Metadata-only
+    view ops such as slice retain their standard ReinterpretView lowering.
     """
 
     def __call__(self, gm: torch.fx.GraphModule) -> None:

@@ -35,6 +35,7 @@
 #include <ATen/ops/set_cpu_dispatch.h>
 #include <ATen/ops/set_native.h>
 #include <ATen/ops/sigmoid.h>
+#include <ATen/ops/slice.h>
 #include <ATen/ops/view_compositeexplicitautograd_dispatch.h>
 #include <ATen/ops/view_native.h>
 
@@ -236,6 +237,30 @@ inline AOTITorchError aoti_torch_mcpu_view_dtype(AtenTensorHandle self, int32_t 
         auto tmp_result = at::compositeexplicitautograd::view(
             resolve_tensor_dispatch_flags(self), static_cast<c10::ScalarType>(dtype)
         );
+        *ret0 = new_tensor_handle(std::move(tmp_result));
+    });
+}
+
+inline AOTITorchError aoti_torch_mcpu_slice_Tensor(
+    AtenTensorHandle self,
+    int64_t dim,
+    int64_t* start,
+    int64_t* end,
+    int64_t step,
+    AtenTensorHandle* ret0) {
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        const auto start_value = start == nullptr
+            ? std::optional<int64_t>()
+            : std::optional<int64_t>(*start);
+        const auto end_value = end == nullptr
+            ? std::optional<int64_t>()
+            : std::optional<int64_t>(*end);
+        auto tmp_result = at::slice(
+            resolve_tensor_dispatch_flags(self),
+            dim,
+            start_value,
+            end_value,
+            step);
         *ret0 = new_tensor_handle(std::move(tmp_result));
     });
 }

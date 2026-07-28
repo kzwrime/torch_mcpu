@@ -307,6 +307,31 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertTrue(torch.equal(expected, res.to("cpu")))
         self.assertNotIn("cpp_fused", code_text)
 
+    def test_cpp_wrapper_lowers_mcpu_slice_to_metadata_view(self):
+        """AOTI C++ wrapper must keep slice as a metadata-only view."""
+
+        def slice_hidden_states(hidden_states):
+            return hidden_states[:, 3:11]
+
+        hidden_states = torch.arange(
+            64, device="mcpu", dtype=torch.float32
+        ).reshape(4, 16)
+        expected = slice_hidden_states(hidden_states).to("cpu")
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "fallback_by_default": False,
+        }):
+            opt_fn = torch.compile(slice_hidden_states)
+            res, code = run_and_get_cpp_code(opt_fn, hidden_states)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
+        self.assertNotIn("cpp_fused", code_text)
+        self.assertNotIn("aoti_torch_mcpu_slice_Tensor", code_text)
+        self.assertIn("reinterpret_tensor_wrapper", code_text)
+
     def test_cpp_wrapper_supports_mcpu_cat_fallback(self):
         """AOTI C++ wrapper needs an mcpu cat shim for MTP compilation."""
 
