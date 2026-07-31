@@ -226,9 +226,7 @@ bool raw_unary_out(
         const auto* self_ptr = self.const_data_ptr<scalar_t>();
         auto* out_ptr = out.mutable_data_ptr<scalar_t>();
         MCPU_LAUNCH_TIMED_KERNEL(
-            record_name,
-            ([ self_ptr, out_ptr, plan_ptr, record_name ]),
-            {
+            record_name, ([ self_ptr, out_ptr, plan_ptr, record_name ]), {
               KernelPointerMemoryGuard guard({self_ptr, out_ptr});
               raw_unary_kernel<op>(self_ptr, out_ptr, *plan_ptr);
             });
@@ -260,9 +258,7 @@ bool raw_zero_(at::Tensor& self) {
         auto* self_ptr = self.mutable_data_ptr<scalar_t>();
         auto plan_ptr = std::make_shared<ops::RawTensorPlan>(*plan);
         MCPU_LAUNCH_TIMED_KERNEL(
-            "mcpu::aten::zero_.raw",
-            ([ self_ptr, plan_ptr ]),
-            {
+            "mcpu::aten::zero_.raw", ([ self_ptr, plan_ptr ]), {
               KernelPointerMemoryGuard guard({self_ptr});
               raw_zero_kernel(self_ptr, *plan_ptr);
             });
@@ -301,20 +297,20 @@ bool raw_clamp_out(
         auto* out_ptr = out.mutable_data_ptr<scalar_t>();
         const bool has_min = min.has_value();
         const bool has_max = max.has_value();
-        const auto min_value =
-            has_min ? min->to<scalar_t>() : scalar_t(0);
-        const auto max_value =
-            has_max ? max->to<scalar_t>() : scalar_t(0);
+        const auto min_value = has_min ? min->to<scalar_t>() : scalar_t(0);
+        const auto max_value = has_max ? max->to<scalar_t>() : scalar_t(0);
         auto plan_ptr = std::make_shared<ops::RawTensorPairPlan>(*plan);
         MCPU_LAUNCH_TIMED_KERNEL(
             "mcpu::aten::clamp.out.raw",
-            ([ self_ptr,
-               out_ptr,
-               has_min,
-               min_value,
-               has_max,
-               max_value,
-               plan_ptr ]),
+            ([
+              self_ptr,
+              out_ptr,
+              has_min,
+              min_value,
+              has_max,
+              max_value,
+              plan_ptr
+            ]),
             {
               KernelPointerMemoryGuard guard({self_ptr, out_ptr});
               raw_clamp_kernel(
@@ -646,15 +642,9 @@ at::Tensor& clamp_Tensor_out(
   }
   ops::check_out_sizes("aten::clamp.Tensor_out", out, expected_sizes);
 
-  const at::Tensor min_guard =
-      min.has_value() && min->defined() ? *min : at::Tensor();
-  const at::Tensor max_guard =
-      max.has_value() && max->defined() ? *max : at::Tensor();
   MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::clamp.Tensor_out",
-      ([ self, min_guard, max_guard, min, max, out ]),
-      {
-        KernelMemoryGuard guard(self, min_guard, max_guard, out);
+      "mcpu::aten::clamp.Tensor_out", ([ self, min, max, out ]), {
+        KernelMemoryGuard guard(self, min, max, out);
         auto cpu_self = ops::get_cpu_view_from_mcpu_tensor(self);
         auto cpu_min = min.has_value() && min->defined()
             ? std::make_optional(ops::get_cpu_tensor_view_if_needed(*min))

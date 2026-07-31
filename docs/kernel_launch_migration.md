@@ -148,6 +148,24 @@ MCPU_LAUNCH_TIMED_KERNEL(
     });
 ```
 
+`KernelMemoryGuard` also accepts nested `std::optional` arguments. Pass optional
+tensors directly instead of creating undefined tensor sentinels or assembling a
+conditional pointer array:
+
+```cpp
+MCPU_LAUNCH_TIMED_KERNEL(
+    "mcpu::my_optional_tensor_kernel",
+    ([out, input, bias]),
+    {
+      at::mcpu::KernelMemoryGuard guard(out, input, bias);
+      my_optional_tensor_kernel(out, input, bias);
+    });
+```
+
+An empty optional is ignored. An engaged optional is processed recursively, so
+the same rule also applies to optional values already supported by
+`KernelMemoryGuard`, such as `c10::IValue`.
+
 This pattern is appropriate for fallback-style ATen operators. If the kernel is
 pure hand-written pointer code, prefer the pointer-capture pattern instead.
 

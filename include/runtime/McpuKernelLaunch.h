@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <optional>
 #include <type_traits>
 #include <unordered_set>
 #include <utility>
@@ -36,6 +37,15 @@
       })
 
 namespace at::mcpu::detail {
+
+template <typename T>
+struct is_std_optional : std::false_type {};
+
+template <typename T>
+struct is_std_optional<std::optional<T>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_std_optional_v = is_std_optional<T>::value;
 
 MCPU_KERNEL_LAUNCH_EXPORT bool enter_kernel_task();
 MCPU_KERNEL_LAUNCH_EXPORT void exit_kernel_task(bool previous) noexcept;
@@ -169,6 +179,10 @@ class KernelMemoryGuard {
   void find_and_unprotect_tensors(const T& item) {
     if constexpr (std::is_base_of_v<at::TensorBase, T>) {
       detail::unprotect_tensor_memory(item, unprotected_pointers_);
+    } else if constexpr (detail::is_std_optional_v<T>) {
+      if (item.has_value()) {
+        find_and_unprotect_tensors(*item);
+      }
     } else if constexpr (std::is_same_v<T, c10::IValue>) {
       if (item.isTensor()) {
         detail::unprotect_tensor_memory(item.toTensor(), unprotected_pointers_);
