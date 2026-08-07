@@ -188,11 +188,10 @@ class TestSTUB(TestCase):
         torch.abs(x_mcpu, out=o_mcpu[:, :, 0:6:2])
         self.assertEqual(o_cpu, o_mcpu.cpu())
 
-        # output operand with resize flag is True in TensorIterator and
-        # convert output to contiguous tensor in TensorIterator.
-        torch.abs(x_cpu, out=o_cpu[:, :, 0:6:3])
-        torch.abs(x_mcpu, out=o_mcpu[:, :, 0:6:3])
-        self.assertEqual(o_cpu, o_mcpu.cpu())
+        # Explicit mcpu out kernels require callers to provide the exact shape;
+        # resizing a temporary CPU view would not update the mcpu metadata.
+        with self.assertRaisesRegex(RuntimeError, "aten::abs.out"):
+            torch.abs(x_mcpu, out=o_mcpu[:, :, 0:6:3])
 
 
 class TestQuantization(TestCase):
@@ -523,6 +522,35 @@ class TestFallback(TestCase):
         torch.reciprocal(x, out=reciprocal_out)
         self.assertEqual(reciprocal_out.cpu(), torch.reciprocal(x.cpu()))
 
+        rsqrt = torch.rsqrt(x)
+        self.assertEqual(rsqrt.cpu(), torch.rsqrt(x.cpu()))
+
+        rsqrt_out = torch.empty_like(x)
+        torch.rsqrt(x, out=rsqrt_out)
+        self.assertEqual(rsqrt_out.cpu(), torch.rsqrt(x.cpu()))
+
+        integer_abs_input = torch.tensor([-3, 0, 4], device="mcpu")
+        integer_abs = torch.abs(integer_abs_input)
+        self.assertEqual(integer_abs.cpu(), torch.abs(integer_abs_input.cpu()))
+
+        bool_abs_input = torch.tensor([True, False], device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "not implemented for bool"):
+            torch.abs(bool_abs_input)
+
+        complex_abs_input = torch.tensor(
+            [3 + 4j, 5 + 12j], dtype=torch.complex64, device="mcpu"
+        )
+        complex_abs = torch.abs(complex_abs_input)
+        self.assertEqual(complex_abs.dtype, torch.float32)
+        self.assertEqual(complex_abs.cpu(), torch.abs(complex_abs_input.cpu()))
+
+        integer_rsqrt_input = torch.tensor([1, 4, 16], device="mcpu")
+        integer_rsqrt = torch.rsqrt(integer_rsqrt_input)
+        self.assertEqual(integer_rsqrt.dtype, torch.get_default_dtype())
+        self.assertEqual(
+            integer_rsqrt.cpu(), torch.rsqrt(integer_rsqrt_input.cpu())
+        )
+
         neg_out = torch.empty_like(x)
         torch.neg(x, out=neg_out)
         self.assertEqual(neg_out.cpu(), torch.neg(x.cpu()))
@@ -562,6 +590,12 @@ class TestFallback(TestCase):
         with self.assertRaisesRegex(RuntimeError, "aten::neg.out"):
             torch.neg(x, out=bad_unary_out)
 
+        with self.assertRaisesRegex(RuntimeError, "aten::rsqrt.out"):
+            torch.rsqrt(x, out=bad_unary_out)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::abs.out"):
+            torch.abs(x, out=bad_unary_out)
+
         with self.assertRaisesRegex(RuntimeError, "aten::sigmoid.out"):
             torch.sigmoid(x, out=bad_unary_out)
 
@@ -577,6 +611,78 @@ class TestFallback(TestCase):
         scalar_pow_out = torch.empty_like(x)
         torch.pow(2.0, x, out=scalar_pow_out)
         self.assertEqual(scalar_pow_out.cpu(), torch.pow(2.0, x.cpu()))
+
+        tensor_scalar_pow = torch.pow(x, 2)
+        self.assertEqual(tensor_scalar_pow.cpu(), torch.pow(x.cpu(), 2))
+
+        tensor_scalar_pow_out = torch.empty_like(x)
+        torch.pow(x, 2, out=tensor_scalar_pow_out)
+        self.assertEqual(tensor_scalar_pow_out.cpu(), torch.pow(x.cpu(), 2))
+
+        bitwise_lhs = torch.tensor([[True], [False]], device="mcpu")
+        bitwise_rhs = torch.tensor([[True, False]], device="mcpu")
+        bitwise_result = torch.bitwise_and(bitwise_lhs, bitwise_rhs)
+        self.assertEqual(
+            bitwise_result.cpu(),
+            torch.bitwise_and(bitwise_lhs.cpu(), bitwise_rhs.cpu()),
+        )
+
+        bitwise_out = torch.empty((2, 2), dtype=torch.bool, device="mcpu")
+        torch.bitwise_and(bitwise_lhs, bitwise_rhs, out=bitwise_out)
+        self.assertEqual(
+            bitwise_out.cpu(),
+            torch.bitwise_and(bitwise_lhs.cpu(), bitwise_rhs.cpu()),
+        )
+
+        masked_select_input = torch.arange(6, device="mcpu").reshape(2, 3)
+        masked_select_mask = torch.tensor([[True], [False]], device="mcpu")
+        masked_select_result = torch.masked_select(
+            masked_select_input, masked_select_mask
+        )
+        self.assertEqual(
+            masked_select_result.cpu(),
+            torch.masked_select(
+                masked_select_input.cpu(), masked_select_mask.cpu()
+            ),
+        )
+
+        masked_select_out = torch.empty(
+            3, dtype=masked_select_input.dtype, device="mcpu"
+        )
+        torch.masked_select(
+            masked_select_input, masked_select_mask, out=masked_select_out
+        )
+        self.assertEqual(masked_select_out.cpu(), masked_select_result.cpu())
+
+        noncontiguous_pow_input = x.t()
+        noncontiguous_pow = torch.pow(noncontiguous_pow_input, 2)
+        self.assertEqual(
+            noncontiguous_pow.cpu(), torch.pow(noncontiguous_pow_input.cpu(), 2)
+        )
+
+        bool_pow_input = torch.tensor([True, False], device="mcpu")
+        bool_pow = torch.pow(bool_pow_input, 2)
+        self.assertEqual(bool_pow.dtype, torch.int64)
+        self.assertEqual(bool_pow.cpu(), torch.pow(bool_pow_input.cpu(), 2))
+
+        with self.assertRaisesRegex(RuntimeError, "aten::pow.Tensor_Scalar_out"):
+            torch.pow(x, 2, out=torch.empty(1, device="mcpu"))
+
+        with self.assertRaisesRegex(RuntimeError, "aten::bitwise_and.Tensor_out"):
+            torch.bitwise_and(
+                bitwise_lhs,
+                bitwise_rhs,
+                out=torch.empty(1, dtype=torch.bool, device="mcpu"),
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "aten::masked_select.out"):
+            torch.masked_select(
+                masked_select_input,
+                masked_select_mask,
+                out=torch.empty(
+                    1, dtype=masked_select_input.dtype, device="mcpu"
+                ),
+            )
 
         cat_out = torch.empty(4, 2, device="mcpu")
         torch.cat([x, y], dim=0, out=cat_out)

@@ -179,12 +179,6 @@ TORCH_LIBRARY_IMPL(mcpu, PrivateUse1, m) {
 
 // The rest is for testing purposes
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
-  /*
-   abs_stub only works if abs.out is also registered with PrivateUse1, because
-   abs.default is designed to redirect directly to abs.out, which calls
-   abs_stub.
-  */
-  m.impl("abs.out", &wrapper_abs_out);
   m.impl("quantize_per_tensor", &wrapper_quantize_per_tensor);
   m.impl("_fused_sdp_choice", &wrapper__fused_sdp_choice);
   m.impl(

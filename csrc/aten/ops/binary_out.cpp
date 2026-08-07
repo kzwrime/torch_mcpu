@@ -2,6 +2,7 @@
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/add.h>
+#include <ATen/ops/bitwise_and.h>
 #include <ATen/ops/div.h>
 #include <ATen/ops/eq.h>
 #include <ATen/ops/floor_divide.h>
@@ -95,6 +96,18 @@ struct PowScalarOutKernelArgs {
   ops::TensorViewSpec exponent;
   ops::TensorViewSpec out;
   at::Tensor exponent_owner;
+};
+
+struct PowTensorScalarKernelArgs {
+  ops::TensorViewSpec self;
+  ops::TensorViewSpec out;
+  at::Scalar exponent;
+};
+
+struct BinaryKernelArgs {
+  ops::TensorViewSpec self;
+  ops::TensorViewSpec other;
+  ops::TensorViewSpec out;
 };
 
 template <ArithmeticOp op>
@@ -609,6 +622,35 @@ at::Tensor& remainder_Tensor_out(
   return out;
 }
 
+at::Tensor& bitwise_and_Tensor_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  const auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
+  ops::check_out_sizes("aten::bitwise_and.Tensor_out", out, expected_sizes);
+
+  auto args = std::make_unique<BinaryKernelArgs>(BinaryKernelArgs{
+      ops::make_cpu_view_spec(self),
+      ops::make_cpu_view_spec(other),
+      ops::make_cpu_view_spec(out)});
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::bitwise_and.Tensor_out", ([args = std::move(args)]), {
+        KernelPointerMemoryGuard guard(
+            {args->self.data, args->other.data, args->out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args->self);
+        auto cpu_other = ops::cpu_view_from_spec(args->other);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
+        at::bitwise_and_out(cpu_out, cpu_self, cpu_other);
+      });
+  return out;
+}
+
+at::Tensor bitwise_and_Tensor(const at::Tensor& self, const at::Tensor& other) {
+  auto out = empty_binary_mcpu(self, other);
+  bitwise_and_Tensor_out(self, other, out);
+  return out;
+}
+
 at::Tensor sub_Tensor(
     const at::Tensor& self,
     const at::Tensor& other,
@@ -688,6 +730,39 @@ at::Tensor& pow_Scalar_out(
   return out;
 }
 
+at::Tensor& pow_Tensor_Scalar_out(
+    const at::Tensor& self,
+    const at::Scalar& exponent,
+    at::Tensor& out) {
+  ops::check_out_sizes("aten::pow.Tensor_Scalar_out", out, self.sizes());
+
+  auto args =
+      std::make_unique<PowTensorScalarKernelArgs>(PowTensorScalarKernelArgs{
+          ops::make_cpu_view_spec(self),
+          ops::make_cpu_view_spec(out),
+          exponent});
+
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::pow.Tensor_Scalar_out", ([args = std::move(args)]), {
+        KernelPointerMemoryGuard guard({args->self.data, args->out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args->self);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
+        at::pow_out(cpu_out, cpu_self, args->exponent);
+      });
+  return out;
+}
+
+at::Tensor pow_Tensor_Scalar(
+    const at::Tensor& self,
+    const at::Scalar& exponent) {
+  auto out = at::empty_like(
+      self,
+      self.options().dtype(at::result_type(self, exponent)),
+      at::MemoryFormat::Preserve);
+  pow_Tensor_Scalar_out(self, exponent, out);
+  return out;
+}
+
 #define DEFINE_COMPARE_WRAPPERS(name, op)                                     \
   at::Tensor& name##_Tensor_out(                                              \
       const at::Tensor& self, const at::Tensor& other, at::Tensor& out) {     \
@@ -760,6 +835,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("add_.Tensor", &add_Tensor_);
   m.impl("add.Scalar", &add_Scalar);
   m.impl("add_.Scalar", &add_Scalar_);
+  m.impl("bitwise_and.Tensor", &bitwise_and_Tensor);
+  m.impl("bitwise_and.Tensor_out", &bitwise_and_Tensor_out);
   m.impl("div.Tensor", &div_Tensor);
   m.impl("div.out", &div_out);
   m.impl("div_.Tensor", &div_Tensor_);
@@ -825,6 +902,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("sub.Scalar", &sub_Scalar);
   m.impl("sub_.Scalar", &sub_Scalar_);
   m.impl("pow.Scalar_out", &pow_Scalar_out);
+  m.impl("pow.Tensor_Scalar", &pow_Tensor_Scalar);
+  m.impl("pow.Tensor_Scalar_out", &pow_Tensor_Scalar_out);
   m.impl("remainder.Tensor_out", &remainder_Tensor_out);
 }
 

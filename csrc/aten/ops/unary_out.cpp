@@ -2,22 +2,28 @@
 #include "RawPlan.h"
 
 #include <ATen/ExpandUtils.h>
+#include <ATen/ops/abs.h>
 #include <ATen/ops/bitwise_not.h>
 #include <ATen/ops/clamp.h>
 #include <ATen/ops/cos.h>
+#include <ATen/ops/count_nonzero.h>
 #include <ATen/ops/empty_like.h>
 #include <ATen/ops/masked_fill.h>
 #include <ATen/ops/masked_fill_cpu_dispatch.h>
+#include <ATen/ops/masked_select.h>
 #include <ATen/ops/ne.h>
 #include <ATen/ops/neg.h>
 #include <ATen/ops/nonzero.h>
 #include <ATen/ops/reciprocal.h>
+#include <ATen/ops/rsqrt.h>
 #include <ATen/ops/sigmoid.h>
 #include <ATen/ops/silu.h>
 #include <ATen/ops/sin.h>
 #include <ATen/ops/zero.h>
+#include <c10/core/DefaultDtype.h>
 #include <torch/library.h>
 
+#include <array>
 #include <cmath>
 #include <memory>
 
@@ -31,6 +37,23 @@ enum class RawUnaryOp {
   Sin,
   Reciprocal,
   Neg,
+};
+
+struct UnaryKernelArgs {
+  ops::TensorViewSpec self;
+  ops::TensorViewSpec out;
+};
+
+struct MaskedSelectCountArgs {
+  ops::TensorViewSpec mask;
+  c10::SmallVector<int64_t, 4> broadcast_sizes;
+  int64_t* count;
+};
+
+struct MaskedSelectWriteArgs {
+  ops::TensorViewSpec self;
+  ops::TensorViewSpec mask;
+  ops::TensorViewSpec out;
 };
 
 template <typename scalar_t>
@@ -425,6 +448,32 @@ at::Tensor& sigmoid_out(const at::Tensor& self, at::Tensor& out) {
   return out;
 }
 
+at::Tensor& abs_out(const at::Tensor& self, at::Tensor& out) {
+  ops::check_out_sizes("aten::abs.out", out, self.sizes());
+  TORCH_CHECK(
+      self.scalar_type() != at::ScalarType::Bool,
+      "aten::abs is not implemented for bool tensors");
+
+  auto args = std::make_unique<UnaryKernelArgs>(UnaryKernelArgs{
+      ops::make_cpu_view_spec(self), ops::make_cpu_view_spec(out)});
+  MCPU_LAUNCH_TIMED_KERNEL("mcpu::aten::abs.out", ([args = std::move(args)]), {
+    KernelPointerMemoryGuard guard({args->self.data, args->out.data});
+    auto cpu_self = ops::cpu_view_from_spec(args->self);
+    auto cpu_out = ops::cpu_view_from_spec(args->out);
+    at::abs_out(cpu_out, cpu_self);
+  });
+  return out;
+}
+
+at::Tensor abs(const at::Tensor& self) {
+  auto out = at::empty_like(
+      self,
+      self.options().dtype(c10::toRealValueType(self.scalar_type())),
+      at::MemoryFormat::Preserve);
+  abs_out(self, out);
+  return out;
+}
+
 at::Tensor sigmoid(const at::Tensor& self) {
   auto result_dtype =
       c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)
@@ -530,6 +579,32 @@ at::Tensor& reciprocal_out(const at::Tensor& self, at::Tensor& out) {
     auto cpu_out = ops::get_cpu_view_from_mcpu_tensor(out);
     at::reciprocal_out(cpu_out, cpu_self);
   });
+  return out;
+}
+
+at::Tensor& rsqrt_out(const at::Tensor& self, at::Tensor& out) {
+  ops::check_out_sizes("aten::rsqrt.out", out, self.sizes());
+
+  auto args = std::make_unique<UnaryKernelArgs>(UnaryKernelArgs{
+      ops::make_cpu_view_spec(self), ops::make_cpu_view_spec(out)});
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::rsqrt.out", ([args = std::move(args)]), {
+        KernelPointerMemoryGuard guard({args->self.data, args->out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args->self);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
+        at::rsqrt_out(cpu_out, cpu_self);
+      });
+  return out;
+}
+
+at::Tensor rsqrt(const at::Tensor& self) {
+  const auto result_dtype =
+      c10::isIntegralType(self.scalar_type(), /*includeBool=*/true)
+      ? c10::get_default_dtype_as_scalartype()
+      : self.scalar_type();
+  auto out = at::empty_like(
+      self, self.options().dtype(result_dtype), at::MemoryFormat::Preserve);
+  rsqrt_out(self, out);
   return out;
 }
 
@@ -689,6 +764,75 @@ at::Tensor& masked_fill__Scalar(
   return self;
 }
 
+int64_t masked_select_count(
+    const at::Tensor& mask,
+    at::IntArrayRef broadcast_sizes) {
+  TORCH_CHECK(
+      mask.scalar_type() == at::ScalarType::Bool,
+      "aten::masked_select expected a bool mask");
+
+  auto count_tensor = at::empty(
+      {}, at::TensorOptions().device(c10::DeviceType::CPU).dtype(at::kLong));
+  auto args = std::make_unique<MaskedSelectCountArgs>(MaskedSelectCountArgs{
+      ops::make_cpu_view_spec(mask),
+      c10::SmallVector<int64_t, 4>(
+          broadcast_sizes.begin(), broadcast_sizes.end()),
+      count_tensor.mutable_data_ptr<int64_t>()});
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::masked_select.count", ([args = std::move(args)]), {
+        KernelPointerMemoryGuard guard({args->mask.data});
+        auto cpu_mask = ops::cpu_view_from_spec(args->mask);
+        auto expanded_mask = cpu_mask.expand(args->broadcast_sizes);
+        *args->count = at::count_nonzero(expanded_mask).item<int64_t>();
+      });
+  at::native::mcpu::synchronize_if_mcpu(mask);
+  return count_tensor.item<int64_t>();
+}
+
+at::Tensor& masked_select_write(
+    const at::Tensor& self,
+    const at::Tensor& mask,
+    at::Tensor& out) {
+  auto args = std::make_unique<MaskedSelectWriteArgs>(MaskedSelectWriteArgs{
+      ops::make_cpu_view_spec(self),
+      ops::make_cpu_view_spec(mask),
+      ops::make_cpu_view_spec(out)});
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::masked_select", ([args = std::move(args)]), {
+        KernelPointerMemoryGuard guard(
+            {args->self.data, args->mask.data, args->out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args->self);
+        auto cpu_mask = ops::cpu_view_from_spec(args->mask);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
+        at::masked_select_out(cpu_out, cpu_self, cpu_mask);
+      });
+  return out;
+}
+
+at::Tensor masked_select(const at::Tensor& self, const at::Tensor& mask) {
+  const auto broadcast_sizes = at::infer_size(self.sizes(), mask.sizes());
+  const auto count = masked_select_count(mask, broadcast_sizes);
+  auto out = at::empty({count}, self.options());
+  return masked_select_write(self, mask, out);
+}
+
+at::Tensor& masked_select_out(
+    const at::Tensor& self,
+    const at::Tensor& mask,
+    at::Tensor& out) {
+  const auto broadcast_sizes = at::infer_size(self.sizes(), mask.sizes());
+  const auto count = masked_select_count(mask, broadcast_sizes);
+  const std::array<int64_t, 1> expected_sizes{count};
+  ops::check_out_sizes("aten::masked_select.out", out, expected_sizes);
+  TORCH_CHECK(
+      out.scalar_type() == self.scalar_type(),
+      "aten::masked_select.out expected out dtype ",
+      self.scalar_type(),
+      ", but got ",
+      out.scalar_type());
+  return masked_select_write(self, mask, out);
+}
+
 at::Tensor& ne_Scalar_out(
     const at::Tensor& self,
     const at::Scalar& other,
@@ -805,6 +949,8 @@ at::Tensor nonzero(const at::Tensor& self) {
 } // namespace
 
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+  m.impl("abs", &abs);
+  m.impl("abs.out", &abs_out);
   m.impl("bitwise_not", &bitwise_not);
   m.impl("bitwise_not.out", &bitwise_not_out);
   m.impl("bitwise_not_", &bitwise_not_);
@@ -812,6 +958,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("clamp.Tensor_out", &clamp_Tensor_out);
   m.impl("cos.out", &cos_out);
   m.impl("masked_fill_.Scalar", &masked_fill__Scalar);
+  m.impl("masked_select", &masked_select);
+  m.impl("masked_select.out", &masked_select_out);
   m.impl("ne.Scalar_out", &ne_Scalar_out);
   m.impl("neg.out", &neg_out);
   m.impl("nonzero", &nonzero);
@@ -823,6 +971,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("silu.out", &silu_out);
   m.impl("silu_", &silu_);
   m.impl("reciprocal.out", &reciprocal_out);
+  m.impl("rsqrt", &rsqrt);
+  m.impl("rsqrt.out", &rsqrt_out);
   m.impl("zero_", &zero_);
 }
 
