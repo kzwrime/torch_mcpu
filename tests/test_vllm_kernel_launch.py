@@ -357,129 +357,13 @@ class TestVllmKernelLaunch(TestCase):
             torch.tensor([4, 4, -1, 7, 7, -1, -1], dtype=torch.int32),
         )
 
-    def test_rejection_compute_local_logits_stats_matches_triton_semantics(self):
-        vocab_size = 8200
-        target_cpu = torch.linspace(
-            -4.0, 4.0, 4 * vocab_size, dtype=torch.float32
-        ).reshape(4, vocab_size)
-        target_cpu[0, 17] = 8.0
-        target_cpu[0, 8195] = 7.0
-        target_cpu[1, 31] = 9.0
-        target_cpu[1, 8197] = 10.0
-        draft_cpu = (target_cpu.reshape(2, 2, vocab_size) * 0.75).contiguous()
-
-        target = target_cpu.to(device="mcpu", dtype=torch.bfloat16)
-        draft = draft_cpu.to(device="mcpu", dtype=torch.bfloat16)
-        mapping = torch.tensor([1, 0, 1, 0], dtype=torch.int32, device="mcpu")
-        local_pos = torch.tensor([0, 1, 2, 3], dtype=torch.int32, device="mcpu")
-        temperature = torch.tensor([0.0, 0.8], device="mcpu")
-        shape = (4, 2)
-        target_argmax = torch.full(shape, -1, dtype=torch.int64, device="mcpu")
-        target_max = torch.full(shape, -123.0, device="mcpu")
-        target_sumexp = torch.full(shape, -123.0, device="mcpu")
-        draft_max = torch.full(shape, -123.0, device="mcpu")
-        draft_sumexp = torch.full(shape, -123.0, device="mcpu")
-
-        torch.ops.mcpu.vllm_rejection_compute_local_logits_stats(
-            target_argmax,
-            target_max,
-            target_sumexp,
-            draft_max,
-            draft_sumexp,
-            target,
-            draft,
-            mapping,
-            local_pos,
-            temperature,
-            vocab_size,
-            2,
-            8192,
-        )
-        torch.mcpu.synchronize()
-
-        target_ref = target.cpu().float()
-        draft_ref = draft.cpu().float()
-        # Row 0 is non-greedy and uses draft request 1, step 0.
-        for block, bounds in enumerate(((0, 8192), (8192, vocab_size))):
-            begin, end = bounds
-            target_block = target_ref[0, begin:end]
-            draft_block = draft_ref[1, 0, begin:end]
-            self.assertAlmostEqual(
-                target_max[0, block].cpu().item(),
-                target_block.max().item(),
-                places=5,
-            )
-            self.assertAlmostEqual(
-                target_sumexp[0, block].cpu().item(),
-                torch.exp(target_block - target_block.max()).sum().item(),
-                delta=2e-2,
-            )
-            self.assertAlmostEqual(
-                draft_max[0, block].cpu().item(),
-                draft_block.max().item(),
-                places=5,
-            )
-            self.assertAlmostEqual(
-                draft_sumexp[0, block].cpu().item(),
-                torch.exp(draft_block - draft_block.max()).sum().item(),
-                delta=5e-2,
-            )
-
-        # Row 1 is greedy: only target max/argmax are written.
-        self.assertEqual(
-            target_argmax[1].cpu(),
-            torch.tensor([31, 8197], dtype=torch.int64),
-        )
-        self.assertEqual(target_sumexp[1].cpu(), torch.full((2,), -123.0))
-        self.assertEqual(draft_max[1].cpu(), torch.full((2,), -123.0))
-        self.assertEqual(draft_sumexp[1].cpu(), torch.full((2,), -123.0))
-
-        # Rows 2 and 3 are bonus positions and remain completely untouched.
-        self.assertEqual(
-            target_argmax[2:].cpu(),
-            torch.full((2, 2), -1, dtype=torch.int64),
-        )
-        for output in (target_max, target_sumexp, draft_max, draft_sumexp):
-            self.assertEqual(output[2:].cpu(), torch.full((2, 2), -123.0))
-
-    def test_rejection_compute_local_logits_stats_without_draft_leaves_outputs(self):
-        target = torch.tensor(
-            [[1.0, 3.0, 2.0]], dtype=torch.float32, device="mcpu"
-        )
-        mapping = torch.tensor([0], dtype=torch.int32, device="mcpu")
-        local_pos = torch.tensor([0], dtype=torch.int32, device="mcpu")
-        temperature = torch.tensor([1.0], device="mcpu")
-        target_argmax = torch.full((1, 1), -1, dtype=torch.int64, device="mcpu")
-        target_max = torch.full((1, 1), -1.0, device="mcpu")
-        target_sumexp = torch.full((1, 1), -1.0, device="mcpu")
-        draft_max = torch.full((1, 1), -7.0, device="mcpu")
-        draft_sumexp = torch.full((1, 1), -7.0, device="mcpu")
-
-        torch.ops.mcpu.vllm_rejection_compute_local_logits_stats(
-            target_argmax,
-            target_max,
-            target_sumexp,
-            draft_max,
-            draft_sumexp,
-            target,
-            None,
-            mapping,
-            local_pos,
-            temperature,
-            3,
-            1,
-            8192,
-        )
-        torch.mcpu.synchronize()
-
-        self.assertEqual(target_max.cpu(), torch.tensor([[3.0]]))
-        self.assertAlmostEqual(
-            target_sumexp.cpu().item(),
-            (torch.exp(torch.tensor(-2.0)) + 1 + torch.exp(torch.tensor(-1.0))).item(),
-            places=5,
-        )
-        self.assertEqual(draft_max.cpu(), torch.tensor([[-7.0]]))
-        self.assertEqual(draft_sumexp.cpu(), torch.tensor([[-7.0]]))
+    def test_migrated_rejection_ops_are_not_registered_by_torch_mcpu(self):
+        for op_name in (
+            "vllm_rejection_compute_local_logits_stats",
+            "vllm_rejection_resample",
+        ):
+            with self.assertRaises(AttributeError):
+                getattr(torch.ops.mcpu, op_name)
 
     def test_rejection_v2_greedy_pipeline_handles_rejection_and_bonus(self):
         target = torch.zeros((6, 5), dtype=torch.float32, device="mcpu")
@@ -493,33 +377,19 @@ class TestVllmKernelLaunch(TestCase):
         expanded_mapping = torch.tensor(
             [0, 0, 0, 1, 1, 1], dtype=torch.int32, device="mcpu"
         )
-        local_pos = torch.tensor(
-            [0, 1, 2, 0, 1, 2], dtype=torch.int32, device="mcpu"
-        )
         temperature = torch.zeros(2, dtype=torch.float32, device="mcpu")
         seed = torch.tensor([11, 22], dtype=torch.int64, device="mcpu")
         pos = torch.arange(6, dtype=torch.int64, device="mcpu")
         block_shape = (6, 1)
-        target_argmax = torch.empty(block_shape, dtype=torch.int64, device="mcpu")
-        target_max = torch.empty(block_shape, device="mcpu")
-        target_sumexp = torch.empty(block_shape, device="mcpu")
-        draft_max = torch.empty(block_shape, device="mcpu")
-        draft_sumexp = torch.empty(block_shape, device="mcpu")
-        torch.ops.mcpu.vllm_rejection_compute_local_logits_stats(
-            target_argmax,
-            target_max,
-            target_sumexp,
-            draft_max,
-            draft_sumexp,
-            target,
-            None,
-            expanded_mapping,
-            local_pos,
-            temperature,
-            5,
-            2,
-            8192,
+        target_argmax = torch.tensor(
+            [[1], [2], [3], [4], [1], [2]],
+            dtype=torch.int64,
+            device="mcpu",
         )
+        target_max = torch.full(block_shape, 10.0, device="mcpu")
+        target_sumexp = torch.zeros(block_shape, device="mcpu")
+        draft_max = torch.zeros(block_shape, device="mcpu")
+        draft_sumexp = torch.zeros(block_shape, device="mcpu")
 
         sampled = torch.full((2, 3), -99, dtype=torch.int64, device="mcpu")
         num_sampled = torch.empty(2, dtype=torch.int32, device="mcpu")
@@ -549,30 +419,10 @@ class TestVllmKernelLaunch(TestCase):
             1,
         )
 
-        resampled_argmax = torch.full(
-            (2, 1), -1, dtype=torch.int64, device="mcpu"
+        resampled_argmax = torch.tensor(
+            [[3], [4]], dtype=torch.int64, device="mcpu"
         )
-        resampled_max = torch.full((2, 1), -1.0, device="mcpu")
-        torch.ops.mcpu.vllm_rejection_resample(
-            resampled_argmax,
-            resampled_max,
-            target,
-            target_lse,
-            None,
-            draft_lse,
-            num_sampled,
-            cu_logits,
-            expanded_mapping,
-            draft_sampled,
-            temperature,
-            seed,
-            pos,
-            None,
-            5,
-            1024,
-            False,
-            False,
-        )
+        resampled_max = torch.full((2, 1), 10.0, device="mcpu")
         torch.ops.mcpu.vllm_rejection_insert(
             sampled,
             num_sampled,
@@ -605,25 +455,17 @@ class TestVllmKernelLaunch(TestCase):
         local_pos = torch.tensor([0, 1, 2], dtype=torch.int32, device="mcpu")
         temperature = torch.ones(1, device="mcpu")
         shape = (3, 1)
-        target_argmax = torch.empty(shape, dtype=torch.int64, device="mcpu")
-        target_max = torch.empty(shape, device="mcpu")
-        target_sumexp = torch.empty(shape, device="mcpu")
-        draft_max = torch.empty(shape, device="mcpu")
-        draft_sumexp = torch.empty(shape, device="mcpu")
-        torch.ops.mcpu.vllm_rejection_compute_local_logits_stats(
-            target_argmax,
-            target_max,
-            target_sumexp,
-            draft_max,
-            draft_sumexp,
-            target,
-            draft,
-            mapping,
-            local_pos,
-            temperature,
-            3,
-            2,
-            8192,
+        target_argmax = torch.tensor(
+            [[1], [2], [0]], dtype=torch.int64, device="mcpu"
+        )
+        target_max = torch.tensor([[3.0], [3.0], [0.0]], device="mcpu")
+        block_sumexp = torch.exp(torch.tensor([-2.0, -1.0, 0.0])).sum().item()
+        target_sumexp = torch.tensor(
+            [[block_sumexp], [block_sumexp], [3.0]], device="mcpu"
+        )
+        draft_max = torch.tensor([[3.0], [3.0], [0.0]], device="mcpu")
+        draft_sumexp = torch.tensor(
+            [[block_sumexp], [block_sumexp], [0.0]], device="mcpu"
         )
         cu_logits = torch.tensor([0, 3], dtype=torch.int32, device="mcpu")
         idx_mapping = torch.tensor([0], dtype=torch.int32, device="mcpu")
