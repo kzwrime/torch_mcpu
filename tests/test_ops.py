@@ -713,6 +713,23 @@ class TestFallback(TestCase):
         target.zero_()
         self.assertEqual(target.cpu(), torch.zeros(3, 3))
 
+    def test_index_put_accepts_cpu_boolean_mask_snapshot(self):
+        target = torch.zeros(5, 3, device="mcpu")
+        values = torch.arange(1, 10, dtype=torch.float32, device="mcpu").reshape(
+            3, 3
+        )
+        mask = torch.tensor([True, False, True, True, False], device="cpu")
+        expected = target.cpu()
+        expected[mask] = values.cpu()
+
+        blocker = torch.zeros(1, dtype=torch.int64, device="mcpu")
+        torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 100)
+        target[mask] = values
+        mask.fill_(False)
+        torch.mcpu.synchronize()
+
+        self.assertEqual(target.cpu(), expected)
+
     def test_explicit_forward_ops_batch_3(self):
         x = torch.tensor([[0.0, 2.0], [3.0, 0.0]], device="mcpu")
         mask = torch.tensor([[True, False], [False, True]], device="mcpu")
