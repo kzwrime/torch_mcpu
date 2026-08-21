@@ -11,9 +11,10 @@
 
 #include <c10/core/CachingDeviceAllocator.h>
 #include <runtime/McpuKernelTiming.h>
-#include <runtime/OpenRegFunctions.h>
 #include <runtime/McpuOpTiming.h>
+#include <runtime/OpenRegFunctions.h>
 #include <runtime/OpenRegStream.h>
+#include <array>
 
 // Forward-declare allocator management functions from libtorch_mcpu.so.
 // (DeviceCachingAllocator.h transitively includes openreg.h which is not on
@@ -29,7 +30,7 @@ void resetAccumulatedStats(c10::DeviceIndex device);
 namespace c10d {
 PyObject* _create_process_group_mcpu(PyObject* self, PyObject* args);
 void registerMcpuDistributedBindings(PyObject* module);
-}
+} // namespace c10d
 
 namespace py = pybind11;
 
@@ -132,10 +133,37 @@ static PyObject* _memoryStats(PyObject* self, PyObject* arg) {
     insert(alloc.c_str(), static_cast<size_t>(s.allocated));
     insert(freed.c_str(), static_cast<size_t>(s.freed));
   };
-  insert_stat("allocated_bytes.all", stats.allocated_bytes[0]);
-  insert_stat("reserved_bytes.all", stats.reserved_bytes[0]);
-  insert_stat("active_bytes.all", stats.active_bytes[0]);
+  const std::array<std::pair<const char*, size_t>, 3> pools = {{
+      {"all", 0},
+      {"small_pool", 1},
+      {"large_pool", 2},
+  }};
+  for (const auto& [pool_name, pool_index] : pools) {
+    const auto prefix = [pool_name](const char* metric) {
+      return std::string(metric) + "." + pool_name;
+    };
+    insert_stat(prefix("allocation").c_str(), stats.allocation[pool_index]);
+    insert_stat(prefix("segment").c_str(), stats.segment[pool_index]);
+    insert_stat(prefix("active").c_str(), stats.active[pool_index]);
+    insert_stat(
+        prefix("inactive_split").c_str(), stats.inactive_split[pool_index]);
+    insert_stat(
+        prefix("allocated_bytes").c_str(), stats.allocated_bytes[pool_index]);
+    insert_stat(
+        prefix("reserved_bytes").c_str(), stats.reserved_bytes[pool_index]);
+    insert_stat(prefix("active_bytes").c_str(), stats.active_bytes[pool_index]);
+    insert_stat(
+        prefix("inactive_split_bytes").c_str(),
+        stats.inactive_split_bytes[pool_index]);
+    insert_stat(
+        prefix("requested_bytes").c_str(), stats.requested_bytes[pool_index]);
+  }
   insert("num_alloc_retries", static_cast<size_t>(stats.num_alloc_retries));
+  insert("num_ooms", static_cast<size_t>(stats.num_ooms));
+  insert(
+      "num_sync_all_streams", static_cast<size_t>(stats.num_sync_all_streams));
+  insert("num_device_alloc", static_cast<size_t>(stats.num_device_alloc));
+  insert("num_device_free", static_cast<size_t>(stats.num_device_free));
   return dict;
   END_HANDLE_TH_ERRORS
 }
@@ -301,9 +329,9 @@ static PyObject* _getKernelTiming(PyObject* self, PyObject* noargs) {
     for (Py_ssize_t j = 0; j < static_cast<Py_ssize_t>(snapshot.events.size());
          ++j) {
       const auto& event = snapshot.events[static_cast<std::size_t>(j)];
-      const auto elapsed_time =
-          event.end_time > event.begin_time ? event.end_time - event.begin_time
-                                            : 0;
+      const auto elapsed_time = event.end_time > event.begin_time
+          ? event.end_time - event.begin_time
+          : 0;
       PyObject* py_event = Py_BuildValue(
           "{s:s,s:K,s:K,s:K,s:K}",
           "name",
@@ -318,8 +346,8 @@ static PyObject* _getKernelTiming(PyObject* self, PyObject* noargs) {
           static_cast<unsigned long long>(elapsed_time));
       PyList_SET_ITEM(py_events, j, py_event);
     }
-    PyObject* py_thread = Py_BuildValue(
-        "{s:s,s:O}", "role", snapshot.role, "events", py_events);
+    PyObject* py_thread =
+        Py_BuildValue("{s:s,s:O}", "role", snapshot.role, "events", py_events);
     Py_DECREF(py_events);
     PyList_SET_ITEM(py_threads, i, py_thread);
   }
@@ -347,7 +375,10 @@ static PyMethodDef methods[] = {
      METH_NOARGS,
      nullptr},
     {"_get_default_stream", _getDefaultStream, METH_O, nullptr},
-    {"_get_stream_worker_policy", _getStreamWorkerPolicy, METH_VARARGS, nullptr},
+    {"_get_stream_worker_policy",
+     _getStreamWorkerPolicy,
+     METH_VARARGS,
+     nullptr},
     {"_set_op_timing_enabled", _setOpTimingEnabled, METH_O, nullptr},
     {"_reset_op_timing", _resetOpTiming, METH_NOARGS, nullptr},
     {"_get_op_timing", _getOpTiming, METH_NOARGS, nullptr},

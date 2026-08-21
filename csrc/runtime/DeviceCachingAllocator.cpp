@@ -339,18 +339,44 @@ class DeviceCachingAllocator {
 
     size_t original_block_size = block->size;
     size_t requested_size = block->requested_size;
+    int64_t net_change_inactive_split_blocks = 0;
+    int64_t net_change_inactive_split_size = 0;
     auto& pool = *block->pool;
     const std::array<Block*, 2> merge_candidates = {block->prev, block->next};
     for (Block* merge_candidate : merge_candidates) {
-      try_merge_blocks(block, merge_candidate, pool);
+      const auto subsumed_size = try_merge_blocks(block, merge_candidate, pool);
+      if (subsumed_size > 0) {
+        net_change_inactive_split_blocks -= 1;
+        net_change_inactive_split_size -= static_cast<int64_t>(subsumed_size);
+      }
     }
 
     active_blocks.erase(block);
     bool inserted = pool.blocks.insert(block).second;
     TORCH_INTERNAL_ASSERT_DEBUG_ONLY(inserted);
 
+    if (block->is_split()) {
+      net_change_inactive_split_blocks += 1;
+      net_change_inactive_split_size += static_cast<int64_t>(block->size);
+    }
+
     StatTypes stat_types = get_stat_types_for_pool(pool);
     for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
+      if (net_change_inactive_split_blocks > 0) {
+        stats.inactive_split[stat_type].increase(
+            static_cast<size_t>(net_change_inactive_split_blocks));
+      } else if (net_change_inactive_split_blocks < 0) {
+        stats.inactive_split[stat_type].decrease(
+            static_cast<size_t>(-net_change_inactive_split_blocks));
+      }
+      if (net_change_inactive_split_size > 0) {
+        stats.inactive_split_bytes[stat_type].increase(
+            static_cast<size_t>(net_change_inactive_split_size));
+      } else if (net_change_inactive_split_size < 0) {
+        stats.inactive_split_bytes[stat_type].decrease(
+            static_cast<size_t>(-net_change_inactive_split_size));
+      }
+      stats.active[stat_type].decrease(1);
       stats.active_bytes[stat_type].decrease(original_block_size);
       stats.requested_bytes[stat_type].decrease(requested_size);
     });
@@ -446,9 +472,11 @@ class DeviceCachingAllocator {
     if (!ptr) {
       return false;
     }
+    stats.num_device_alloc += 1;
     p.block =
         new Block(p.device(), p.stream(), size, p.pool, ptr); // [1] p.stream()
     for_each_selected_stat_type(p.stat_types, [&](size_t stat_type) {
+      stats.segment[stat_type].increase(1);
       stats.reserved_bytes[stat_type].increase(size);
     });
     TORCH_INTERNAL_ASSERT(p.block != nullptr && p.block->ptr != nullptr);
@@ -457,6 +485,7 @@ class DeviceCachingAllocator {
 
   // [MCPU-12] Removed PrivatePool* pool filter parameter
   void synchronize_and_free_events() {
+    stats.num_sync_all_streams += 1;
     for (auto& xe : mcpu_events) {
       for (auto& e : xe.second) {
         auto& event = e.first;
@@ -484,10 +513,12 @@ class DeviceCachingAllocator {
      */
     auto* pool = block->pool;
     MCPU_CHECK(orFree(block->ptr)); // [1] orFree replaces deletePrimitive
+    stats.num_device_free += 1;
     pool->blocks.erase(block);
 
     StatTypes stat_types = get_stat_types_for_pool(*pool);
     for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
+      stats.segment[stat_type].decrease(1);
       stats.reserved_bytes[stat_type].decrease(block->size);
     });
 
@@ -558,6 +589,7 @@ class DeviceCachingAllocator {
         params.block != nullptr && params.block->ptr != nullptr);
     Block* block = params.block;
     Block* remaining = nullptr;
+    const bool already_split = block->is_split();
 
     if (split_remainder) {
       remaining = block;
@@ -576,6 +608,22 @@ class DeviceCachingAllocator {
       remaining->size -= size;
       bool inserted = pool->blocks.insert(remaining).second;
       TORCH_INTERNAL_ASSERT_DEBUG_ONLY(inserted);
+
+      if (already_split) {
+        for_each_selected_stat_type(params.stat_types, [&](size_t stat_type) {
+          stats.inactive_split_bytes[stat_type].decrease(block->size);
+        });
+      } else {
+        for_each_selected_stat_type(params.stat_types, [&](size_t stat_type) {
+          stats.inactive_split[stat_type].increase(1);
+          stats.inactive_split_bytes[stat_type].increase(remaining->size);
+        });
+      }
+    } else if (already_split) {
+      for_each_selected_stat_type(params.stat_types, [&](size_t stat_type) {
+        stats.inactive_split[stat_type].decrease(1);
+        stats.inactive_split_bytes[stat_type].decrease(block->size);
+      });
     }
 
     block->allocated = true;
@@ -584,6 +632,8 @@ class DeviceCachingAllocator {
     TORCH_INTERNAL_ASSERT_DEBUG_ONLY(inserted)
 
     for_each_selected_stat_type(params.stat_types, [&](size_t stat_type) {
+      stats.allocation[stat_type].increase(1);
+      stats.active[stat_type].increase(1);
       stats.allocated_bytes[stat_type].increase(block->size);
       stats.active_bytes[stat_type].increase(block->size);
       stats.requested_bytes[stat_type].increase(block->requested_size);
@@ -666,6 +716,8 @@ class DeviceCachingAllocator {
           reserved_bytes,
           c10::Device(c10::DeviceType::PrivateUse1, device));
 
+      stats.num_ooms += 1;
+
       TORCH_CHECK_WITH(
           OutOfMemoryError,
           false,
@@ -699,6 +751,7 @@ class DeviceCachingAllocator {
 
     StatTypes stat_types = get_stat_types_for_pool(*block->pool);
     for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
+      stats.allocation[stat_type].decrease(1);
       stats.allocated_bytes[stat_type].decrease(block->size);
     });
 
@@ -765,12 +818,21 @@ class DeviceCachingAllocator {
 
     for (const auto statType :
          c10::irange(static_cast<size_t>(StatType::NUM_TYPES))) {
+      stats.allocation[statType].reset_accumulated();
+      stats.segment[statType].reset_accumulated();
+      stats.active[statType].reset_accumulated();
+      stats.inactive_split[statType].reset_accumulated();
       stats.allocated_bytes[statType].reset_accumulated();
       stats.reserved_bytes[statType].reset_accumulated();
       stats.active_bytes[statType].reset_accumulated();
+      stats.inactive_split_bytes[statType].reset_accumulated();
       stats.requested_bytes[statType].reset_accumulated();
     }
     stats.num_alloc_retries = 0;
+    stats.num_ooms = 0;
+    stats.num_sync_all_streams = 0;
+    stats.num_device_alloc = 0;
+    stats.num_device_free = 0;
   }
 
   void resetPeakStats() {
@@ -778,9 +840,14 @@ class DeviceCachingAllocator {
 
     for (const auto statType :
          c10::irange(static_cast<size_t>(StatType::NUM_TYPES))) {
+      stats.allocation[statType].reset_peak();
+      stats.segment[statType].reset_peak();
+      stats.active[statType].reset_peak();
+      stats.inactive_split[statType].reset_peak();
       stats.allocated_bytes[statType].reset_peak();
       stats.reserved_bytes[statType].reset_peak();
       stats.active_bytes[statType].reset_peak();
+      stats.inactive_split_bytes[statType].reset_peak();
       stats.requested_bytes[statType].reset_peak();
     }
   }

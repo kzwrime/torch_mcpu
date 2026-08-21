@@ -780,6 +780,38 @@ class TestCachingDeviceAllocator(TestCase):
         self.assertEqual(reserved_before, reserved_after,
                          "Reserved memory should not grow when blocks are reused")
 
+    def test_fragmentation_stats_track_split_and_merge(self):
+        """Split-block statistics distinguish cache growth from fragmentation."""
+        torch.mcpu.empty_cache()
+        torch.mcpu.reset_accumulated_memory_stats(0)
+
+        tensor = torch.empty(2 * 1024 * 1024 // 4, device="mcpu")
+        stats_allocated = torch.mcpu.memory_stats(0)
+        self.assertEqual(stats_allocated["segment.all.current"], 1)
+        self.assertEqual(stats_allocated["allocation.all.current"], 1)
+        self.assertEqual(stats_allocated["active.all.current"], 1)
+        self.assertEqual(stats_allocated["inactive_split.all.current"], 1)
+        self.assertGreater(
+            stats_allocated["inactive_split_bytes.all.current"], 0
+        )
+        self.assertEqual(
+            stats_allocated["requested_bytes.all.current"], 2 * 1024 * 1024
+        )
+
+        del tensor
+        gc.collect()
+        stats_freed = torch.mcpu.memory_stats(0)
+        self.assertEqual(stats_freed["allocation.all.current"], 0)
+        self.assertEqual(stats_freed["active.all.current"], 0)
+        self.assertEqual(stats_freed["inactive_split.all.current"], 0)
+        self.assertEqual(stats_freed["inactive_split_bytes.all.current"], 0)
+        self.assertEqual(stats_freed["segment.all.current"], 1)
+
+        torch.mcpu.empty_cache()
+        stats_released = torch.mcpu.memory_stats(0)
+        self.assertEqual(stats_released["segment.all.current"], 0)
+        self.assertEqual(stats_released["reserved_bytes.all.current"], 0)
+
 
 class TestCachingHostAllocator(TestCase):
     """Tests for the caching host (pinned) allocator (CachingHostAllocatorImpl)."""
