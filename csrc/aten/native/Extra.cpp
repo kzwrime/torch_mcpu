@@ -1,8 +1,11 @@
 #include "Extra.h"
 
+#include "aten/McpuTensorView.hpp"
 #include "runtime/McpuKernelLaunch.h"
 #include "runtime/OpenRegException.h"
 #include "runtime/OpenRegStream.h"
+
+#include <ATen/ops/scaled_dot_product_attention.h>
 
 #include <algorithm>
 #include <atomic>
@@ -93,6 +96,15 @@ _scaled_dot_product_fused_attention_overrideable(
     bool is_causal,
     bool return_debug_mask,
     std::optional<double> scale) {
+  TORCH_CHECK(
+      dropout_p == 0.0,
+      "MCPU scaled dot product attention only supports dropout_p=0.0; "
+      "the MCPU implementation is inference-only");
+  TORCH_CHECK(
+      !return_debug_mask,
+      "MCPU scaled dot product attention does not support returning a debug "
+      "attention mask");
+
   const int64_t batch_size = query.size(0);
   const int64_t num_heads = query.size(1);
   const int64_t head_dim_v = value.size(3);
@@ -104,11 +116,32 @@ _scaled_dot_product_fused_attention_overrideable(
       at::empty({batch_size, num_heads, max_seqlen_q, head_dim_v}, opts);
   auto logsumexp =
       at::empty({batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
-  auto debug_attn_mask = at::empty(
-      {batch_size, num_heads, max_seqlen_q, max_seqlen_kv},
-      opts.dtype(at::kFloat));
   auto philox_seed = at::empty({}, at::dtype(at::kLong));
   auto philox_offset = at::empty({}, at::dtype(at::kLong));
+
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::scaled_dot_product_attention",
+      ([ query, key, value, attn_bias, output, dropout_p, is_causal, scale ]),
+      {
+        at::mcpu::KernelMemoryGuard guard(query, key, value, attn_bias, output);
+        auto cpu_query = at::mcpu::get_cpu_view_from_mcpu_tensor(query);
+        auto cpu_key = at::mcpu::get_cpu_view_from_mcpu_tensor(key);
+        auto cpu_value = at::mcpu::get_cpu_view_from_mcpu_tensor(value);
+        auto cpu_attn_bias = attn_bias.has_value() && attn_bias->defined()
+            ? std::make_optional(
+                  at::mcpu::get_cpu_tensor_view_if_needed(*attn_bias))
+            : std::nullopt;
+        auto cpu_output = at::mcpu::get_cpu_view_from_mcpu_tensor(output);
+        cpu_output.copy_(at::scaled_dot_product_attention(
+            cpu_query,
+            cpu_key,
+            cpu_value,
+            cpu_attn_bias,
+            dropout_p,
+            is_causal,
+            scale,
+            /*enable_gqa=*/false));
+      });
 
   return std::make_tuple(
       output,
@@ -119,7 +152,7 @@ _scaled_dot_product_fused_attention_overrideable(
       max_seqlen_kv,
       philox_seed,
       philox_offset,
-      debug_attn_mask);
+      at::Tensor());
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
@@ -141,11 +174,10 @@ _scaled_dot_product_fused_attention_overrideable_backward(
     const at::Tensor& philox_seed,
     const at::Tensor& philox_offset,
     std::optional<double> scale) {
-  return std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>(
-      at::empty_like(query),
-      at::empty_like(key),
-      at::empty_like(value),
-      at::empty_like(attn_bias));
+  TORCH_CHECK(
+      false,
+      "MCPU scaled dot product attention backward is not implemented; "
+      "the MCPU implementation is inference-only");
 }
 
 namespace {

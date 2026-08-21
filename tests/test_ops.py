@@ -1265,13 +1265,65 @@ class TestFallback(TestCase):
 
 
 class TestSDPA(NNTestCase):
+    _SHAPE = SDPAShape(2, 3, 17, 16)
+
+    @staticmethod
+    def _make_inputs(dtype):
+        torch.manual_seed(42)
+        return tuple(torch.randn(TestSDPA._SHAPE, dtype=dtype) for _ in range(3))
+
+    def _assert_matches_cpu(
+        self,
+        dtype,
+        *,
+        attn_mask=None,
+        is_causal=False,
+        scale=None,
+    ):
+        q_cpu, k_cpu, v_cpu = TestSDPA._make_inputs(dtype)
+        reference = torch.nn.functional.scaled_dot_product_attention(
+            q_cpu,
+            k_cpu,
+            v_cpu,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=is_causal,
+            scale=scale,
+        )
+        output = torch.nn.functional.scaled_dot_product_attention(
+            q_cpu.to("mcpu"),
+            k_cpu.to("mcpu"),
+            v_cpu.to("mcpu"),
+            attn_mask=None if attn_mask is None else attn_mask.to("mcpu"),
+            dropout_p=0.0,
+            is_causal=is_causal,
+            scale=scale,
+        )
+
+        torch.mcpu.synchronize()
+        actual = output.cpu()
+        self.assertEqual(output.device.type, "mcpu")
+        self.assertEqual(output.dtype, dtype)
+        self.assertEqual(output.shape, TestSDPA._SHAPE)
+        self.assertTrue(torch.isfinite(actual.float()).all())
+        self.assertGreater(torch.count_nonzero(actual).item(), 0)
+        tolerance = 1e-5 if dtype == torch.float32 else 1e-2
+        torch.testing.assert_close(
+            actual,
+            reference,
+            atol=tolerance,
+            rtol=tolerance,
+        )
+
     @skipIfTorchDynamo()
     def test_fused_sdp_choice_privateuseone(self):
         """Test fused SDP choice for privateuse1 backend"""
-        batch_size, seq_len, num_heads, head_dim = 4, 256, 2, 128
         make_tensor = functools.partial(torch.rand, device="cpu", dtype=torch.float16)
-        shape = SDPAShape(batch_size, num_heads, seq_len, head_dim)
-        q_cpu, k_cpu, v_cpu = make_tensor(shape), make_tensor(shape), make_tensor(shape)
+        q_cpu, k_cpu, v_cpu = (
+            make_tensor(self._SHAPE),
+            make_tensor(self._SHAPE),
+            make_tensor(self._SHAPE),
+        )
         q_privateuse1 = q_cpu.to("mcpu")
         k_privateuse1 = k_cpu.to("mcpu")
         v_privateuse1 = v_cpu.to("mcpu")
@@ -1281,70 +1333,31 @@ class TestSDPA(NNTestCase):
         )
 
     def test_scaled_dot_product_fused_attention_overrideable(self):
-        """Test scaled dot product fused attention overrideable forward"""
-        batch_size, seq_len, num_heads, head_dim = 4, 256, 2, 128
-        make_tensor = functools.partial(torch.rand, device="cpu", dtype=torch.float16)
-        shape = SDPAShape(batch_size, num_heads, seq_len, head_dim)
-        q_cpu, k_cpu, v_cpu = make_tensor(shape), make_tensor(shape), make_tensor(shape)
-        q_privateuse1 = q_cpu.to("mcpu")
-        k_privateuse1 = k_cpu.to("mcpu")
-        v_privateuse1 = v_cpu.to("mcpu")
-        torch.nn.functional.scaled_dot_product_attention(
-            q_privateuse1, k_privateuse1, v_privateuse1, attn_mask=None, dropout_p=0.0
-        )
+        """MCPU SDPA forward matches the CPU implementation."""
+        for dtype in (torch.float16, torch.float32, torch.bfloat16):
+            with self.subTest(dtype=dtype):
+                self._assert_matches_cpu(dtype, scale=0.2)
 
     def test_scaled_dot_product_fused_attention_overrideable_backward(self):
-        """Test scaled dot product fused attention overrideable backward"""
-        batch_size, seq_len, num_heads, head_dim = 4, 256, 2, 128
-        make_tensor = functools.partial(
-            torch.rand, device="cpu", dtype=torch.float16, requires_grad=True
-        )
-        shape = (batch_size, num_heads, seq_len, head_dim)
-        q_cpu, k_cpu, v_cpu = make_tensor(shape), make_tensor(shape), make_tensor(shape)
-        attn_mask = make_tensor((batch_size, num_heads, seq_len, seq_len))
-        q_privateuse1 = q_cpu.to("mcpu")
-        k_privateuse1 = k_cpu.to("mcpu")
-        v_privateuse1 = v_cpu.to("mcpu")
-        attn_mask_privateuse1 = attn_mask.to("mcpu")
-        (
-            output,
-            logsumexp,
-            cum_seq_q,
-            cum_seq_k,
-            max_q,
-            max_k,
-            philox_seed,
-            philox_offset,
-            _debug_attn_mask,
-        ) = torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
-            q_privateuse1, k_privateuse1, v_privateuse1, attn_bias=attn_mask_privateuse1
-        )
+        """MCPU SDPA fails explicitly when autograd requests backward."""
+        q_cpu, k_cpu, v_cpu = self._make_inputs(torch.float32)
+        query = q_cpu.to("mcpu").requires_grad_()
+        key = k_cpu.to("mcpu").requires_grad_()
+        value = v_cpu.to("mcpu").requires_grad_()
+        output = torch.nn.functional.scaled_dot_product_attention(query, key, value)
 
-        rand_upward = torch.rand(
-            shape, device="cpu", dtype=torch.float16, requires_grad=False
-        )
-        rand_upward_privateuse1 = rand_upward.to("mcpu")
-        grad_input_mask = [True, True, True, True]
-        _grad_q, _grad_k, _grad_v, _grad_attn_mask = (
-            torch.ops.aten._scaled_dot_product_fused_attention_overrideable_backward(
-                rand_upward_privateuse1,
-                q_privateuse1,
-                k_privateuse1,
-                v_privateuse1,
-                attn_mask_privateuse1,
-                grad_input_mask,
-                output,
-                logsumexp,
-                cum_seq_q,
-                cum_seq_k,
-                max_q,
-                max_k,
-                dropout_p=0.0,
-                is_causal=False,
-                philox_seed=philox_seed,
-                philox_offset=philox_offset,
+        with self.assertRaisesRegex(RuntimeError, "backward is not implemented"):
+            output.sum().backward()
+
+    def test_scaled_dot_product_fused_attention_rejects_debug_mask(self):
+        q_cpu, k_cpu, v_cpu = self._make_inputs(torch.float32)
+        with self.assertRaisesRegex(RuntimeError, "debug attention mask"):
+            torch.ops.aten._scaled_dot_product_fused_attention_overrideable(
+                q_cpu.to("mcpu"),
+                k_cpu.to("mcpu"),
+                v_cpu.to("mcpu"),
+                return_debug_mask=True,
             )
-        )
 
 
 class TestFactoryExtended(TestCase):
@@ -2000,12 +2013,13 @@ class TestFallbackExtended(TestCase):
 class TestSDPAExtended(NNTestCase):
     @skipIfTorchDynamo()
     def test_fused_sdp_choice_with_mask(self):
-        """Test fused SDP choice with attention mask"""
-        batch_size, seq_len, num_heads, head_dim = 4, 256, 2, 128
-        make_tensor = functools.partial(torch.rand, device="cpu", dtype=torch.float16)
-        shape = SDPAShape(batch_size, num_heads, seq_len, head_dim)
-        q_cpu, k_cpu, v_cpu = make_tensor(shape), make_tensor(shape), make_tensor(shape)
-        attn_mask = make_tensor((batch_size, num_heads, seq_len, seq_len))
+        """MCPU SDPA accepts an additive mask and matches CPU numerically."""
+        q_cpu, k_cpu, v_cpu = TestSDPA._make_inputs(torch.bfloat16)
+        attn_mask = torch.zeros(
+            (TestSDPA._SHAPE.batch, 1, 1, TestSDPA._SHAPE.seq_len),
+            dtype=torch.bfloat16,
+        )
+        attn_mask[..., -3:] = -20.0
 
         q_privateuse1 = q_cpu.to("mcpu")
         k_privateuse1 = k_cpu.to("mcpu")
@@ -2016,52 +2030,39 @@ class TestSDPAExtended(NNTestCase):
             q_privateuse1, k_privateuse1, v_privateuse1, attn_mask_privateuse1
         )
         self.assertEqual(backend, SDPBackend.OVERRIDEABLE.value)
+        TestSDPA._assert_matches_cpu(
+            self,
+            torch.bfloat16,
+            attn_mask=attn_mask,
+        )
 
     @skipIfTorchDynamo()
     def test_scaled_dot_product_attention_with_dropout(self):
-        """Test scaled dot product attention with dropout"""
-        batch_size, seq_len, num_heads, head_dim = 4, 256, 2, 128
-        make_tensor = functools.partial(torch.rand, device="cpu", dtype=torch.float16)
-        shape = SDPAShape(batch_size, num_heads, seq_len, head_dim)
-        q_cpu, k_cpu, v_cpu = make_tensor(shape), make_tensor(shape), make_tensor(shape)
+        """MCPU SDPA rejects nonzero dropout for inference-only execution."""
+        q_cpu, k_cpu, v_cpu = TestSDPA._make_inputs(torch.float16)
 
         q_privateuse1 = q_cpu.to("mcpu")
         k_privateuse1 = k_cpu.to("mcpu")
         v_privateuse1 = v_cpu.to("mcpu")
 
-        output = torch.nn.functional.scaled_dot_product_attention(
-            q_privateuse1,
-            k_privateuse1,
-            v_privateuse1,
-            attn_mask=None,
-            dropout_p=0.1,
-            is_causal=False,
-        )
-        self.assertEqual(output.device.type, "mcpu")
-        self.assertEqual(output.shape, shape)
+        with self.assertRaisesRegex(RuntimeError, "dropout_p=0.0"):
+            torch.nn.functional.scaled_dot_product_attention(
+                q_privateuse1,
+                k_privateuse1,
+                v_privateuse1,
+                attn_mask=None,
+                dropout_p=0.1,
+                is_causal=False,
+            )
 
     @skipIfTorchDynamo()
     def test_scaled_dot_product_attention_is_causal(self):
-        """Test scaled dot product attention with causal mask"""
-        batch_size, seq_len, num_heads, head_dim = 4, 256, 2, 128
-        make_tensor = functools.partial(torch.rand, device="cpu", dtype=torch.float16)
-        shape = SDPAShape(batch_size, num_heads, seq_len, head_dim)
-        q_cpu, k_cpu, v_cpu = make_tensor(shape), make_tensor(shape), make_tensor(shape)
-
-        q_privateuse1 = q_cpu.to("mcpu")
-        k_privateuse1 = k_cpu.to("mcpu")
-        v_privateuse1 = v_cpu.to("mcpu")
-
-        output = torch.nn.functional.scaled_dot_product_attention(
-            q_privateuse1,
-            k_privateuse1,
-            v_privateuse1,
-            attn_mask=None,
-            dropout_p=0.0,
+        """MCPU causal SDPA matches CPU numerically."""
+        TestSDPA._assert_matches_cpu(
+            self,
+            torch.float32,
             is_causal=True,
         )
-        self.assertEqual(output.device.type, "mcpu")
-        self.assertEqual(output.shape, shape)
 
 
 class TestCopyFromAndResize(TestCase):
