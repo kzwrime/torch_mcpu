@@ -21,7 +21,9 @@ struct TensorViewSpec {
 
 struct OptionalTensorViewSpec {
   bool has_value = false;
+  bool uses_cpu_snapshot = false;
   TensorViewSpec spec;
+  at::Tensor cpu_snapshot;
 };
 
 struct IndexPutArgs {
@@ -67,7 +69,15 @@ at::Tensor cpu_view_from_spec(const TensorViewSpec& spec) {
 OptionalTensorViewSpec make_optional_cpu_view_spec(
     const std::optional<at::Tensor>& tensor) {
   if (tensor.has_value() && tensor->defined()) {
-    return OptionalTensorViewSpec{true, make_cpu_view_spec(*tensor)};
+    if (at::mcpu::is_mcpu_tensor(*tensor)) {
+      return OptionalTensorViewSpec{
+          true, false, make_cpu_view_spec(*tensor), {}};
+    }
+    TORCH_CHECK(
+        tensor->device().is_cpu(),
+        "_index_put_impl_ expects index tensors on CPU or mcpu, but got ",
+        tensor->device());
+    return OptionalTensorViewSpec{true, true, {}, tensor->clone()};
   }
   return OptionalTensorViewSpec{};
 }
@@ -78,7 +88,9 @@ c10::List<std::optional<at::Tensor>> cpu_indices_from_specs(
   cpu_indices.reserve(index_specs.size());
   for (const auto& index_spec : index_specs) {
     if (index_spec.has_value) {
-      cpu_indices.push_back(cpu_view_from_spec(index_spec.spec));
+      cpu_indices.push_back(
+          index_spec.uses_cpu_snapshot ? index_spec.cpu_snapshot
+                                       : cpu_view_from_spec(index_spec.spec));
     } else {
       cpu_indices.push_back(std::nullopt);
     }
@@ -99,7 +111,8 @@ TensorPointerList pointer_list(
     ptrs.push_back(values_spec.data);
   }
   for (const auto& index_spec : index_specs) {
-    if (index_spec.has_value && index_spec.spec.data != nullptr) {
+    if (index_spec.has_value && !index_spec.uses_cpu_snapshot &&
+        index_spec.spec.data != nullptr) {
       ptrs.push_back(index_spec.spec.data);
     }
   }
