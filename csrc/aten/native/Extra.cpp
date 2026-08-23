@@ -1,11 +1,8 @@
 #include "Extra.h"
 
-#include "aten/McpuTensorView.hpp"
 #include "runtime/McpuKernelLaunch.h"
 #include "runtime/OpenRegException.h"
 #include "runtime/OpenRegStream.h"
-
-#include <ATen/ops/scaled_dot_product_attention.h>
 
 #include <algorithm>
 #include <atomic>
@@ -58,127 +55,11 @@ at::Tensor quantize_per_tensor(
   return at::native::quantize_per_tensor(self, scale, zero_point, dtype);
 }
 
-int64_t _fused_sdp_choice(
-    const at::Tensor& query,
-    const at::Tensor& key,
-    const at::Tensor& value,
-    const std::optional<at::Tensor>& attn_mask,
-    double dropout_p,
-    bool is_causal,
-    std::optional<double> scale,
-    bool enable_gqa) {
-  auto backend = sdp::SDPBackend::overrideable;
-  return static_cast<int64_t>(backend);
-}
-
 void quantize_tensor_per_tensor_affine_stub(
     const at::Tensor& rtensor,
     at::Tensor& qtensor,
     double scale,
     int64_t zero_point) {}
-
-std::tuple<
-    at::Tensor,
-    at::Tensor,
-    at::Tensor,
-    at::Tensor,
-    c10::SymInt,
-    c10::SymInt,
-    at::Tensor,
-    at::Tensor,
-    at::Tensor>
-_scaled_dot_product_fused_attention_overrideable(
-    const at::Tensor& query,
-    const at::Tensor& key,
-    const at::Tensor& value,
-    const std::optional<at::Tensor>& attn_bias,
-    double dropout_p,
-    bool is_causal,
-    bool return_debug_mask,
-    std::optional<double> scale) {
-  TORCH_CHECK(
-      dropout_p == 0.0,
-      "MCPU scaled dot product attention only supports dropout_p=0.0; "
-      "the MCPU implementation is inference-only");
-  TORCH_CHECK(
-      !return_debug_mask,
-      "MCPU scaled dot product attention does not support returning a debug "
-      "attention mask");
-
-  const int64_t batch_size = query.size(0);
-  const int64_t num_heads = query.size(1);
-  const int64_t head_dim_v = value.size(3);
-  const int64_t max_seqlen_q = query.size(2);
-  const int64_t max_seqlen_kv = key.size(2);
-
-  auto opts = query.options();
-  auto output =
-      at::empty({batch_size, num_heads, max_seqlen_q, head_dim_v}, opts);
-  auto logsumexp =
-      at::empty({batch_size, num_heads, max_seqlen_q}, opts.dtype(at::kFloat));
-  auto philox_seed = at::empty({}, at::dtype(at::kLong));
-  auto philox_offset = at::empty({}, at::dtype(at::kLong));
-
-  MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::scaled_dot_product_attention",
-      ([ query, key, value, attn_bias, output, dropout_p, is_causal, scale ]),
-      {
-        at::mcpu::KernelMemoryGuard guard(query, key, value, attn_bias, output);
-        auto cpu_query = at::mcpu::get_cpu_view_from_mcpu_tensor(query);
-        auto cpu_key = at::mcpu::get_cpu_view_from_mcpu_tensor(key);
-        auto cpu_value = at::mcpu::get_cpu_view_from_mcpu_tensor(value);
-        auto cpu_attn_bias = attn_bias.has_value() && attn_bias->defined()
-            ? std::make_optional(
-                  at::mcpu::get_cpu_tensor_view_if_needed(*attn_bias))
-            : std::nullopt;
-        auto cpu_output = at::mcpu::get_cpu_view_from_mcpu_tensor(output);
-        cpu_output.copy_(at::scaled_dot_product_attention(
-            cpu_query,
-            cpu_key,
-            cpu_value,
-            cpu_attn_bias,
-            dropout_p,
-            is_causal,
-            scale,
-            /*enable_gqa=*/false));
-      });
-
-  return std::make_tuple(
-      output,
-      logsumexp,
-      at::Tensor(),
-      at::Tensor(),
-      max_seqlen_q,
-      max_seqlen_kv,
-      philox_seed,
-      philox_offset,
-      at::Tensor());
-}
-
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor>
-_scaled_dot_product_fused_attention_overrideable_backward(
-    const at::Tensor& grad_out,
-    const at::Tensor& query,
-    const at::Tensor& key,
-    const at::Tensor& value,
-    const at::Tensor& attn_bias,
-    std::array<bool, 4> grad_input_mask,
-    const at::Tensor& out,
-    const at::Tensor& logsumexp,
-    const at::Tensor& cum_seq_q,
-    const at::Tensor& cum_seq_k,
-    int64_t max_q,
-    int64_t max_k,
-    double dropout_p,
-    bool is_causal,
-    const at::Tensor& philox_seed,
-    const at::Tensor& philox_offset,
-    std::optional<double> scale) {
-  TORCH_CHECK(
-      false,
-      "MCPU scaled dot product attention backward is not implemented; "
-      "the MCPU implementation is inference-only");
-}
 
 namespace {
 struct CustomAutogradFnReturnsSelf
