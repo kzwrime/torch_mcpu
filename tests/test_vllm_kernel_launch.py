@@ -8,6 +8,86 @@ from torch.testing._internal.common_utils import TestCase, run_tests
 
 
 class TestVllmKernelLaunch(TestCase):
+    def test_dflash2_selector_walk_greedy_and_invalid_request(self):
+        scores = torch.full(
+            (2, 3, 3, 3), -10.0, dtype=torch.float32, device="mcpu"
+        )
+        scores[0, 0, 0] = torch.tensor([1.0, 2.0, 3.0], device="mcpu")
+        scores[0, 1, 2] = torch.tensor([5.0, 7.0, 6.0], device="mcpu")
+        scores[0, 2, 1] = torch.tensor([9.0, 8.0, 7.0], device="mcpu")
+        candidates = torch.tensor(
+            [
+                [[10, 11, 12], [20, 21, 22], [30, 31, 32]],
+                [[40, 41, 42], [50, 51, 52], [60, 61, 62]],
+            ],
+            dtype=torch.int64,
+            device="mcpu",
+        )
+        tokens = torch.full((2, 3), -1, dtype=torch.int64, device="mcpu")
+        realized = torch.full((2, 3, 3), -99.0, device="mcpu")
+        req_state = torch.tensor(
+            [0, 0, 0, -1, -1, -1], dtype=torch.int32, device="mcpu"
+        )
+
+        torch.ops.mcpu.vllm_dflash2_selector_walk(
+            scores,
+            candidates,
+            torch.arange(6, dtype=torch.int64, device="mcpu"),
+            req_state,
+            torch.zeros(2, device="mcpu"),
+            torch.zeros(2, dtype=torch.int64, device="mcpu"),
+            tokens,
+            realized,
+            2,
+            3,
+            3,
+            False,
+            False,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(tokens.cpu()[0], torch.tensor([12, 21, 30]))
+        self.assertEqual(tokens.cpu()[1], torch.tensor([-1, -1, -1]))
+        self.assertEqual(realized.cpu()[0, 0], torch.tensor([1.0, 2.0, 3.0]))
+        self.assertEqual(realized.cpu()[0, 1], torch.tensor([5.0, 7.0, 6.0]))
+        self.assertEqual(realized.cpu()[0, 2], torch.tensor([9.0, 8.0, 7.0]))
+        self.assertEqual(realized.cpu()[1], torch.full((3, 3), -99.0))
+
+    def test_dflash2_cache_draft_logits_updates_only_valid_rows(self):
+        draft_logits = torch.full((2, 2, 8), 42.0, device="mcpu")
+        cached = torch.tensor(
+            [[[0, 1], [0, 1]], [[0, 1], [0, 1]]],
+            dtype=torch.int64,
+            device="mcpu",
+        )
+        candidates = torch.tensor(
+            [[[2, 3], [4, 5]], [[6, 7], [2, 4]]],
+            dtype=torch.int64,
+            device="mcpu",
+        )
+        scores = torch.tensor(
+            [[[0.2, 0.3], [0.4, 0.5]], [[0.6, 0.7], [0.8, 0.9]]],
+            device="mcpu",
+        )
+        req_state = torch.tensor(
+            [1, 1, -1, -1], dtype=torch.int32, device="mcpu"
+        )
+
+        torch.ops.mcpu.vllm_dflash2_cache_draft_logits(
+            draft_logits, cached, candidates, scores, req_state, 4, 2, 2
+        )
+        torch.mcpu.synchronize()
+
+        actual_logits = draft_logits.cpu()
+        actual_cached = cached.cpu()
+        self.assertEqual(actual_logits[0], torch.full((2, 8), 42.0))
+        self.assertTrue(torch.isneginf(actual_logits[1, :, :2]).all())
+        self.assertEqual(actual_logits[1, 0, 2:4], torch.tensor([0.2, 0.3]))
+        self.assertEqual(actual_logits[1, 1, 4:6], torch.tensor([0.4, 0.5]))
+        self.assertEqual(
+            actual_cached[1], torch.tensor([[2, 3], [4, 5]], dtype=torch.int64)
+        )
+
     def test_autoregressive_prepare_prefill_inputs_matches_triton(self):
         last_indices = torch.full((4,), -1, dtype=torch.int64, device="mcpu")
         current_step = torch.tensor(3, dtype=torch.int64, device="mcpu")
