@@ -70,7 +70,7 @@ inline float block_global_lse(
   return global_max + std::log(scaled_sum);
 }
 
-template <typename scalar_t>
+template <typename target_t, typename draft_t>
 void vllm_rejection_cumulative_log_p_typed(
     at::Tensor& output,
     const at::Tensor& target_logits,
@@ -85,12 +85,12 @@ void vllm_rejection_cumulative_log_p_typed(
     const at::Tensor& temperature,
     int64_t vocab_num_blocks) {
   auto* out = output.data_ptr<float>();
-  const auto* target = target_logits.data_ptr<scalar_t>();
+  const auto* target = target_logits.data_ptr<target_t>();
   const auto* target_max = target_local_max.data_ptr<float>();
   const auto* target_sum = target_local_sumexp.data_ptr<float>();
   const auto* sampled = draft_sampled.data_ptr<int32_t>();
   const auto* draft =
-      draft_logits ? draft_logits->data_ptr<scalar_t>() : nullptr;
+      draft_logits ? draft_logits->data_ptr<draft_t>() : nullptr;
   const auto* draft_max = draft_local_max.data_ptr<float>();
   const auto* draft_sum = draft_local_sumexp.data_ptr<float>();
   const auto* cu = cu_num_logits.data_ptr<int32_t>();
@@ -146,7 +146,8 @@ void vllm_rejection_cumulative_log_p_typed(
               vocab_num_blocks);
           draft_lp =
               static_cast<float>(
-                  draft[state * draft_stride0 + step * draft_stride1 + token]) -
+                  draft[state * draft_stride0 + step * draft_stride1 + token]) /
+                  temp[state] -
               draft_lse;
         }
         log_p = std::min(log_p + target_lp - draft_lp, 0.0f);
@@ -154,6 +155,54 @@ void vllm_rejection_cumulative_log_p_typed(
       }
     }
   });
+}
+
+template <typename target_t>
+void dispatch_rejection_cumulative_log_p_draft(
+    at::Tensor& output,
+    const at::Tensor& target_logits,
+    const at::Tensor& target_local_max,
+    const at::Tensor& target_local_sumexp,
+    const at::Tensor& draft_sampled,
+    const std::optional<at::Tensor>& draft_logits,
+    const at::Tensor& draft_local_max,
+    const at::Tensor& draft_local_sumexp,
+    const at::Tensor& cu_num_logits,
+    const at::Tensor& idx_mapping,
+    const at::Tensor& temperature,
+    int64_t vocab_num_blocks) {
+#define CALL_CUMULATIVE(DRAFT_T)                            \
+  vllm_rejection_cumulative_log_p_typed<target_t, DRAFT_T>( \
+      output,                                               \
+      target_logits,                                        \
+      target_local_max,                                     \
+      target_local_sumexp,                                  \
+      draft_sampled,                                        \
+      draft_logits,                                         \
+      draft_local_max,                                      \
+      draft_local_sumexp,                                   \
+      cu_num_logits,                                        \
+      idx_mapping,                                          \
+      temperature,                                          \
+      vocab_num_blocks)
+  if (!draft_logits) {
+    CALL_CUMULATIVE(target_t);
+  } else {
+    switch (draft_logits->scalar_type()) {
+      case at::kFloat:
+        CALL_CUMULATIVE(float);
+        break;
+      case at::kHalf:
+        CALL_CUMULATIVE(at::Half);
+        break;
+      case at::kBFloat16:
+        CALL_CUMULATIVE(at::BFloat16);
+        break;
+      default:
+        TORCH_CHECK(false, "unsupported draft logits dtype");
+    }
+  }
+#undef CALL_CUMULATIVE
 }
 
 void vllm_rejection_cumulative_log_p_impl(
@@ -173,7 +222,7 @@ void vllm_rejection_cumulative_log_p_impl(
   VLLM_MCPU_CHECK(
       output.numel() == target_logits.size(0), "output size mismatch");
   VLLM_MCPU_DISPATCH_FLOAT(target_logits, "vllm_rejection_cumulative_log_p", {
-    vllm_rejection_cumulative_log_p_typed<scalar_t>(
+    dispatch_rejection_cumulative_log_p_draft<scalar_t>(
         output,
         target_logits,
         target_local_max,
@@ -189,7 +238,7 @@ void vllm_rejection_cumulative_log_p_impl(
   });
 }
 
-template <typename scalar_t>
+template <typename target_t, typename draft_t>
 void vllm_rejection_local_residual_mass_typed(
     at::Tensor& output,
     const at::Tensor& cumulative_log_p,
@@ -206,8 +255,8 @@ void vllm_rejection_local_residual_mass_typed(
     int64_t num_speculative_steps) {
   auto* out = output.data_ptr<float>();
   const auto* cumulative = cumulative_log_p.data_ptr<float>();
-  const auto* target = target_logits.data_ptr<scalar_t>();
-  const auto* draft = draft_logits.data_ptr<scalar_t>();
+  const auto* target = target_logits.data_ptr<target_t>();
+  const auto* draft = draft_logits.data_ptr<draft_t>();
   const auto* target_max = target_local_max.data_ptr<float>();
   const auto* target_sum = target_local_sumexp.data_ptr<float>();
   const auto* draft_max = draft_local_max.data_ptr<float>();
@@ -271,13 +320,60 @@ void vllm_rejection_local_residual_mass_typed(
             target_lse);
         const float ms = std::exp(
             static_cast<float>(
-                draft[state * draft_stride0 + step * draft_stride1 + token]) -
+                draft[state * draft_stride0 + step * draft_stride1 + token]) /
+                temp[state] -
             draft_lse);
         partial += std::max(p * mb - ms, 0.0f);
       }
       out[row * output_stride + block] = partial;
     }
   });
+}
+
+template <typename target_t>
+void dispatch_rejection_local_residual_mass_draft(
+    at::Tensor& output,
+    const at::Tensor& cumulative_log_p,
+    const at::Tensor& target_logits,
+    const at::Tensor& target_local_max,
+    const at::Tensor& target_local_sumexp,
+    const at::Tensor& draft_logits,
+    const at::Tensor& draft_local_max,
+    const at::Tensor& draft_local_sumexp,
+    const at::Tensor& expanded_idx_mapping,
+    const at::Tensor& expanded_local_pos,
+    const at::Tensor& temperature,
+    int64_t vocab_size,
+    int64_t num_speculative_steps) {
+#define CALL_RESIDUAL(DRAFT_T)                                 \
+  vllm_rejection_local_residual_mass_typed<target_t, DRAFT_T>( \
+      output,                                                  \
+      cumulative_log_p,                                        \
+      target_logits,                                           \
+      target_local_max,                                        \
+      target_local_sumexp,                                     \
+      draft_logits,                                            \
+      draft_local_max,                                         \
+      draft_local_sumexp,                                      \
+      expanded_idx_mapping,                                    \
+      expanded_local_pos,                                      \
+      temperature,                                             \
+      vocab_size,                                              \
+      num_speculative_steps)
+  switch (draft_logits.scalar_type()) {
+    case at::kFloat:
+      CALL_RESIDUAL(float);
+      break;
+    case at::kHalf:
+      CALL_RESIDUAL(at::Half);
+      break;
+    case at::kBFloat16:
+      CALL_RESIDUAL(at::BFloat16);
+      break;
+    default:
+      TORCH_CHECK(false, "unsupported draft logits dtype");
+  }
+#undef CALL_RESIDUAL
 }
 
 void vllm_rejection_local_residual_mass_impl(
@@ -297,7 +393,7 @@ void vllm_rejection_local_residual_mass_impl(
   VLLM_MCPU_CHECK_DTYPE(output, at::kFloat, "local_residual_mass");
   VLLM_MCPU_DISPATCH_FLOAT(
       target_logits, "vllm_rejection_local_residual_mass", {
-        vllm_rejection_local_residual_mass_typed<scalar_t>(
+        dispatch_rejection_local_residual_mass_draft<scalar_t>(
             output,
             cumulative_log_p,
             target_logits,
@@ -314,7 +410,7 @@ void vllm_rejection_local_residual_mass_impl(
       });
 }
 
-template <typename scalar_t>
+template <typename target_t, typename draft_t>
 void launch_vllm_rejection(
     at::Tensor& sampled,
     at::Tensor& rejected_steps,
@@ -341,13 +437,13 @@ void launch_vllm_rejection(
   auto* rejected_ptr = rejected_steps.data_ptr<int32_t>();
   auto* target_rejected_ptr = target_rejected_lse.data_ptr<float>();
   auto* draft_rejected_ptr = draft_rejected_lse.data_ptr<float>();
-  const auto* target_ptr = target_logits.data_ptr<scalar_t>();
+  const auto* target_ptr = target_logits.data_ptr<target_t>();
   const auto* target_argmax_ptr = target_local_argmax.data_ptr<int64_t>();
   const auto* target_max_ptr = target_local_max.data_ptr<float>();
   const auto* target_sumexp_ptr = target_local_sumexp.data_ptr<float>();
   const auto* draft_sampled_ptr = draft_sampled.data_ptr<int32_t>();
   const auto* draft_ptr =
-      draft_logits ? draft_logits->data_ptr<scalar_t>() : nullptr;
+      draft_logits ? draft_logits->data_ptr<draft_t>() : nullptr;
   const auto* draft_max_ptr = draft_local_max.data_ptr<float>();
   const auto* draft_sumexp_ptr = draft_local_sumexp.data_ptr<float>();
   const auto* cu_ptr = cu_num_logits.data_ptr<int32_t>();
@@ -479,7 +575,8 @@ void launch_vllm_rejection(
             const float draft_logit =
                 static_cast<float>(draft_ptr
                                        [req_state * draft_stride_0 +
-                                        step * draft_stride_1 + draft_token]);
+                                        step * draft_stride_1 + draft_token]) /
+                temp;
             draft_lse = block_global_lse(
                 draft_max_ptr,
                 draft_max_stride,
@@ -523,6 +620,72 @@ void launch_vllm_rejection(
       draft_rejected_ptr[req] = draft_lse;
     }
   });
+}
+
+template <typename target_t>
+void dispatch_vllm_rejection_draft(
+    at::Tensor& sampled,
+    at::Tensor& rejected_steps,
+    at::Tensor& target_rejected_lse,
+    at::Tensor& draft_rejected_lse,
+    const at::Tensor& target_logits,
+    const at::Tensor& target_local_argmax,
+    const at::Tensor& target_local_max,
+    const at::Tensor& target_local_sumexp,
+    const at::Tensor& draft_sampled,
+    const std::optional<at::Tensor>& draft_logits,
+    const at::Tensor& draft_local_max,
+    const at::Tensor& draft_local_sumexp,
+    const at::Tensor& cu_num_logits,
+    const at::Tensor& idx_mapping,
+    const at::Tensor& temperature,
+    const at::Tensor& seed,
+    const at::Tensor& pos,
+    const std::optional<at::Tensor>& cumulative_log_p,
+    const std::optional<at::Tensor>& local_residual_mass,
+    bool use_block_verification,
+    int64_t vocab_num_blocks) {
+#define CALL_REJECTION(DRAFT_T)             \
+  launch_vllm_rejection<target_t, DRAFT_T>( \
+      sampled,                              \
+      rejected_steps,                       \
+      target_rejected_lse,                  \
+      draft_rejected_lse,                   \
+      target_logits,                        \
+      target_local_argmax,                  \
+      target_local_max,                     \
+      target_local_sumexp,                  \
+      draft_sampled,                        \
+      draft_logits,                         \
+      draft_local_max,                      \
+      draft_local_sumexp,                   \
+      cu_num_logits,                        \
+      idx_mapping,                          \
+      temperature,                          \
+      seed,                                 \
+      pos,                                  \
+      cumulative_log_p,                     \
+      local_residual_mass,                  \
+      use_block_verification,               \
+      vocab_num_blocks)
+  if (!draft_logits) {
+    CALL_REJECTION(target_t);
+  } else {
+    switch (draft_logits->scalar_type()) {
+      case at::kFloat:
+        CALL_REJECTION(float);
+        break;
+      case at::kHalf:
+        CALL_REJECTION(at::Half);
+        break;
+      case at::kBFloat16:
+        CALL_REJECTION(at::BFloat16);
+        break;
+      default:
+        TORCH_CHECK(false, "unsupported draft logits dtype");
+    }
+  }
+#undef CALL_REJECTION
 }
 
 void vllm_rejection_impl(
@@ -586,13 +749,10 @@ void vllm_rejection_impl(
           target_local_max.size(0) == num_logits &&
           target_local_max.size(1) == vocab_num_blocks,
       "rejection block-stat shapes mismatch");
-  if (draft_logits) {
-    VLLM_MCPU_CHECK(
-        draft_logits->scalar_type() == target_logits.scalar_type(),
-        "draft and target logits must have the same dtype");
-  }
+  if (draft_logits)
+    VLLM_MCPU_CHECK_FLOAT(*draft_logits, "draft_logits");
   VLLM_MCPU_DISPATCH_FLOAT(target_logits, "vllm_rejection", {
-    launch_vllm_rejection<scalar_t>(
+    dispatch_vllm_rejection_draft<scalar_t>(
         sampled,
         rejected_steps,
         target_rejected_lse,

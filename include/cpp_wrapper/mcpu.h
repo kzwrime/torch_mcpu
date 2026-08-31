@@ -29,6 +29,7 @@
 #include <ATen/ops/copy_native.h>
 #include <ATen/ops/embedding.h>
 #include <ATen/ops/empty_like.h>
+#include <ATen/ops/index.h>
 #include <ATen/ops/quantize_per_tensor_native.h>
 #include <ATen/ops/resize_as_native.h>
 #include <ATen/ops/resize_native.h>
@@ -401,6 +402,21 @@ inline AOTITorchError aoti_torch_mcpu_embedding(AtenTensorHandle weight, AtenTen
             at::Tensor cpu_out = torch_mcpu_cpp_wrapper_detail::tensor_from_meta(args->out);
             at::embedding_out(cpu_out, cpu_weight, cpu_indices, args->padding_idx, args->scale_grad_by_freq, args->sparse);
         });
+    });
+}
+
+inline AOTITorchError aoti_torch_mcpu_index_Tensor(AtenTensorHandle self, const AtenTensorHandle** indices, int64_t indices_len_, AtenTensorHandle* ret0) {
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        auto resolved_indices =
+            resolve_tensor_list_dispatch_flags(indices, indices_len_);
+        c10::List<std::optional<at::Tensor>> index_list;
+        index_list.reserve(resolved_indices.size());
+        for (auto& index : resolved_indices) {
+            index_list.push_back(std::move(index));
+        }
+        auto tmp_result = at::index(
+            resolve_tensor_dispatch_flags(self), index_list);
+        *ret0 = new_tensor_handle(std::move(tmp_result));
     });
 }
 
