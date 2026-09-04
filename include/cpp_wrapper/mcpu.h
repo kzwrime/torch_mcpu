@@ -373,6 +373,21 @@ inline AOTITorchError aoti_torch_mcpu_cat(const AtenTensorHandle* tensors, int64
     });
 }
 
+inline AOTITorchError aoti_torch_mcpu_constant_pad_nd(
+    AtenTensorHandle self,
+    const int64_t* pad,
+    int64_t pad_len,
+    double value,
+    AtenTensorHandle* ret0) {
+    AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+        auto tmp_result = at::constant_pad_nd(
+            resolve_tensor_dispatch_flags(self),
+            at::IntArrayRef(pad, pad_len),
+            value);
+        *ret0 = new_tensor_handle(std::move(tmp_result));
+    });
+}
+
 inline AOTITorchError aoti_torch_mcpu_embedding(AtenTensorHandle weight, AtenTensorHandle indices, int64_t padding_idx, bool scale_grad_by_freq, bool sparse, AtenTensorHandle* ret0) {
     at::Tensor* t_weight = tensor_handle_to_tensor_pointer(weight);
     at::Tensor* t_indices = tensor_handle_to_tensor_pointer(indices);

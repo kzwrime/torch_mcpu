@@ -451,6 +451,30 @@ class TestMcpuCompile(unittest.TestCase):
         self.assertIn("aoti_torch_mcpu_mul_Tensor", code_text)
         self.assertIn("aoti_torch_mcpu_add_Tensor", code_text)
 
+    def test_cpp_wrapper_keeps_constant_pad_nd_on_mcpu_stream(self):
+        """Padding must dispatch to MCPU instead of running a raw host loop."""
+
+        def pad_rows(x):
+            return torch.nn.functional.pad(x, (0, 0, 0, 1))
+
+        x = torch.arange(24, device="cpu", dtype=torch.bfloat16).reshape(3, 8)
+        x = x.to("mcpu")
+        expected = pad_rows(x.to("cpu"))
+
+        with inductor_config.patch({
+            "cpp_wrapper": True,
+            "fallback_by_default": False,
+            "post_grad_custom_post_pass": None,
+        }):
+            opt_fn = torch.compile(pad_rows, fullgraph=True)
+            res, code = run_and_get_cpp_code(opt_fn, x)
+
+        code_text = "\n".join(code) if isinstance(code, (list, tuple)) else code
+        self.assertEqual(res.device.type, "mcpu")
+        self.assertTrue(torch.equal(expected, res.to("cpu")))
+        self.assertNotIn("cpp_fused_constant_pad_nd", code_text)
+        self.assertIn("constant_pad_nd", code_text)
+
     def test_cpp_wrapper_fuses_sigmoid_and_add_with_torch_xcpu(self):
         """mcpu post-grad pass replaces add/mul/sigmoid with torch_xcpu op."""
 

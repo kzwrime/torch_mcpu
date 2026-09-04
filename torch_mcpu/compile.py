@@ -94,6 +94,7 @@ def _register_mcpu_aoti_fallback_shims() -> None:
     from torchgen.aoti.fallback_ops import inductor_fallback_ops
 
     inductor_fallback_ops.setdefault("aten.cat.default", {})
+    inductor_fallback_ops.setdefault("aten.constant_pad_nd.default", {})
     inductor_fallback_ops.setdefault("aten.embedding.default", {})
     inductor_fallback_ops.setdefault("aten.index.Tensor", {})
     inductor_fallback_ops.setdefault("aten.index_select.default", {})

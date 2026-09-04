@@ -86,6 +86,11 @@ _MCPU_HOST_LOOP_FALLBACK_OPS = frozenset(
         torch.ops.aten.ones.names,
         torch.ops.aten.ones_like.default,
         torch.ops.aten.cat.default,
+        # Padding is a data-moving compute op even though its schema is not
+        # tagged pointwise/reduction.  Letting Inductor lower it with the CPU
+        # C++ scheduler emits a raw ``cpp_fused_constant_pad_nd`` loop over
+        # PrivateUse1 storage, bypassing the MCPU stream entirely.
+        torch.ops.aten.constant_pad_nd.default,
         torch.ops.aten.zero.default,
         torch.ops.aten.zeros.default,
         torch.ops.aten.zeros.names,

@@ -1268,6 +1268,39 @@ class TestFallback(TestCase):
             torch.zeros(2, 3).index_copy_(1, index.cpu(), source.cpu()),
         )
 
+    def test_constant_pad_nd_uses_mcpu_stream(self):
+        x_cpu = torch.arange(24, dtype=torch.bfloat16).reshape(3, 8)
+        x = x_cpu.to("mcpu")
+
+        result = torch.ops.aten.constant_pad_nd.default(x, [1, 2, 1, 0], -3)
+        expected = torch.ops.aten.constant_pad_nd.default(
+            x_cpu, [1, 2, 1, 0], -3
+        )
+        self.assertEqual(result.device.type, "mcpu")
+        self.assertEqual(result.cpu(), expected)
+
+        cropped = torch.ops.aten.constant_pad_nd.default(x, [-1, 2], 5)
+        expected_cropped = torch.ops.aten.constant_pad_nd.default(
+            x_cpu, [-1, 2], 5
+        )
+        self.assertEqual(cropped.cpu(), expected_cropped)
+
+        out = torch.empty(expected.shape, device="mcpu", dtype=x.dtype)
+        torch.ops.aten.constant_pad_nd.out(x, [1, 2, 1, 0], -3, out=out)
+        self.assertEqual(out.cpu(), expected)
+
+        stream = torch.Stream(device="mcpu")
+        blocker = torch.empty(1, dtype=torch.int64, device="mcpu")
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 100)
+            ordered = torch.ops.aten.constant_pad_nd.default(x, [0, 1], 7)
+            self.assertFalse(stream.query())
+        stream.synchronize()
+        self.assertEqual(
+            ordered.cpu(),
+            torch.ops.aten.constant_pad_nd.default(x_cpu, [0, 1], 7),
+        )
+
     def test_tensorlist_op_does_not_fallback_to_cpu(self):
         v_mcpu = torch.Tensor([1, 2, 3]).to("mcpu")
         x = (v_mcpu, v_mcpu)
