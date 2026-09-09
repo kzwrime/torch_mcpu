@@ -284,6 +284,50 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
             int_array, writeline, known_statically
         )
 
+    def _generate_kernel_call_helper(
+        self,
+        kernel_name,
+        call_args,
+        *,
+        device=None,
+        triton=True,
+        **kwargs,
+    ):
+        device = device or V.graph.get_current_device_or_throw()
+        if not triton and device.type in {"mcpu", "privateuseone"}:
+            # Inductor may introduce ComputedBuffers after the post-grad
+            # fallback pass (layout materialization and mutation copy-back are
+            # common examples).  Those become host C++ loops over raw device
+            # pointers.  Make the storage CPU-accessible for the duration of
+            # such a generated kernel, just like native mcpu/torch_xcpu
+            # kernels do with KernelPointerMemoryGuard.
+            arg_types = kwargs["arg_types"]
+            captures = []
+            kernel_args = []
+            for idx, (arg, arg_type) in enumerate(zip(call_args, arg_types)):
+                name = f"kernel_arg_{idx}"
+                value = (
+                    f"({arg_type})({arg}.data_ptr())"
+                    if isinstance(arg_type, str) and "*" in arg_type
+                    else str(arg)
+                )
+                captures.append(f"{name} = {value}")
+                kernel_args.append(name)
+            self.writeline(
+                f"at::mcpu::launch_kernel([{', '.join(captures)}]() mutable {{"
+            )
+            self.writeline("at::mcpu::KernelAllMemoryGuard guard;")
+            self.writeline(self.wrap_kernel_call(kernel_name, kernel_args))
+            self.writeline("});")
+            return
+        super()._generate_kernel_call_helper(
+            kernel_name,
+            call_args,
+            device=device,
+            triton=triton,
+            **kwargs,
+        )
+
     @staticmethod
     def create(is_subgraph, subgraph_name, parent_wrapper, partition_signatures=None):
         # The base-class create() hard-codes CppWrapperCpu(); override it
@@ -331,6 +375,15 @@ class McpuScheduling(BaseScheduling):
 
     def can_fuse_horizontal(self, node1, node2):
         return self._scheduling.can_fuse_horizontal(node1, node2)
+
+    def fuse(self, node1, node2):
+        # CppScheduling.fuse() does more than construct a FusedSchedulerNode:
+        # for compatible pointwise loops with different dimensionality it
+        # recomputes one loop body using the other's ranges.  Delegating the
+        # can_fuse checks without also delegating fuse leaves, for example, a
+        # (rows, cols) producer fused with a flattened mutation copy-back.
+        # CppKernelProxy then sees incompatible iteration groups at codegen.
+        return self._scheduling.fuse(node1, node2)
 
     def group_fn(self, sizes):
         return tuple(tuple(map(V.graph.sizevars.simplify, s)) for s in sizes)
