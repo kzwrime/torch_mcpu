@@ -2,6 +2,7 @@
 
 import collections
 import functools
+import gc
 import unittest
 
 import torch
@@ -239,6 +240,28 @@ class TestAutogradFunction(TestCase):
 
 
 class TestFallback(TestCase):
+    def test_binary_fallback_does_not_capture_tensor_owners(self):
+        torch.mcpu.synchronize()
+        gc.collect()
+        baseline = torch.mcpu.memory_allocated()
+
+        blocker = torch.zeros(1, dtype=torch.int64, device="mcpu")
+        blocker_allocation = torch.mcpu.memory_allocated() - baseline
+        torch.ops.mcpu.stream_sleep_fill_(blocker, 1, 500)
+        hidden_states = torch.ones(
+            (2048, 6144), dtype=torch.bfloat16, device="mcpu"
+        )
+        scale = torch.ones((), dtype=torch.bfloat16, device="mcpu")
+        hidden_states.mul_(scale)
+
+        del hidden_states, scale
+        gc.collect()
+        self.assertEqual(
+            torch.mcpu.memory_allocated(), baseline + blocker_allocation
+        )
+
+        torch.mcpu.synchronize()
+
     def test_unimplemented_factory_falls_back_to_cpu(self):
         expected = torch.triu_indices(4, 5, offset=1)
 
