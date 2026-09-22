@@ -23,7 +23,7 @@ Usage::
     )
     cpp_utils.DEVICE_TO_ATEN["mcpu"] = "at::kPrivateUse1"
 """
-import os
+
 from pathlib import Path
 from textwrap import dedent
 
@@ -258,12 +258,16 @@ class McpuWrapperCodegen(wrapper.PythonWrapperCodegen):
             )
         return McpuWrapperCodegen()
 
-    def _generate_kernel_call_helper(self, kernel_name, call_args, *, device=None, triton=True, **kwargs):
-        # mcpu is CPU-backed: treat non-triton kernel calls the same as "cpu"
+    def _generate_kernel_call_helper(
+        self, kernel_name, call_args, *, device=None, triton=True, **kwargs
+    ):
         device = device or V.graph.get_current_device_or_throw()
-        if not triton and device.type == "mcpu":
-            self.writeline(self.wrap_kernel_call(kernel_name, call_args))
-            return
+        if not triton and device.type in {"mcpu", "privateuseone"}:
+            raise NotImplementedError(
+                "MCPU generated C++ kernels require cpp_wrapper=True for "
+                "stream launch, pointer memory guards and kernel timing. "
+                "The Python wrapper supports ATen/custom-op fallback only."
+            )
         super()._generate_kernel_call_helper(
             kernel_name, call_args, device=device, triton=triton, **kwargs
         )
@@ -280,8 +284,58 @@ class McpuCppWrapperCodegen(cpp_wrapper_cpu.CppWrapperCpu):
         known_statically=False,
         graph=None,
     ):
-        return self._codegen_int_array_var_impl(
-            int_array, writeline, known_statically
+        return self._codegen_int_array_var_impl(int_array, writeline, known_statically)
+
+    def _generate_kernel_call_helper(
+        self,
+        kernel_name,
+        call_args,
+        *,
+        device=None,
+        triton=True,
+        **kwargs,
+    ):
+        device = device or V.graph.get_current_device_or_throw()
+        if not triton and device.type in {"mcpu", "privateuseone"}:
+            # Inductor may introduce ComputedBuffers after the post-grad
+            # fallback pass (layout materialization and mutation copy-back are
+            # common examples).  Those become host C++ loops over raw device
+            # pointers.  Make the storage CPU-accessible for the duration of
+            # such a generated kernel, just like native mcpu/torch_xcpu
+            # kernels do with KernelPointerMemoryGuard.
+            arg_types = kwargs["arg_types"]
+            assert arg_types is not None and len(call_args) == len(arg_types)
+            captures = []
+            kernel_args = []
+            pointer_args = []
+            for idx, (arg, arg_type) in enumerate(zip(call_args, arg_types)):
+                name = f"kernel_arg_{idx}"
+                is_pointer = isinstance(arg_type, str) and "*" in arg_type
+                value = f"({arg_type})({arg}.data_ptr())" if is_pointer else str(arg)
+                captures.append(f"{name} = {value}")
+                kernel_args.append(name)
+                if is_pointer:
+                    pointer_args.append(name)
+            # Capture only pointer/scalar values. Allocation ownership stays
+            # with the stream-aware allocator, as for native MCPU kernels.
+            self.writeline(
+                f'MCPU_LAUNCH_TIMED_KERNEL("mcpu::{kernel_name}", '
+                f"([{', '.join(captures)}]), {{"
+            )
+            self.writeline(
+                "at::mcpu::KernelPointerMemoryGuard guard({"
+                + ", ".join(pointer_args)
+                + "});"
+            )
+            self.writeline(self.wrap_kernel_call(kernel_name, kernel_args))
+            self.writeline("});")
+            return
+        super()._generate_kernel_call_helper(
+            kernel_name,
+            call_args,
+            device=device,
+            triton=triton,
+            **kwargs,
         )
 
     @staticmethod
@@ -331,6 +385,15 @@ class McpuScheduling(BaseScheduling):
 
     def can_fuse_horizontal(self, node1, node2):
         return self._scheduling.can_fuse_horizontal(node1, node2)
+
+    def fuse(self, node1, node2):
+        # CppScheduling.fuse() does more than construct a FusedSchedulerNode:
+        # for compatible pointwise loops with different dimensionality it
+        # recomputes one loop body using the other's ranges.  Delegating the
+        # can_fuse checks without also delegating fuse leaves, for example, a
+        # (rows, cols) producer fused with a flattened mutation copy-back.
+        # CppKernelProxy then sees incompatible iteration groups at codegen.
+        return self._scheduling.fuse(node1, node2)
 
     def group_fn(self, sizes):
         return tuple(tuple(map(V.graph.sizevars.simplify, s)) for s in sizes)
