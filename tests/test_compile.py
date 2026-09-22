@@ -20,17 +20,13 @@ import torch._inductor.config as inductor_config
 import torch._inductor.cpp_builder as cpp_builder
 from torch.utils._ordered_set import OrderedSet
 from torch._inductor.codegen.common import (
+    custom_backend_passes,
     get_scheduling_for_device,
     get_wrapper_codegen_for_device,
 )
 from torch._inductor.utils import (
-    add_scheduler_init_hook,
     run_and_get_code,
     run_and_get_cpp_code,
-    run_and_get_kernels,
-    run_and_get_triton_code,
-    run_fw_bw_and_get_code,
-    triton_version_uses_attrs_dict,
 )
 
 import torch_mcpu  # noqa: F401 – registers the mcpu backend with PyTorch
@@ -179,6 +175,56 @@ class TestMcpuCompile(unittest.TestCase):
 
     def tearDown(self):
         torch._dynamo.reset()
+
+    def test_generated_cpp_kernel_uses_stream_pointer_guard_and_timing(self):
+        def fn(x):
+            x[:, :64].sin_()
+            return x.cos()
+
+        # Force residual generated loops; the normal device pass intentionally
+        # falls back most arithmetic before this codegen path is reached.
+        with patch.dict(custom_backend_passes, {"mcpu": None, "privateuseone": None}):
+            with inductor_config.patch(cpp_wrapper=True, fallback_by_default=False):
+                compiled = torch.compile(fn, fullgraph=True, dynamic=True)
+                streams = [torch.Stream(device="mcpu") for _ in range(2)]
+                torch.mcpu.reset_kernel_timing()
+                torch.mcpu.set_kernel_timing_enabled(True)
+                try:
+                    code_text = ""
+                    for index, rows in enumerate((7, 3, 11)):
+                        cpu = torch.randn(rows, 128)
+                        expected = fn(cpu.clone() + 2)
+                        with torch.mcpu.stream(streams[index % 2]):
+                            x = cpu.to("mcpu")
+                            x.add_(2)
+                            result, code = run_and_get_code(compiled, x)
+                            actual = result.cpu()
+                        torch.testing.assert_close(actual, expected)
+                        code_text += "\n".join(code)
+                    torch.mcpu.synchronize()
+                    events = [
+                        event
+                        for thread in torch.mcpu.get_kernel_timing()
+                        for event in thread["events"]
+                        if event["name"].startswith("mcpu::cpp_fused")
+                    ]
+                    self.assertGreaterEqual(len(events), 3)
+                    self.assertTrue(
+                        all(e["end_time"] > e["begin_time"] for e in events)
+                    )
+                    self.assertIn("MCPU_LAUNCH_TIMED_KERNEL", code_text)
+                    self.assertIn("KernelPointerMemoryGuard", code_text)
+                    self.assertNotIn("KernelAllMemoryGuard", code_text)
+                finally:
+                    torch.mcpu.synchronize()
+                    torch.mcpu.set_kernel_timing_enabled(False)
+
+    def test_python_wrapper_rejects_generated_host_loops(self):
+        with patch.dict(custom_backend_passes, {"mcpu": None, "privateuseone": None}):
+            with inductor_config.patch(cpp_wrapper=False, fallback_by_default=False):
+                fn = torch.compile(lambda x: x.sin() + 1, fullgraph=True)
+                with self.assertRaisesRegex(Exception, "require cpp_wrapper=True"):
+                    fn(torch.ones(2, 64, device="mcpu"))
 
     # ------------------------------------------------------------------
     # Helpers
