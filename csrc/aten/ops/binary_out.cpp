@@ -12,6 +12,7 @@
 #include <ATen/ops/less.h>
 #include <ATen/ops/less_equal.h>
 #include <ATen/ops/lt.h>
+#include <ATen/ops/minimum.h>
 #include <ATen/ops/mul.h>
 #include <ATen/ops/ne.h>
 #include <ATen/ops/pow.h>
@@ -21,6 +22,7 @@
 #include <torch/library.h>
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 namespace at::mcpu {
@@ -106,6 +108,36 @@ struct BinaryKernelArgs {
   ops::TensorViewSpec other;
   ops::TensorViewSpec out;
 };
+
+// A binary operand that is either an mcpu tensor view or a zero-dimensional
+// CPU scalar tensor materialized by value before launch.
+struct BinaryOperandSpec {
+  ops::TensorViewSpec view;
+  std::optional<at::Scalar> scalar;
+  at::ScalarType scalar_type = at::kFloat;
+};
+
+struct BinaryOperandKernelArgs {
+  BinaryOperandSpec self;
+  BinaryOperandSpec other;
+  ops::TensorViewSpec out;
+};
+
+BinaryOperandSpec make_binary_operand_spec(const at::Tensor& tensor) {
+  if (is_cpu_scalar_tensor(tensor)) {
+    return BinaryOperandSpec{{}, tensor.item(), tensor.scalar_type()};
+  }
+  return BinaryOperandSpec{
+      ops::make_cpu_view_spec(tensor), std::nullopt, tensor.scalar_type()};
+}
+
+at::Tensor cpu_tensor_from_operand_spec(const BinaryOperandSpec& spec) {
+  if (spec.scalar.has_value()) {
+    return at::scalar_tensor(
+        *spec.scalar, at::TensorOptions().dtype(spec.scalar_type));
+  }
+  return ops::cpu_view_from_spec(spec.view);
+}
 
 template <ArithmeticOp op>
 at::ScalarType arithmetic_result_type(
@@ -639,6 +671,43 @@ at::Tensor bitwise_and_Tensor(const at::Tensor& self, const at::Tensor& other) {
   return out;
 }
 
+at::Tensor& minimum_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  TORCH_CHECK(
+      !self.is_complex() && !other.is_complex(),
+      "minimum not implemented for complex tensors.");
+  const auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
+  ops::check_out_sizes("aten::minimum.out", out, expected_sizes);
+
+  auto args = std::make_unique<BinaryOperandKernelArgs>(BinaryOperandKernelArgs{
+      make_binary_operand_spec(self),
+      make_binary_operand_spec(other),
+      ops::make_cpu_view_spec(out)});
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::minimum.out", ([args = std::move(args)]), {
+        KernelPointerMemoryGuard guard(
+            {args->self.view.data, args->other.view.data, args->out.data});
+        auto cpu_self = cpu_tensor_from_operand_spec(args->self);
+        auto cpu_other = cpu_tensor_from_operand_spec(args->other);
+        auto cpu_out = ops::cpu_view_from_spec(args->out);
+        at::minimum_out(cpu_out, cpu_self, cpu_other);
+      });
+  return out;
+}
+
+at::Tensor minimum(const at::Tensor& self, const at::Tensor& other) {
+  // self may be the CPU scalar operand, so take device options from the mcpu
+  // operand.
+  const auto& device_tensor = is_cpu_scalar_tensor(self) ? other : self;
+  auto out = at::empty(
+      at::infer_size(self.sizes(), other.sizes()),
+      device_tensor.options().dtype(at::result_type(self, other)));
+  minimum_out(self, other, out);
+  return out;
+}
+
 at::Tensor sub_Tensor(
     const at::Tensor& self,
     const at::Tensor& other,
@@ -873,6 +942,8 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("lt.Scalar_out", &lt_Scalar_out);
   m.impl("lt_.Tensor", &lt_Tensor_);
   m.impl("lt_.Scalar", &lt_Scalar_);
+  m.impl("minimum", &minimum);
+  m.impl("minimum.out", &minimum_out);
   m.impl("mul.Tensor", &mul_Tensor);
   m.impl("mul.out", &mul_out);
   m.impl("mul_.Tensor", &mul_Tensor_);

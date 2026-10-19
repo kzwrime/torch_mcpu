@@ -331,6 +331,51 @@ class TestFallback(TestCase):
         z = x[y, y]
         self.assertEqual(z_cpu, z.cpu())
 
+    def test_minimum_is_explicit_and_matches_cpu(self):
+        for schema in ("aten::minimum", "aten::minimum.out"):
+            self.assertTrue(
+                torch._C._dispatch_has_kernel_for_dispatch_key(schema, "PrivateUse1")
+            )
+
+        lhs = torch.tensor(
+            [[1.0, float("nan"), -2.0], [4.0, 0.5, 3.0]], device="mcpu"
+        )
+        rhs = torch.tensor([[2.0, 1.0, -3.0]], device="mcpu", dtype=torch.float16)
+        result = torch.minimum(lhs, rhs)
+        expected = torch.minimum(lhs.cpu(), rhs.cpu())
+        self.assertEqual(result.device.type, "mcpu")
+        self.assertEqual(result.dtype, expected.dtype)
+        self.assertEqual(result.cpu(), expected, equal_nan=True)
+
+        int_lhs = torch.tensor([3, -1, 7], device="mcpu", dtype=torch.int32)
+        int_rhs = torch.tensor([2, 5, 7], device="mcpu", dtype=torch.int64)
+        int_result = torch.minimum(int_lhs, int_rhs)
+        self.assertEqual(int_result.dtype, torch.int64)
+        self.assertEqual(int_result.cpu(), torch.tensor([2, -1, 7]))
+
+        cpu_scalar = torch.tensor(0.75)
+        self.assertEqual(
+            torch.minimum(lhs, cpu_scalar).cpu(),
+            torch.minimum(lhs.cpu(), cpu_scalar),
+            equal_nan=True,
+        )
+        self.assertEqual(
+            torch.minimum(cpu_scalar, lhs).cpu(),
+            torch.minimum(cpu_scalar, lhs.cpu()),
+            equal_nan=True,
+        )
+
+        out = torch.empty((2, 3), device="mcpu")
+        self.assertIs(torch.minimum(lhs, rhs, out=out), out)
+        self.assertEqual(out.cpu(), expected.float(), equal_nan=True)
+
+        strided_out = torch.empty((3, 2), device="mcpu").t()
+        torch.minimum(lhs, rhs, out=strided_out)
+        self.assertEqual(strided_out.cpu(), expected.float(), equal_nan=True)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::minimum.out"):
+            torch.minimum(lhs, rhs, out=torch.empty(3, device="mcpu"))
+
     def test_explicit_forward_ops_do_not_fallback(self):
         x = torch.tensor([[1, 2, 3], [4, 5, 6]], device="mcpu", dtype=torch.float32)
         idx = torch.tensor([1, 0], device="mcpu", dtype=torch.long)
