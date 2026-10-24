@@ -64,3 +64,30 @@ for a pre-mapped region, which cannot be mapped a second time from Python.
 It runs only against the x86 simulation and is skipped otherwise.
 `TestPremappedAllocatorBranch` compiles the pre-mapped branch as plain C++ and
 needs only a compiler.
+
+## Two-rank test in the real launch mode
+
+`tests/test_xmalloc_mpi.py` runs the startup and runtime pattern of
+`vllm_xcpu_plugin.shared_kv_cache` as one MPI job. Every rank is launched by the
+job, so it works where only the submitting job may use the NPU; nothing spawns a
+worker.
+
+```sh
+cd /tmp
+mpirun -np 2 python -m pytest -s -p no:cacheprovider -x -q \
+    /path/to/torch_mcpu/tests/test_xmalloc_mpi.py   # also -np 4
+```
+
+Ranks pair into domains of two (four ranks give two concurrent domains). Startup
+broadcasts a job id, allocates identically (one rank attaches late), probes with
+an owner nonce, and lets the owner unlink the simulation file and clear the pool.
+The tests then cover identical writes by every rank with no ordering, disjoint
+writers, and both fence directions through an all-reduce queued with
+`torch_mpi_ext.ops.all_reduce_out_wrapper`: a late peer's rewrite becomes visible
+after the fence, and a late read still precedes a peer's rewrite. Delays make the
+fence tests fail when the fence is a no-op. Domains must not see each other's
+bytes. Use a job-provided region by exporting `TORCH_MCPU_SHARED_SIZE` and
+`TORCH_MCPU_SHARED_BASE`; without MPI the module is skipped.
+
+x86 cannot show cache incoherence or release/acquire gaps, because the host
+memory system provides both. Run this test on the target NPU to check them.
