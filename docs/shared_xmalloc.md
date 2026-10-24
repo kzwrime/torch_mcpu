@@ -41,10 +41,26 @@ and hardware mapping are outside the x86 simulation tests.
 
 ```sh
 cd /tmp
-/workspace/.venv/bin/python -m pytest \
-  /workspace/torch_mcpu/tests/test_memory.py -k TestSharedXmalloc -q
+python -m pytest /path/to/torch_mcpu/tests/test_memory.py -k "Xmalloc or Premapped" -q
 ```
 
-The tests cover alignment, capacity and configuration errors, process sharing,
-DP-group isolation, late attachment, fixed-address protection, tensor lifetime,
-and the pre-mapped C++ branch.
+`TestSharedXmalloc` runs entirely in the submitting process, so it also works
+where a job manager lets only that process use the NPU. It does not configure
+the region itself when one is provided: export `TORCH_MCPU_SHARED_SIZE` (and
+`TORCH_MCPU_SHARED_BASE` for a pre-mapped build) before launching pytest, as the
+job would. With neither set it creates a 1 MiB file-backed simulation. It
+checks alignment, adjacency, containment in the region, no reuse after a
+tensor is freed, device kernels on the backing, rejected requests that leave
+the cursor unchanged, and exact exhaustion. The arena is never reset, so the
+exhaustion test is named to run last.
+
+With the x86 simulation, a second independent `mmap` of the same file stands
+in for another rank: it publishes data the device tensor reads, reads what the
+device writes, and attaches late without clearing the region. This is skipped
+for a pre-mapped region, which cannot be mapped a second time from Python.
+
+`TestSharedXmallocWorkerProcesses` needs a fresh arena or real peer processes
+(configuration errors, size mismatch, fixed-address collision, two TP groups).
+It runs only against the x86 simulation and is skipped otherwise.
+`TestPremappedAllocatorBranch` compiles the pre-mapped branch as plain C++ and
+needs only a compiler.

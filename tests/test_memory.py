@@ -1,6 +1,9 @@
 # Owner(s): ["module: PrivateUse1"]
 
+import atexit
+import contextlib
 import gc
+import mmap
 import os
 import shutil
 import socket
@@ -9,12 +12,14 @@ import sys
 import tempfile
 import textwrap
 import time
+import unittest
 from pathlib import Path
 
 import torch
 from torch.testing._internal.common_utils import TestCase, run_tests, skipIfTorchDynamo
 
 import torch_mcpu  # noqa: F401
+from torch_mcpu.shared_memory import xmalloc
 
 
 class TestDeviceAllocator(TestCase):
@@ -838,20 +843,238 @@ class TestCachingHostAllocator(TestCase):
         del pinned
 
 
-class TestSharedXmalloc(TestCase):
-    """Test shared backing through the installed MCPU allocation API."""
+def _round_up(size, alignment=256):
+    return (size + alignment - 1) // alignment * alignment
 
-    def run_child(self, code, path, size="4096", **extra_env):
-        env = os.environ.copy()
-        env.pop("TORCH_MCPU_SHARED_BASE", None)
-        env.update(TORCH_MCPU_SHARED_SIM_FILE=path, TORCH_MCPU_SHARED_SIZE=size)
-        env.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
-        env.update(extra_env)
-        result = subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(code)],
-            env=env, check=False, capture_output=True, text=True, timeout=45,
+
+class _SharedRegion:
+    """The shared region this test process attached to.
+
+    The xmalloc arena lives until process exit and reads its configuration
+    once, so every test in the process shares one region and checks relative
+    properties only (alignment, adjacency, containment). A job-managed NPU
+    run supplies the region before launch: TORCH_MCPU_SHARED_SIZE plus
+    TORCH_MCPU_SHARED_BASE on a pre-mapped build. Only that submitting
+    process may use the device, so nothing here spawns workers. With no
+    region configured, an x86 file-backed simulation is set up instead.
+    """
+
+    _attempt = None
+
+    @classmethod
+    def get(cls):
+        if cls._attempt is None:
+            try:
+                cls._attempt = cls()
+            except (RuntimeError, ValueError) as error:
+                cls._attempt = error
+        if isinstance(cls._attempt, Exception):
+            raise cls._attempt
+        return cls._attempt
+
+    def __init__(self):
+        if "TORCH_MCPU_SHARED_SIZE" not in os.environ:
+            directory = tempfile.mkdtemp(prefix="mcpu-xmalloc-")
+            atexit.register(shutil.rmtree, directory, ignore_errors=True)
+            os.environ["TORCH_MCPU_SHARED_SIM_FILE"] = os.path.join(directory, "arena")
+            os.environ["TORCH_MCPU_SHARED_SIZE"] = str(1 << 20)
+        self.size = int(os.environ["TORCH_MCPU_SHARED_SIZE"], 0)
+        self.base = int(os.environ.get("TORCH_MCPU_SHARED_BASE", "0"), 0) or None
+        # Set only for the x86 simulation; None for a pre-mapped device region.
+        self.sim_file = os.environ.get("TORCH_MCPU_SHARED_SIM_FILE") or None
+        self.file_delta = None
+        # The first allocation attaches the arena, so a bad configuration
+        # surfaces here rather than in an arbitrary test.
+        self.probe = xmalloc(256)
+        if self.base is None:
+            self._locate_in_file()
+
+    @contextlib.contextmanager
+    def peer_view(self):
+        """Map the simulation file again, independently, as another rank would."""
+        fd = os.open(self.sim_file, os.O_RDWR)
+        try:
+            with mmap.mmap(fd, self.size) as view:
+                yield view
+        finally:
+            os.close(fd)
+
+    def _locate_in_file(self):
+        # Without a fixed base, tensor addresses say nothing about file offsets.
+        # Stamp the probe and find the stamp through an independent mapping.
+        stamp = os.urandom(256)
+        self.probe.copy_(torch.frombuffer(bytearray(stamp), dtype=torch.uint8))
+        torch.mcpu.synchronize()
+        with self.peer_view() as view:
+            offset = view.find(stamp)
+            if offset < 0 or view.find(stamp, offset + 1) >= 0:
+                raise RuntimeError("TORCH_MCPU_SHARED: probe not found uniquely in file")
+        self.file_delta = offset - self.probe.data_ptr()
+
+    def offset_of(self, tensor):
+        """Byte offset of an xmalloc tensor from the start of the region."""
+        address = tensor.data_ptr()
+        return address - self.base if self.base else address + self.file_delta
+
+
+def _attach_region_or_skip():
+    try:
+        return _SharedRegion.get()
+    except (RuntimeError, ValueError) as error:
+        if "TORCH_MCPU_SHARED" not in str(error):
+            raise
+        raise unittest.SkipTest(f"no usable shared region: {error}")
+
+
+class TestSharedXmalloc(TestCase):
+    """In-process tests of the shared arena through the MCPU allocation API.
+
+    Everything runs in the submitting process, so these also run where a job
+    manager lets only that process use the device. Peer ranks are stood in for
+    by an independent mapping of the simulation file, when there is one.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.region = _attach_region_or_skip()
+
+    def require_peer_mapping(self):
+        if self.region.sim_file is None:
+            self.skipTest("independent peer mapping needs the file-backed simulation")
+        return self.region
+
+    def test_allocations_are_aligned_contiguous_and_inside_region(self):
+        sizes = (1, 255, 256, 257, 1000)
+        tensors = [xmalloc(size) for size in sizes]
+        for earlier, later in zip(tensors, tensors[1:]):
+            self.assertEqual(
+                later.data_ptr() - earlier.data_ptr(), _round_up(earlier.numel())
+            )
+        device = torch.device("mcpu", torch.mcpu.current_device())
+        for size, tensor in zip(sizes, tensors):
+            self.assertEqual(tensor.data_ptr() % 256, 0)
+            self.assertEqual(tensor.device, device)
+            self.assertEqual(tensor.dtype, torch.uint8)
+            self.assertEqual(tensor.shape, (size,))
+            self.assertFalse(tensor.untyped_storage().resizable())
+            offset = self.region.offset_of(tensor)
+            self.assertGreaterEqual(offset, 0)
+            self.assertLessEqual(offset + _round_up(size), self.region.size)
+        with self.assertRaisesRegex(RuntimeError, "not resizable"):
+            tensors[0].resize_(4096)
+
+    def test_device_kernels_round_trip_through_shared_backing(self):
+        cache = xmalloc(4096).view(torch.int32).view(4, 256)
+        host = torch.arange(1024, dtype=torch.int32).view(4, 256)
+        cache.copy_(host)
+        torch.testing.assert_close(cache.cpu(), host)
+        # Kernel output goes to ordinary device memory, not into the arena.
+        result = cache + 1
+        torch.testing.assert_close(result.cpu(), host + 1)
+        cache[2].mul_(2)
+        host[2] *= 2
+        torch.testing.assert_close(cache.cpu(), host)
+        reinterpreted = xmalloc(256).view(torch.bfloat16).view(4, 32)
+        reinterpreted.fill_(7)
+        torch.testing.assert_close(
+            reinterpreted.cpu(), torch.full((4, 32), 7, dtype=torch.bfloat16)
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_freed_tensor_memory_is_never_recycled(self):
+        first = xmalloc(512)
+        first.fill_(19)
+        survivor = first[1:]
+        end = first.data_ptr() + 512
+        del first
+        gc.collect()
+        torch.mcpu.empty_cache()
+        ordinary = torch.ones(1024, device="mcpu")
+        second = xmalloc(512)
+        self.assertEqual(second.data_ptr(), end)
+        low, high = survivor.data_ptr() - 1, second.data_ptr() + 512
+        self.assertFalse(low <= ordinary.data_ptr() < high)
+        second.fill_(7)
+        torch.testing.assert_close(survivor.cpu(), torch.full((511,), 19, dtype=torch.uint8))
+        torch.testing.assert_close(ordinary.cpu(), torch.ones(1024))
+
+    def test_invalid_requests_are_rejected_without_consuming_arena(self):
+        anchor = xmalloc(1)
+        for size in (0, -1, 1 << 63, 1 << 64):
+            with self.assertRaises((RuntimeError, OverflowError)):
+                xmalloc(size)
+        with self.assertRaisesRegex(RuntimeError, "exhausted"):
+            xmalloc(1 << 62)
+        for device in (-1, 1 << 20):
+            with self.assertRaisesRegex(RuntimeError, "invalid xmalloc device"):
+                xmalloc(8, device=device)
+        self.assertEqual(xmalloc(1).data_ptr() - anchor.data_ptr(), 256)
+
+    def test_late_attached_peer_sees_data_without_clearing(self):
+        region = self.require_peer_mapping()
+        tensor = xmalloc(256)
+        tensor.fill_(0x3C)
+        torch.mcpu.synchronize()
+        offset = region.offset_of(tensor)
+        for _ in range(2):  # attaching again must neither clear nor resize
+            with region.peer_view() as peer:
+                self.assertEqual(bytes(peer[offset : offset + 256]), b"\x3c" * 256)
+        self.assertEqual(os.stat(region.sim_file).st_size, region.size)
+
+    def test_peer_mapping_exchanges_updates_with_device_tensor(self):
+        region = self.require_peer_mapping()
+        cache = xmalloc(4096).view(torch.int32).view(4, 256)
+        neighbor = xmalloc(256)
+        cache.zero_()
+        neighbor.fill_(0x5A)
+        torch.mcpu.synchronize()
+        expected = torch.zeros(4, 256, dtype=torch.int32)
+        start = region.offset_of(cache)
+        with region.peer_view() as peer:
+            for step in range(32):
+                block = step % 4
+                low = start + block * 1024
+                # The peer rank publishes one block; the device tensor reads it.
+                values = torch.arange(256, dtype=torch.int32) + step * 256
+                expected[block] = values
+                peer[low : low + 1024] = values.numpy().tobytes()
+                torch.testing.assert_close(cache.cpu(), expected)
+                # The device writes it back. synchronize() stands in for the
+                # cross-rank ordering real ranks must provide themselves.
+                values = values + 100000
+                expected[block] = values
+                cache[block].copy_(values)
+                torch.mcpu.synchronize()
+                self.assertEqual(
+                    bytes(peer[start : start + 4096]), expected.numpy().tobytes()
+                )
+        torch.testing.assert_close(
+            neighbor.cpu(), torch.full((256,), 0x5A, dtype=torch.uint8)
+        )
+
+    # Alphabetically last on purpose: it uses up the arena, which is never reset.
+    def test_zzz_exhaustion_is_exact_and_final(self):
+        last = None
+        size = 1 << 62
+        while size >= 256:
+            try:
+                last = xmalloc(size)
+            except RuntimeError as error:
+                self.assertIn("exhausted", str(error))
+                size >>= 1
+        if last is None:
+            self.skipTest("shared region was already exhausted")
+        # Failed attempts must not have consumed capacity: less than one
+        # alignment unit may remain.
+        used_to = self.region.offset_of(last) + last.numel()
+        self.assertLess(self.region.size - used_to, 256)
+        for size in (1, 256):
+            with self.assertRaisesRegex(RuntimeError, "exhausted"):
+                xmalloc(size)
+
+
+class TestPremappedAllocatorBranch(TestCase):
+    """Builds the pre-mapped branch as plain C++; no device or worker is used."""
 
     def test_premapped_backend_with_supplied_mapped_region(self):
         compiler = shutil.which("c++")
@@ -873,41 +1096,37 @@ class TestSharedXmalloc(TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_alignment_capacity_and_tensor_lifetime(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self.run_child("""
-                import gc
-                import torch
-                from torch_mcpu.shared_memory import xmalloc
 
-                a = xmalloc(1)
-                b = xmalloc(257)
-                assert a.data_ptr() % 256 == 0
-                assert b.data_ptr() - a.data_ptr() == 256
-                assert a.device.type == 'mcpu'
-                assert b.dtype == torch.uint8 and b.numel() == 257
-                assert not b.untyped_storage().resizable()
-                b.fill_(19)
-                view = b[1:]
-                del b
-                gc.collect()
-                torch.testing.assert_close(view.cpu(), torch.full((256,), 19, dtype=torch.uint8))
-                try:
-                    xmalloc(257)  # only 256 aligned bytes remain
-                except RuntimeError as error:
-                    assert 'exhausted' in str(error)
-                else:
-                    raise AssertionError('expected exhaustion')
-                c = xmalloc(256)  # failed allocation must not advance the cursor
-                assert c.data_ptr() - a.data_ptr() == 768
-                bf16 = c.view(torch.bfloat16).view(4, 32)
-                bf16.fill_(7)
-                torch.testing.assert_close(bf16.cpu(), torch.full((4, 32), 7, dtype=torch.bfloat16))
-                torch.testing.assert_close(view.cpu(), torch.full((256,), 19, dtype=torch.uint8))
-                # Ordinary device allocation still works independently.
-                ordinary = torch.ones(8, device='mcpu')
-                torch.testing.assert_close(ordinary.cpu(), torch.ones(8))
-            """, os.path.join(directory, "arena"), size="1024")
+class TestSharedXmallocWorkerProcesses(TestCase):
+    """Cases that need a fresh arena or real peer processes.
+
+    The arena reads its configuration once per process, so configuration
+    errors and fixed-address placement can only be observed in a new process.
+    Workers must also be able to use the device, which a job manager that
+    restricts the NPU to the submitting process does not allow. These run
+    only against the x86 file-backed simulation.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        if _attach_region_or_skip().sim_file is None:
+            raise unittest.SkipTest(
+                "worker processes need the x86 file-backed simulation; a "
+                "job-managed device region is usable only by the submitting process"
+            )
+
+    def run_child(self, code, path, size="4096", **extra_env):
+        env = os.environ.copy()
+        env.pop("TORCH_MCPU_SHARED_BASE", None)
+        env.update(TORCH_MCPU_SHARED_SIM_FILE=path, TORCH_MCPU_SHARED_SIZE=size)
+        env.update(OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+        env.update(extra_env)
+        result = subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(code)],
+            env=env, check=False, capture_output=True, text=True, timeout=45,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_two_rank_updates_and_group_isolation(self):
         # Two TP groups use different files concurrently. Each pair exchanges
@@ -995,7 +1214,7 @@ class TestSharedXmalloc(TestCase):
                         process.kill()
                     process.communicate(timeout=10)
 
-    def test_invalid_configuration_and_sizes_do_not_allocate(self):
+    def test_invalid_configuration_does_not_create_region(self):
         with tempfile.TemporaryDirectory() as directory:
             self.run_child("""
                 import os
@@ -1011,9 +1230,6 @@ class TestSharedXmalloc(TestCase):
                 with pytest.raises((RuntimeError, ValueError), match='TORCH_MCPU_SHARED_SIZE'):
                     xmalloc(1)
                 os.environ['TORCH_MCPU_SHARED_SIZE'] = '0x1000'
-                for size in (0, -1, 1 << 64):
-                    with pytest.raises((RuntimeError, ValueError, OverflowError)):
-                        xmalloc(size)
                 assert not os.path.exists(path)
                 del os.environ['TORCH_MCPU_SHARED_SIM_FILE']
                 with pytest.raises((RuntimeError, ValueError), match='TORCH_MCPU_SHARED_SIM_FILE'):
