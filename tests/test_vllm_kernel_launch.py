@@ -1357,61 +1357,63 @@ class TestVllmKernelLaunch(TestCase):
         self.assertEqual(outputs[1].cpu(), expected1)
 
     def test_gather_block_tables_pointer_abi_preserves_active_tail(self):
-        sources = [
-            torch.tensor(
-                [[10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]],
-                dtype=torch.int32,
-                device="mcpu",
-            ),
-            torch.tensor(
-                [[40, 41, 42], [50, 51, 52], [60, 61, 62]],
-                dtype=torch.int32,
-                device="mcpu",
-            ),
-        ]
-        destinations = [
-            torch.full((4, 4), 99, dtype=torch.int32, device="mcpu"),
-            torch.full((4, 3), 99, dtype=torch.int32, device="mcpu"),
-        ]
-        src_ptrs = torch.tensor(
-            [tensor.data_ptr() for tensor in sources],
-            dtype=torch.uint64,
-            device="mcpu",
-        )
-        dst_ptrs = torch.tensor(
-            [tensor.data_ptr() for tensor in destinations],
-            dtype=torch.uint64,
-            device="mcpu",
-        )
-        strides = torch.tensor([4, 3], dtype=torch.int64, device="mcpu")
-        idx_mapping = torch.tensor([2, 0], dtype=torch.int32, device="mcpu")
-        num_blocks = torch.tensor(
-            [[1, 4, 2], [2, 3, 1]], dtype=torch.int32, device="mcpu"
-        )
+        for idx_dtype in (torch.int32, torch.int64):
+            with self.subTest(idx_dtype=idx_dtype):
+                sources = [
+                    torch.tensor(
+                        [[10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]],
+                        dtype=torch.int32,
+                        device="mcpu",
+                    ),
+                    torch.tensor(
+                        [[40, 41, 42], [50, 51, 52], [60, 61, 62]],
+                        dtype=torch.int32,
+                        device="mcpu",
+                    ),
+                ]
+                destinations = [
+                    torch.full((4, 4), 99, dtype=torch.int32, device="mcpu"),
+                    torch.full((4, 3), 99, dtype=torch.int32, device="mcpu"),
+                ]
+                src_ptrs = torch.tensor(
+                    [tensor.data_ptr() for tensor in sources],
+                    dtype=torch.uint64,
+                    device="mcpu",
+                )
+                dst_ptrs = torch.tensor(
+                    [tensor.data_ptr() for tensor in destinations],
+                    dtype=torch.uint64,
+                    device="mcpu",
+                )
+                strides = torch.tensor([4, 3], dtype=torch.int64, device="mcpu")
+                idx_mapping = torch.tensor([2, 0], dtype=idx_dtype, device="mcpu")
+                num_blocks = torch.tensor(
+                    [[1, 4, 2], [2, 3, 1]], dtype=torch.int32, device="mcpu"
+                )
 
-        torch.ops.mcpu.vllm_gather_block_tables_kernel(
-            idx_mapping,
-            src_ptrs,
-            dst_ptrs,
-            strides,
-            num_blocks,
-            num_blocks.stride(0),
-            2,
-            2,
-            3,
-        )
-        torch.mcpu.synchronize()
+                torch.ops.mcpu.vllm_gather_block_tables_kernel(
+                    idx_mapping,
+                    src_ptrs,
+                    dst_ptrs,
+                    strides,
+                    num_blocks,
+                    num_blocks.stride(0),
+                    2,
+                    2,
+                    3,
+                )
+                torch.mcpu.synchronize()
 
-        expected0 = torch.tensor(
-            [[30, 31, 99, 99], [10, 99, 99, 99], [0, 0, 0, 0], [99, 99, 99, 99]],
-            dtype=torch.int32,
-        )
-        expected1 = torch.tensor(
-            [[60, 99, 99], [40, 41, 99], [0, 0, 0], [99, 99, 99]],
-            dtype=torch.int32,
-        )
-        self.assertEqual(destinations[0].cpu(), expected0)
-        self.assertEqual(destinations[1].cpu(), expected1)
+                expected0 = torch.tensor(
+                    [[30, 31, 99, 99], [10, 99, 99, 99], [0, 0, 0, 0], [99, 99, 99, 99]],
+                    dtype=torch.int32,
+                )
+                expected1 = torch.tensor(
+                    [[60, 99, 99], [40, 41, 99], [0, 0, 0], [99, 99, 99]],
+                    dtype=torch.int32,
+                )
+                self.assertEqual(destinations[0].cpu(), expected0)
+                self.assertEqual(destinations[1].cpu(), expected1)
 
 
     def test_compute_slot_mappings_pointer_abi_and_tail_padding(self):

@@ -13,7 +13,7 @@
 namespace {
 
 void vllm_gather_block_tables_kernel_impl(
-    const at::Tensor& idx_mapping, // [num_reqs], int32
+    const at::Tensor& idx_mapping, // [num_reqs], int32 or int64
     const at::Tensor& src_block_table_ptrs, // [num_groups], uint64
     const at::Tensor& dst_block_table_ptrs, // [num_groups], uint64
     const at::Tensor& block_table_strides, // [num_groups], int64
@@ -22,7 +22,11 @@ void vllm_gather_block_tables_kernel_impl(
     int64_t num_reqs,
     int64_t num_groups,
     int64_t num_reqs_padded) {
-  VLLM_MCPU_CHECK_DTYPE(idx_mapping, at::kInt, "idx_mapping");
+  VLLM_MCPU_CHECK(
+      idx_mapping.scalar_type() == at::kInt ||
+          idx_mapping.scalar_type() == at::kLong,
+      "idx_mapping must be int32 or int64, got ",
+      idx_mapping.scalar_type());
   VLLM_MCPU_CHECK_DTYPE(
       src_block_table_ptrs, at::kUInt64, "src_block_table_ptrs");
   VLLM_MCPU_CHECK_DTYPE(
@@ -68,7 +72,10 @@ void vllm_gather_block_tables_kernel_impl(
       num_blocks_stride == num_blocks.stride(0),
       "num_blocks_stride must match num_blocks.stride(0)");
 
-  const int32_t* idx_ptr = idx_mapping.data_ptr<int32_t>();
+  // PCP builds idx_mapping from an np.intp array (int64); other paths use
+  // int32.
+  const bool idx_is_int64 = idx_mapping.scalar_type() == at::kLong;
+  const void* idx_ptr = idx_mapping.const_data_ptr();
   const uint64_t* src_ptrs = src_block_table_ptrs.data_ptr<uint64_t>();
   const uint64_t* dst_ptrs = dst_block_table_ptrs.data_ptr<uint64_t>();
   const int64_t* strides_ptr = block_table_strides.data_ptr<int64_t>();
@@ -78,6 +85,7 @@ void vllm_gather_block_tables_kernel_impl(
   at::mcpu::launch_timed_kernel(
       "mcpu::vllm_gather_block_tables_kernel",
       [idx_ptr,
+       idx_is_int64,
        src_ptrs,
        dst_ptrs,
        strides_ptr,
@@ -110,7 +118,9 @@ void vllm_gather_block_tables_kernel_impl(
                 dst_row[col] = 0;
               continue;
             }
-            const int32_t req_idx = idx_ptr[batch_idx];
+            const int64_t req_idx = idx_is_int64
+                ? static_cast<const int64_t*>(idx_ptr)[batch_idx]
+                : static_cast<const int32_t*>(idx_ptr)[batch_idx];
             VLLM_MCPU_CHECK(
                 0 <= req_idx && req_idx < max_num_reqs,
                 "idx_mapping contains an out-of-range request index");
