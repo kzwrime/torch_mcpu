@@ -458,7 +458,7 @@ std::tuple<int64_t, int64_t> kernel_launch_parallel_condition_counts(
   constexpr int count = 4;
   std::vector<c10::mcpu::McpuStream> streams;
   for (int i = 0; i < count; ++i) {
-    streams.push_back(c10::mcpu::getStreamFromPool(i / 2));
+    streams.push_back(c10::mcpu::getStreamFromPool(-(i / 2)));
     (void)streams.back().stream();
   }
   std::atomic<int64_t> ran{0}, destroyed{0};

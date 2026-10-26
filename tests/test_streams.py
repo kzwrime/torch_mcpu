@@ -21,16 +21,28 @@ class TestStream(TestCase):
         low_policy = self._worker_policy(low_stream)
         high_policy = self._worker_policy(high_stream)
 
-        self.assertEqual(low, 1)
-        self.assertEqual(high, 0)
+        # Same convention as CUDA: 0 is the least priority, lower is higher.
+        self.assertEqual(low, 0)
+        self.assertEqual(high, -1)
+        self.assertEqual(low_stream.priority, low)
+        self.assertEqual(high_stream.priority, high)
 
         self.assertEqual(low_policy["priority"], low)
-        self.assertEqual(low_policy["idle_policy"], "block")
+        self.assertEqual(low_policy["idle_policy"], "hybrid")
         self.assertEqual(low_policy["is_default_stream"], 0)
 
         self.assertEqual(high_policy["priority"], high)
         self.assertEqual(high_policy["idle_policy"], "busy")
         self.assertEqual(high_policy["is_default_stream"], 0)
+
+    def test_00_stream_without_priority_is_normal_priority(self):
+        # Side streams such as torch.cuda.Stream() in vLLM pass no priority and
+        # must not get a busy-polling worker.
+        stream = torch.Stream(device="mcpu:0")
+        policy = self._worker_policy(stream)
+        self.assertEqual(stream.priority, 0)
+        self.assertEqual(policy["priority"], 0)
+        self.assertEqual(policy["idle_policy"], "hybrid")
 
     def test_00_default_stream_worker_is_busy(self):
         default_stream = torch.mcpu.default_stream()

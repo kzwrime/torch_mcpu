@@ -49,6 +49,8 @@ TEST_F(StreamTest, StreamCreateAndDestroy) {
   orStream_t stream = nullptr;
   EXPECT_EQ(orStreamCreate(&stream), orSuccess);
   EXPECT_NE(stream, nullptr);
+  // Like cudaStreamCreate, a stream created without a priority gets 0.
+  EXPECT_EQ(stream->priority, 0);
 
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
@@ -59,8 +61,15 @@ TEST_F(StreamTest, StreamCreateNullptr) {
 }
 
 TEST_F(StreamTest, BlockingWorkerRepeatedIdleWakeup) {
+  int least_priority = 0;
+  int unused_greatest_priority = 0;
+  orDeviceGetStreamPriorityRange(&least_priority, &unused_greatest_priority);
   orStream_t stream = nullptr;
-  ASSERT_EQ(orStreamCreateWithPriority(&stream, 0, 1), orSuccess);
+  ASSERT_EQ(orStreamCreateWithPriority(&stream, 0, least_priority), orSuccess);
+  ASSERT_NE(stream->idle_policy, orStream::IdlePolicy::Busy);
+  // Sweep idle gaps across the spin budget so launches race the worker's
+  // transition from spinning to blocking.
+  const auto spin = std::chrono::nanoseconds(stream->spin_ns);
   for (int i = 0; i < 10000; ++i) {
     ASSERT_EQ(orLaunchKernel(stream, [] {}), orSuccess);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
@@ -74,7 +83,10 @@ TEST_F(StreamTest, BlockingWorkerRepeatedIdleWakeup) {
       stream->wake_cv.notify_one();
       break;
     }
-    if (i % 2 == 0) std::this_thread::yield();
+    const auto gap_end = std::chrono::steady_clock::now() + spin * (i % 64) / 32;
+    while (std::chrono::steady_clock::now() < gap_end) {
+      openreg::cpu_relax();
+    }
   }
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
@@ -139,15 +151,23 @@ TEST_F(StreamTest, StreamTaskExecution) {
   EXPECT_EQ(orStreamDestroy(stream), orSuccess);
 }
 
-TEST_F(StreamTest, BlockingIdleWorkerWakesForPublishedTask) {
+TEST_F(StreamTest, LowPriorityIdleWorkerSleepsAndWakesForPublishedTask) {
   orStream_t stream = nullptr;
   int least_priority = 0;
   int unused_greatest_priority = 0;
   orDeviceGetStreamPriorityRange(&least_priority, &unused_greatest_priority);
   EXPECT_EQ(orStreamCreateWithPriority(&stream, 0, least_priority), orSuccess);
-  EXPECT_EQ(stream->idle_policy, orStream::IdlePolicy::Block);
+  EXPECT_EQ(stream->idle_policy, orStream::IdlePolicy::Hybrid);
+  EXPECT_GT(stream->spin_ns, 0u);
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  // Once the spin budget expires the worker must block instead of polling.
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!stream->worker_sleeping.load() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_TRUE(stream->worker_sleeping.load());
 
   std::atomic<int> counter{0};
   EXPECT_EQ(openreg::addTaskToStream(stream, [&] { counter++; }), orSuccess);
@@ -373,8 +393,8 @@ TEST_F(StreamTest, StreamPriorityRange) {
   EXPECT_EQ(
       orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority),
       orSuccess);
-  EXPECT_EQ(least_priority, 1);
-  EXPECT_EQ(greatest_priority, 0);
+  EXPECT_EQ(least_priority, 0);
+  EXPECT_EQ(greatest_priority, -1);
 }
 
 } // namespace

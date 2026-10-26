@@ -60,8 +60,7 @@ struct Result {
 };
 
 struct WorkerSpan {
-  std::atomic<uint64_t> first_begin_ns{
-      std::numeric_limits<uint64_t>::max()};
+  std::atomic<uint64_t> first_begin_ns{std::numeric_limits<uint64_t>::max()};
   std::atomic<uint64_t> last_end_ns{0};
 
   void reset() {
@@ -239,7 +238,8 @@ Result run_direct(
   const int total_iterations = cfg.warmup + cfg.iterations;
 
   for (int iter = 0; iter < total_iterations; ++iter) {
-    refresh_inputs(logits, request_index, temperature, cfg.tasks, cfg.vocab, iter);
+    refresh_inputs(
+        logits, request_index, temperature, cfg.tasks, cfg.vocab, iter);
     for (int task = 0; task < cfg.tasks; ++task) {
       args[task] = {
           logits.data(),
@@ -292,7 +292,8 @@ Result run_queue(
   const int total_iterations = cfg.warmup + cfg.iterations;
 
   for (int iter = 0; iter < total_iterations; ++iter) {
-    refresh_inputs(logits, request_index, temperature, cfg.tasks, cfg.vocab, iter);
+    refresh_inputs(
+        logits, request_index, temperature, cfg.tasks, cfg.vocab, iter);
     for (int task = 0; task < cfg.tasks; ++task) {
       args[task] = {
           logits.data(),
@@ -353,7 +354,8 @@ Result run_queue(
       total_ns += elapsed;
       const uint64_t first =
           worker_span.first_begin_ns.load(std::memory_order_acquire);
-      const uint64_t last = worker_span.last_end_ns.load(std::memory_order_acquire);
+      const uint64_t last =
+          worker_span.last_end_ns.load(std::memory_order_acquire);
       if (first != std::numeric_limits<uint64_t>::max() && last >= first) {
         total_worker_span_ns += last - first;
       }
@@ -374,10 +376,7 @@ Result run_queue(
       checksum};
 }
 
-Result run_empty_queue(
-    orStream_t stream,
-    const Config& cfg,
-    int mode) {
+Result run_empty_queue(orStream_t stream, const Config& cfg, int mode) {
   uint64_t total_ns = 0;
   uint64_t total_worker_span_ns = 0;
   uint64_t checksum = 0;
@@ -388,7 +387,8 @@ Result run_empty_queue(
 
   for (int iter = 0; iter < total_iterations; ++iter) {
     for (int task = 0; task < cfg.tasks; ++task) {
-      args[task] = {&outputs[task], static_cast<uint64_t>(iter * cfg.tasks + task)};
+      args[task] = {
+          &outputs[task], static_cast<uint64_t>(iter * cfg.tasks + task)};
     }
 
     worker_span.reset();
@@ -418,8 +418,7 @@ Result run_empty_queue(
       } else if (mode == 2) {
         EmptyKernelArgs* arg = &args[task];
         check(
-            orLaunchKernel(
-                stream, [arg] { empty_pointer_kernel_args(arg); }),
+            orLaunchKernel(stream, [arg] { empty_pointer_kernel_args(arg); }),
             "orLaunchKernel");
       } else {
         throw std::invalid_argument("unknown empty queue mode");
@@ -439,7 +438,8 @@ Result run_empty_queue(
       total_ns += elapsed;
       const uint64_t first =
           worker_span.first_begin_ns.load(std::memory_order_acquire);
-      const uint64_t last = worker_span.last_end_ns.load(std::memory_order_acquire);
+      const uint64_t last =
+          worker_span.last_end_ns.load(std::memory_order_acquire);
       if (first != std::numeric_limits<uint64_t>::max() && last >= first) {
         total_worker_span_ns += last - first;
       }
@@ -465,7 +465,8 @@ int main(int argc, char** argv) {
     const Config cfg = parse_args(argc, argv);
     pin_current_thread(cfg.producer_core);
 
-    std::vector<float> direct_logits(static_cast<size_t>(cfg.tasks) * cfg.vocab);
+    std::vector<float> direct_logits(
+        static_cast<size_t>(cfg.tasks) * cfg.vocab);
     std::vector<float> queue_logits(static_cast<size_t>(cfg.tasks) * cfg.vocab);
     std::vector<int32_t> direct_index(static_cast<size_t>(cfg.tasks));
     std::vector<int32_t> queue_index(static_cast<size_t>(cfg.tasks));
@@ -473,12 +474,20 @@ int main(int argc, char** argv) {
     std::vector<float> queue_temp{0.75f, 1.25f};
 
     orStream_t stream = nullptr;
-    check(orStreamCreate(&stream), "orStreamCreate");
+    // Measure the busy-polling worker that dispatches kernels.
+    int least_priority = 0;
+    int greatest_priority = 0;
+    check(
+        orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority),
+        "orDeviceGetStreamPriorityRange");
+    check(
+        orStreamCreateWithPriority(&stream, 0, greatest_priority),
+        "orStreamCreateWithPriority");
 
-    const Result direct_raw = run_direct(
-        direct_logits, direct_index, direct_temp, cfg, false);
-    const Result direct_args = run_direct(
-        direct_logits, direct_index, direct_temp, cfg, true);
+    const Result direct_raw =
+        run_direct(direct_logits, direct_index, direct_temp, cfg, false);
+    const Result direct_args =
+        run_direct(direct_logits, direct_index, direct_temp, cfg, true);
     const Result queued_raw_args = run_queue(
         stream, queue_logits, queue_index, queue_temp, cfg, direct_raw, 0);
     const Result queued_struct_ptr = run_queue(

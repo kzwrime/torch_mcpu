@@ -234,7 +234,15 @@ int main(int argc, char** argv) {
     }
 
     orStream_t stream = nullptr;
-    check(orStreamCreate(&stream), "orStreamCreate");
+    // Measure the busy-polling worker that dispatches kernels.
+    int least_priority = 0;
+    int greatest_priority = 0;
+    check(
+        orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority),
+        "orDeviceGetStreamPriorityRange");
+    check(
+        orStreamCreateWithPriority(&stream, 0, greatest_priority),
+        "orStreamCreateWithPriority");
 
     const Result direct = run_direct(direct_payloads, direct_outputs, cfg);
     const Result queued_func_args =

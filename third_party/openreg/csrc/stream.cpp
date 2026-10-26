@@ -40,10 +40,13 @@ thread_local bool g_in_kernel_task = false;
 #define TORCH_MCPU_HIGH_PRIORITY_STREAM_IDLE_POLICY TORCH_MCPU_STREAM_IDLE_BUSY
 #endif
 #ifndef TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY
-#define TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY TORCH_MCPU_STREAM_IDLE_BLOCK
+#define TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY TORCH_MCPU_STREAM_IDLE_HYBRID
 #endif
-#ifndef TORCH_MCPU_STREAM_IDLE_SPIN_ITERS
-#define TORCH_MCPU_STREAM_IDLE_SPIN_ITERS 5000
+// Hybrid workers spin for this long after the queue drains before blocking.
+// A time budget is used because cpu_relax() latency differs by orders of
+// magnitude across CPUs (x86 pause vs. aarch64 yield).
+#ifndef TORCH_MCPU_STREAM_IDLE_SPIN_NS
+#define TORCH_MCPU_STREAM_IDLE_SPIN_NS 50000
 #endif
 
 #define TORCH_MCPU_STREAM_IDLE_POLICY_VALID(policy) \
@@ -64,8 +67,8 @@ static_assert(
     "TORCH_MCPU_STREAM_IDLE_BUSY, TORCH_MCPU_STREAM_IDLE_HYBRID, or "
     "TORCH_MCPU_STREAM_IDLE_BLOCK");
 static_assert(
-    TORCH_MCPU_STREAM_IDLE_SPIN_ITERS >= 0,
-    "TORCH_MCPU_STREAM_IDLE_SPIN_ITERS must be non-negative");
+    TORCH_MCPU_STREAM_IDLE_SPIN_NS >= 0,
+    "TORCH_MCPU_STREAM_IDLE_SPIN_NS must be non-negative");
 
 static void initialize_registries() {
   int device_count = 0;
@@ -152,8 +155,8 @@ static orStream::IdlePolicy choose_idle_policy(
       : TORCH_MCPU_LOW_PRIORITY_STREAM_IDLE_POLICY);
 }
 
-static std::uint64_t choose_spin_iters() {
-  return static_cast<std::uint64_t>(TORCH_MCPU_STREAM_IDLE_SPIN_ITERS);
+static std::uint64_t choose_spin_ns() {
+  return static_cast<std::uint64_t>(TORCH_MCPU_STREAM_IDLE_SPIN_NS);
 }
 
 static void pin_this_thread_to_core(int core) {
@@ -201,7 +204,7 @@ orStream::orStream(int stream_priority, bool default_stream)
     : priority(stream_priority),
       is_default_stream(default_stream),
       idle_policy(choose_idle_policy(stream_priority, default_stream)),
-      spin_iters(choose_spin_iters()),
+      spin_ns(choose_spin_ns()),
       affinity_core(choose_worker_core(default_stream)) {
   for (std::uint64_t i = 0; i < kQueueCapacity; ++i) {
     slots[i].sequence.store(i, std::memory_order_relaxed);
@@ -226,8 +229,12 @@ orStream::~orStream() {
 
 template <orStream::IdlePolicy Policy>
 static void workerLoopImpl(orStream* stream) {
+  // Hybrid workers read the clock once per this many empty polls.
+  constexpr std::uint64_t kSpinClockStride = 64;
+  using spin_clock = std::chrono::steady_clock;
   std::uint64_t local_head = stream->head.load(std::memory_order_relaxed);
   std::uint64_t idle_spins = 0;
+  spin_clock::time_point spin_deadline;
   while (true) {
     auto& slot = stream->slots[local_head & orStream::kQueueMask];
     const auto sequence = slot.sequence.load(std::memory_order_acquire);
@@ -243,18 +250,32 @@ static void workerLoopImpl(orStream* stream) {
       }
 
       if constexpr (Policy == orStream::IdlePolicy::Hybrid) {
-        if (idle_spins++ < stream->spin_iters) {
+        if (idle_spins == 0) {
+          spin_deadline = spin_clock::now() +
+              std::chrono::nanoseconds(stream->spin_ns);
+        }
+        if (++idle_spins % kSpinClockStride != 0 ||
+            spin_clock::now() < spin_deadline) {
           openreg::cpu_relax();
           continue;
         }
       }
 
-      std::unique_lock<std::mutex> lock(stream->wake_mutex);
-      stream->wake_cv.wait(lock, [&] {
-        return slot.sequence.load(std::memory_order_acquire) ==
-            local_head + 1 ||
-            stream->stop.load(std::memory_order_acquire);
-      });
+      // Store-buffering handshake with notifyWorker(): the producer publishes
+      // a task then reads worker_sleeping, the worker publishes
+      // worker_sleeping then re-reads the queue in the wait predicate. The
+      // fences guarantee at least one side observes the other.
+      stream->worker_sleeping.store(true, std::memory_order_relaxed);
+      std::atomic_thread_fence(std::memory_order_seq_cst);
+      {
+        std::unique_lock<std::mutex> lock(stream->wake_mutex);
+        stream->wake_cv.wait(lock, [&] {
+          return slot.sequence.load(std::memory_order_acquire) ==
+              local_head + 1 ||
+              stream->stop.load(std::memory_order_acquire);
+        });
+      }
+      stream->worker_sleeping.store(false, std::memory_order_relaxed);
       idle_spins = 0;
       continue;
     }
@@ -298,6 +319,12 @@ bool orStream::idle() const {
 
 void orStream::notifyWorker() {
   if (idle_policy == IdlePolicy::Busy) {
+    return;
+  }
+  // Pairs with the fence the worker issues before re-checking the queue and
+  // blocking. A worker that is still spinning will see the task by itself.
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  if (!worker_sleeping.load(std::memory_order_relaxed)) {
     return;
   }
   // Pair publication with the worker's predicate-check/wait transition. Without
@@ -501,7 +528,7 @@ orError_t orStreamCreate(orStream_t* stream) {
   int least_priority, greatest_priority;
   orDeviceGetStreamPriorityRange(&least_priority, &greatest_priority);
 
-  return orStreamCreateWithPriority(stream, 0, greatest_priority);
+  return orStreamCreateWithPriority(stream, 0, least_priority);
 }
 
 orError_t orStreamGetPriority(orStream_t stream, int* priority) {
@@ -576,8 +603,10 @@ orError_t orDeviceGetStreamPriorityRange(
     return orErrorUnknown;
   }
 
-  *leastPriority = 1;
-  *greatestPriority = 0;
+  // Same convention as CUDA: lower numbers are higher priorities and 0, the
+  // priority of a stream created without one, is the least priority.
+  *leastPriority = 0;
+  *greatestPriority = -1;
   return orSuccess;
 }
 

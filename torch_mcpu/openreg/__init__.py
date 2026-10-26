@@ -111,10 +111,11 @@ class Stream(_TORCH_STREAM_BASE):
 
     @property
     def priority(self):
-        """Return the priority of this stream (0=high, 1=low)."""
+        """Return the priority of this stream (0=normal, -1=high), as in CUDA."""
         # Decode priority from stream_id encoding:
         # stream_id bits: [si | stream_type (3 bits) | native (1 bit)]
-        # stream_type 0x6 = DEFAULT (treated as priority 0)
+        # stream_type 0x6 = DEFAULT (treated as priority 0); pool i holds
+        # priority -i.
         stream_id = self.stream_id
         if not (stream_id & 1):  # external stream
             return 0
@@ -122,7 +123,7 @@ class Stream(_TORCH_STREAM_BASE):
         stream_type = (stream_id >> 1) & ((1 << kStreamTypeBits) - 1)
         if stream_type == 0x6:  # DEFAULT stream
             return 0
-        return stream_type
+        return -stream_type
 
 
 class Event(_TORCH_EVENT_BASE):

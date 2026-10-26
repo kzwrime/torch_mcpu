@@ -107,7 +107,11 @@ struct orStream {
   alignas(64) std::atomic<std::uint64_t> tail{0};
   alignas(64) std::atomic<std::uint64_t> completed{0};
   alignas(64) std::atomic<bool> stop{false};
-  std::mutex wake_mutex;
+  // Set by a non-busy worker before it blocks, so producers only take the
+  // wake lock when a worker may be waiting.
+  alignas(64) std::atomic<bool> worker_sleeping{false};
+  // Kept off the cache line of `stop`, which an idle worker polls.
+  alignas(64) std::mutex wake_mutex;
   std::condition_variable wake_cv;
   std::thread worker;
   int device_index = -1;
@@ -115,7 +119,7 @@ struct orStream {
   bool is_default_stream = false;
   enum class IdlePolicy { Busy, Hybrid, Block };
   IdlePolicy idle_policy = IdlePolicy::Busy;
-  std::uint64_t spin_iters = 0;
+  std::uint64_t spin_ns = 0;
   int affinity_core = -1;
 
   OPENREG_EXPORT orStream();

@@ -24,7 +24,7 @@ Options:
   --pin-core N         Pin worker threads to CPU N where supported.
   --pin-core auto      Pick a high-numbered CPU automatically.
   --stream-spin-only   Keep the openreg stream worker spinning instead of sleeping.
-  --run NAME           Run one benchmark: overhead, breakdown, patterns, progression, pointer.
+  --run NAME           Run one benchmark: overhead, breakdown, patterns, progression, pointer, idle.
   --build-only         Compile only.
   --help              Show this help.
 
@@ -138,6 +138,16 @@ compile \
   "${ROOT_DIR}/third_party/openreg/csrc/stream.cpp" \
   "${ROOT_DIR}/third_party/openreg/csrc/memory.cpp"
 
+compile \
+  stream_idle_policy_benchmark \
+  -DTORCH_MCPU_ENABLE_MEMORY_PROTECTION=0 \
+  -I"${BENCH_DIR}" \
+  -I"${ROOT_DIR}/third_party/openreg" \
+  "${BENCH_DIR}/stream_idle_policy_benchmark.cpp" \
+  "${ROOT_DIR}/third_party/openreg/csrc/device.cpp" \
+  "${ROOT_DIR}/third_party/openreg/csrc/stream.cpp" \
+  "${ROOT_DIR}/third_party/openreg/csrc/memory.cpp"
+
 if [[ "${BUILD_ONLY}" -eq 1 ]]; then
   exit 0
 fi
@@ -193,4 +203,11 @@ run_bench \
 run_bench \
   pointer \
   "${BUILD_DIR}/pointer_kernel_launch" \
+  "${common_args[@]}"
+
+# --pin-core also pins the default stream worker, so the idle benchmark does
+# not pin its producer to the same core.
+run_bench \
+  idle \
+  "${BUILD_DIR}/stream_idle_policy_benchmark" \
   "${common_args[@]}"

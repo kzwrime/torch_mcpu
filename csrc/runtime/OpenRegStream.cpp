@@ -32,7 +32,8 @@ std::vector<std::array<
     std::array<orStream_t, kStreamsPerPool>,
     c10::mcpu::max_compile_time_stream_priorities>>
     streams;
-std::deque<std::array<std::atomic<uint32_t>, max_compile_time_stream_priorities>>
+std::deque<
+    std::array<std::atomic<uint32_t>, max_compile_time_stream_priorities>>
     priority_counters;
 
 thread_local std::unique_ptr<StreamId[]> current_streams = nullptr;
@@ -47,13 +48,15 @@ thread_local std::unique_ptr<StreamId[]> current_streams = nullptr;
  *                ignored for ext   ignored for ext
  *
  * StreamIdType:
- *  000 = normal stream
- *  001 = high stream
+ *  000 = normal stream (priority 0)
+ *  001 = high stream (priority -1)
  *  110 = default stream
  *  111 = external stream
 
  * The range 000 to 101 is reserved for stream pools of different priorities and
- can be expanded as needed. (Mcpu currently supports two priorities: 0 and 1)
+ can be expanded as needed. As in CUDA, pool i holds streams of priority -i,
+ so a lower priority number is a higher priority. (Mcpu currently supports two
+ priorities: 0 and -1)
  *
  * For external stream, StreamID is a orStream_t pointer. This means that last
  * bit will always be 0. So when constructing StreamId for a native stream we
@@ -149,9 +152,9 @@ void initSingleDeviceStream(int priority, DeviceIndex device_index, int i) {
   if (stream != nullptr) {
     return;
   }
-  const unsigned int flags =
-      (priority == 0 && i == 0) ? orStreamDefault : 0;
-  MCPU_CHECK(orStreamCreateWithPriority(&stream, flags, priority));
+  const unsigned int flags = (priority == 0 && i == 0) ? orStreamDefault : 0;
+  // `priority` is the pool index; pool i holds OpenReg priority -i.
+  MCPU_CHECK(orStreamCreateWithPriority(&stream, flags, -priority));
 }
 
 void ensureStreamInitialized(
@@ -164,7 +167,8 @@ void ensureStreamInitialized(
     return;
   }
   std::lock_guard<std::mutex> lock(stream_init_mutex);
-  initSingleDeviceStream(priority, device_index, static_cast<int>(stream_index));
+  initSingleDeviceStream(
+      priority, device_index, static_cast<int>(stream_index));
 }
 
 void initMcpuStreamsOnce() {
@@ -244,7 +248,9 @@ McpuStream getStreamFromPool(const int priority, DeviceIndex device_index) {
   if (device_index == -1) {
     device_index = current_device();
   }
-  auto pri_idx = std::clamp(priority, 0, max_stream_priorities - 1);
+  // Priorities are 0 (normal) and negative (higher); positive values clamp to
+  // the normal pool, matching CUDA.
+  auto pri_idx = std::clamp(-priority, 0, max_stream_priorities - 1);
   const auto idx = get_idx(priority_counters[device_index][pri_idx]);
   auto id_type = static_cast<StreamIdType>(pri_idx);
   return McpuStreamForId(device_index, makeStreamId(id_type, idx));
@@ -252,7 +258,7 @@ McpuStream getStreamFromPool(const int priority, DeviceIndex device_index) {
 
 McpuStream getStreamFromPool(const bool isHighPriority, DeviceIndex device) {
   initMcpuStreamsOnce();
-  int priority = isHighPriority ? 0 : max_stream_priorities - 1;
+  int priority = isHighPriority ? -max_stream_priorities + 1 : 0;
   return getStreamFromPool(priority, device);
 }
 

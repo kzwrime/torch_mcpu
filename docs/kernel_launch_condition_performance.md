@@ -151,7 +151,7 @@
 - 保活尾任务无条件执行，使用创建时捕获的 stream；正常异步路径不新增 stream/device synchronize。异常入队失败才回退到原 stream 同步，同步 launch 调试模式按开关等待。
 - profiler 跳过零时间戳事件，保活尾任务不生成伪 kernel 时间；跳过任务仍消耗预留槽，整体上限仍为 262,144。reset/snapshot 需要先停止提交并同步，原子预留不等于可与活跃 worker 并发读取/清空。
 - profiler 启停原有 device synchronize 和 MPI window cleanup 的原有 device synchronize 保留；不能把这些既有生命周期操作误认为正常 kernel 序列中新引入的同步。
-- 本后端 priority 主要选择 busy/block 等 idle policy，没有实现高优先级 kernel 抢占或跨流执行顺序保证。
+- 本后端 priority（与 CUDA 一致：0 为普通/最低，-1 为高）主要选择 busy/hybrid 等 idle policy，没有实现高优先级 kernel 抢占或跨流执行顺序保证。
 
 **仍保留的 EP 多流限制：** V5/V6 的 MPI window context 是进程级全局对象，`MpiWindowContext` 本身明确要求串行访问；V5 还有共享计数数组。Invocation state 独立不代表 window、通信缓冲区和 collective 顺序也独立。多个 EP 调用必须在同一通信 stream 上顺序执行，或用 event 依赖把整个 dispatch/compute/combine/reduce 序列排序，并保证各 rank 的 collective 顺序一致。真正重叠执行需要分别设计 window、通信上下文和 MPI 线程级别支持，本次没有声称支持或用局部互斥锁掩盖该问题。
 
