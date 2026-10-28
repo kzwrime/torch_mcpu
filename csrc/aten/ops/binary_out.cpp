@@ -17,6 +17,7 @@
 #include <ATen/ops/ne.h>
 #include <ATen/ops/pow.h>
 #include <ATen/ops/remainder.h>
+#include <ATen/ops/rsub.h>
 #include <ATen/ops/sub.h>
 #include <c10/core/DefaultDtype.h>
 #include <torch/library.h>
@@ -765,6 +766,33 @@ at::Tensor& sub_Scalar_(
   return self;
 }
 
+// rsub has no structured kernel to inherit: its composite fallback wraps the
+// scalar into a CPU tensor and hands it to sub.Tensor as `self`.
+at::Tensor rsub_Scalar(
+    const at::Tensor& self,
+    const at::Scalar& other,
+    const at::Scalar& alpha) {
+  auto out = empty_like_mcpu_result(self, other);
+  auto self_spec = ops::make_cpu_view_spec(self);
+  auto out_spec = ops::make_cpu_view_spec(out);
+
+  MCPU_LAUNCH_TIMED_KERNEL(
+      "mcpu::aten::rsub.Scalar",
+      ([
+        self_spec = std::move(self_spec),
+        out_spec = std::move(out_spec),
+        other,
+        alpha
+      ]),
+      {
+        KernelPointerMemoryGuard guard({self_spec.data, out_spec.data});
+        auto cpu_self = ops::cpu_view_from_spec(self_spec);
+        auto cpu_out = ops::cpu_view_from_spec(out_spec);
+        cpu_out.copy_(at::rsub(cpu_self, other, alpha));
+      });
+  return out;
+}
+
 at::Tensor& pow_Scalar_out(
     const at::Scalar& self,
     const at::Tensor& exponent,
@@ -957,6 +985,7 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("sub_.Tensor", &sub_Tensor_);
   m.impl("sub.Scalar", &sub_Scalar);
   m.impl("sub_.Scalar", &sub_Scalar_);
+  m.impl("rsub.Scalar", &rsub_Scalar);
   m.impl("pow.Scalar_out", &pow_Scalar_out);
   m.impl("pow.Tensor_Scalar", &pow_Tensor_Scalar);
   m.impl("pow.Tensor_Scalar_out", &pow_Tensor_Scalar_out);
