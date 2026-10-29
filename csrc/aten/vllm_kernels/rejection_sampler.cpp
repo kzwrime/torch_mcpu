@@ -432,7 +432,8 @@ void launch_vllm_rejection(
     const std::optional<at::Tensor>& cumulative_log_p,
     const std::optional<at::Tensor>& local_residual_mass,
     bool use_block_verification,
-    int64_t vocab_num_blocks) {
+    int64_t vocab_num_blocks,
+    int64_t vocab_size) {
   auto* sampled_ptr = sampled.data_ptr<int64_t>();
   auto* rejected_ptr = rejected_steps.data_ptr<int32_t>();
   auto* target_rejected_ptr = target_rejected_lse.data_ptr<float>();
@@ -559,8 +560,11 @@ void launch_vllm_rejection(
           sampled_ptr[req * sampled_stride + step] =
               accepted ? draft_token : target_argmax;
         } else {
-          const bool valid_draft = draft_token >= 0;
-          draft_token = std::max<int64_t>(0, draft_token);
+          // -1 marks a placeholder; ids >= vocab_size must also be rejected,
+          // otherwise the logit read lands in the next row of target_logits
+          // and the id can be accepted and written back as a sampled token.
+          const bool valid_draft = draft_token >= 0 && draft_token < vocab_size;
+          draft_token = valid_draft ? draft_token : 0;
           const float target_logit = static_cast<float>(
               target_ptr[logit_idx * target_stride + draft_token]);
           target_lse = block_global_lse(
@@ -644,7 +648,8 @@ void dispatch_vllm_rejection_draft(
     const std::optional<at::Tensor>& cumulative_log_p,
     const std::optional<at::Tensor>& local_residual_mass,
     bool use_block_verification,
-    int64_t vocab_num_blocks) {
+    int64_t vocab_num_blocks,
+    int64_t vocab_size) {
 #define CALL_REJECTION(DRAFT_T)             \
   launch_vllm_rejection<target_t, DRAFT_T>( \
       sampled,                              \
@@ -667,7 +672,8 @@ void dispatch_vllm_rejection_draft(
       cumulative_log_p,                     \
       local_residual_mass,                  \
       use_block_verification,               \
-      vocab_num_blocks)
+      vocab_num_blocks,                     \
+      vocab_size)
   if (!draft_logits) {
     CALL_REJECTION(target_t);
   } else {
@@ -709,7 +715,8 @@ void vllm_rejection_impl(
     const std::optional<at::Tensor>& cumulative_log_p,
     const std::optional<at::Tensor>& local_residual_mass,
     bool use_block_verification,
-    int64_t vocab_num_blocks) {
+    int64_t vocab_num_blocks,
+    int64_t vocab_size) {
   VLLM_MCPU_CHECK_DIM(sampled, 2, "sampled");
   VLLM_MCPU_CHECK_DIM(rejected_steps, 1, "rejected_steps");
   VLLM_MCPU_CHECK_DIM(target_logits, 2, "target_logits");
@@ -732,6 +739,9 @@ void vllm_rejection_impl(
   const int64_t num_reqs = idx_mapping.numel();
   const int64_t num_logits = target_logits.size(0);
   VLLM_MCPU_CHECK(vocab_num_blocks > 0, "vocab_num_blocks must be positive");
+  VLLM_MCPU_CHECK(
+      vocab_size > 0 && vocab_size <= target_logits.size(1),
+      "vocab_size must be in (0, target_logits.size(1)]");
   VLLM_MCPU_CHECK(
       sampled.size(0) == num_reqs && rejected_steps.numel() == num_reqs &&
           target_rejected_lse.numel() == num_reqs &&
@@ -773,7 +783,8 @@ void vllm_rejection_impl(
         cumulative_log_p,
         local_residual_mass,
         use_block_verification,
-        vocab_num_blocks);
+        vocab_num_blocks,
+        vocab_size);
   });
 }
 
@@ -1384,7 +1395,7 @@ TORCH_LIBRARY_FRAGMENT(mcpu, m) {
       "Tensor cu_num_logits, Tensor idx_mapping, Tensor temperature, "
       "Tensor seed, Tensor pos, Tensor? cumulative_log_p, "
       "Tensor? local_residual_mass, bool use_block_verification, "
-      "int vocab_num_blocks"
+      "int vocab_num_blocks, int vocab_size"
       ") -> ()");
   m.def(
       "vllm_rejection_insert("

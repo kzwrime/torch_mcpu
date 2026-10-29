@@ -526,6 +526,7 @@ class TestVllmKernelLaunch(TestCase):
             None,
             False,
             1,
+            target.size(1),
         )
 
         resampled_argmax = torch.tensor(
@@ -635,6 +636,7 @@ class TestVllmKernelLaunch(TestCase):
             residual,
             True,
             1,
+            target.size(1),
         )
         torch.mcpu.synchronize()
 
@@ -1276,6 +1278,102 @@ class TestVllmKernelLaunch(TestCase):
         self.assertEqual(
             all_token_ids.cpu(), torch.full((1, 4), -1, dtype=torch.int32)
         )
+
+    def test_post_update_guards_out_of_range_tokens_and_overflow(self):
+        # Last slot: an out-of-vocab token would index past output_counts.
+        vocab = 10
+        idx_mapping = torch.tensor([1], dtype=torch.int32, device="mcpu")
+        num_computed = torch.zeros(2, dtype=torch.int32, device="mcpu")
+        last_sampled = torch.full((2, 1), -1, dtype=torch.int64, device="mcpu")
+        output_counts = torch.zeros((2, vocab), dtype=torch.int32, device="mcpu")
+        sampled = torch.tensor(
+            [[vocab + 3, vocab + 3, 3, 4]], dtype=torch.int64, device="mcpu"
+        )
+        num_sampled = torch.tensor([4], dtype=torch.int32, device="mcpu")
+        num_rejected = torch.zeros(1, dtype=torch.int32, device="mcpu")
+        # Only 3 free columns for 4 sampled tokens: the last one must be dropped.
+        all_token_ids = torch.full((2, 8), -1, dtype=torch.int32, device="mcpu")
+        total_len = torch.tensor([0, 5], dtype=torch.int32, device="mcpu")
+
+        torch.ops.mcpu.vllm_post_update(
+            idx_mapping,
+            num_computed,
+            last_sampled,
+            output_counts,
+            output_counts.stride(0),
+            sampled,
+            sampled.stride(0),
+            num_sampled,
+            num_rejected,
+            None,
+            all_token_ids,
+            all_token_ids.stride(0),
+            total_len,
+        )
+        torch.mcpu.synchronize()
+
+        self.assertEqual(total_len.cpu(), torch.tensor([0, 8], dtype=torch.int32))
+        self.assertEqual(
+            all_token_ids.cpu()[1, 5:], torch.tensor([13, 13, 3], dtype=torch.int32)
+        )
+        # Counts: only the in-vocab token (3) is counted; nothing else changes.
+        expected_counts = torch.zeros((2, vocab), dtype=torch.int32)
+        expected_counts[1, 3] = 1
+        self.assertEqual(output_counts.cpu(), expected_counts)
+
+    def test_rejection_rejects_draft_ids_outside_vocab(self):
+        # Draft id vocab+2 aliases target_logits[row + 1, 2], which is made
+        # extremely likely; without the upper bound it would be accepted.
+        vocab = 5
+        target = torch.zeros((2, vocab), dtype=torch.float32, device="mcpu")
+        target[1, 2] = 50.0
+        block_shape = (2, 1)
+        target_argmax = torch.tensor([[0], [2]], dtype=torch.int64, device="mcpu")
+        target_max = torch.tensor([[0.0], [50.0]], device="mcpu")
+        target_sumexp = torch.tensor([[float(vocab)], [1.0 + 4.0 * math.exp(-50.0)]], device="mcpu")
+        draft_max = torch.zeros(block_shape, device="mcpu")
+        draft_sumexp = torch.zeros(block_shape, device="mcpu")
+        cu_logits = torch.tensor([0, 2], dtype=torch.int32, device="mcpu")
+        idx_mapping = torch.tensor([0], dtype=torch.int32, device="mcpu")
+        temperature = torch.tensor([0.7], dtype=torch.float32, device="mcpu")
+        seed = torch.tensor([11], dtype=torch.int64, device="mcpu")
+        pos = torch.arange(2, dtype=torch.int64, device="mcpu")
+
+        def run(draft_id):
+            draft_sampled = torch.tensor(
+                [-1, draft_id], dtype=torch.int32, device="mcpu"
+            )
+            sampled = torch.full((1, 2), -99, dtype=torch.int64, device="mcpu")
+            accepted = torch.empty(1, dtype=torch.int32, device="mcpu")
+            torch.ops.mcpu.vllm_rejection(
+                sampled,
+                accepted,
+                torch.empty(1, device="mcpu"),
+                torch.empty(1, device="mcpu"),
+                target,
+                target_argmax,
+                target_max,
+                target_sumexp,
+                draft_sampled,
+                None,
+                draft_max,
+                draft_sumexp,
+                cu_logits,
+                idx_mapping,
+                temperature,
+                seed,
+                pos,
+                None,
+                None,
+                False,
+                1,
+                vocab,
+            )
+            torch.mcpu.synchronize()
+            return int(accepted.cpu()[0])
+
+        self.assertEqual(run(vocab + 2), 0)
+        self.assertEqual(run(-1), 0)
 
     def test_ranks_matches_triton_comparison_and_handles_padded_ids(self):
         logits = torch.tensor(

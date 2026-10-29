@@ -341,12 +341,19 @@ void vllm_post_update_impl(
   int32_t* tlen_ptr = total_len.data_ptr<int32_t>();
 
   int32_t* obc_ptr = nullptr;
+  int64_t vocab_size = 0;
   if (output_bin_counts.has_value() && output_bin_counts->defined()) {
     obc_ptr = output_bin_counts->data_ptr<int32_t>();
+    vocab_size = output_bin_counts->size(1);
   }
+  const int64_t max_seq_len = all_token_ids.size(1);
+  const int64_t max_num_reqs = total_len.size(0);
   at::mcpu::launch_timed_kernel(
       "mcpu::vllm_post_update",
       [num_reqs,
+       vocab_size,
+       max_seq_len,
+       max_num_reqs,
        all_token_ids_stride,
        sampled_tokens_stride,
        idx_ptr,
@@ -377,8 +384,37 @@ void vllm_post_update_impl(
           int32_t req = idx_ptr[r];
           if (req < 0)
             continue;
+          // Memory-safety guards: a violation means an upstream bug (e.g. an
+          // out-of-vocab draft accepted by the verifier). Never write out of
+          // bounds; report once so the real cause can be found.
+          if (req >= max_num_reqs) {
+            TORCH_WARN_ONCE(
+                "mcpu::vllm_post_update: idx_mapping[",
+                r,
+                "]=",
+                req,
+                " out of range [0,",
+                max_num_reqs,
+                "); row skipped");
+            continue;
+          }
           int32_t n = ns_ptr[r];
           int32_t tlen = tlen_ptr[req];
+          if (n > 0 && (tlen < 0 || (int64_t)tlen + n > max_seq_len)) {
+            TORCH_WARN_ONCE(
+                "mcpu::vllm_post_update: req=",
+                req,
+                " total_len=",
+                tlen,
+                " num_sampled=",
+                n,
+                " exceeds all_token_ids width ",
+                max_seq_len,
+                "; clamping");
+            n = tlen < 0 ? 0
+                         : (int32_t)std::max<int64_t>(
+                               0, std::min<int64_t>(n, max_seq_len - tlen));
+          }
 
           if (n > 0) {
             const int64_t* st_row = st_ptr + r * sampled_tokens_stride;
@@ -389,8 +425,23 @@ void vllm_post_update_impl(
             for (int32_t i = 0; i < n; i++) {
               dst[i] = (int32_t)st_row[i];
               if (obc_ptr != nullptr) {
-                int32_t tok = (int32_t)st_row[i];
-                obc_ptr[(int64_t)req * output_bin_counts_stride + tok]++;
+                const int64_t tok = st_row[i];
+                if (tok >= 0 && tok < vocab_size) {
+                  obc_ptr[(int64_t)req * output_bin_counts_stride + tok]++;
+                } else {
+                  TORCH_WARN_ONCE(
+                      "mcpu::vllm_post_update: sampled token ",
+                      tok,
+                      " outside [0,",
+                      vocab_size,
+                      ") for req=",
+                      req,
+                      " (position ",
+                      i,
+                      " of ",
+                      n,
+                      "); output_bin_counts not updated");
+                }
               }
             }
           }
