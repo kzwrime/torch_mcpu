@@ -557,6 +557,88 @@ class TestFallback(TestCase):
         with self.assertRaisesRegex(RuntimeError, "aten::minimum.out"):
             torch.minimum(lhs, rhs, out=torch.empty(3, device="mcpu"))
 
+    def test_clamp_min_is_explicit_and_matches_cpu(self):
+        for schema in (
+            "aten::clamp_min",
+            "aten::clamp_min_",
+            "aten::clamp_min.out",
+            "aten::clamp_min.Tensor",
+            "aten::clamp_min_.Tensor",
+            "aten::clamp_min.Tensor_out",
+        ):
+            self.assertTrue(
+                torch._C._dispatch_has_kernel_for_dispatch_key(schema, "PrivateUse1")
+            )
+
+        def check(actual, expected):
+            self.assertEqual(actual.device.type, "mcpu")
+            self.assertEqual(actual.dtype, expected.dtype)
+            self.assertEqual(actual.cpu(), expected, equal_nan=True)
+
+        nan = float("nan")
+        x_cpu = torch.tensor([[1.0, nan, -2.0], [4.0, 0.5, 3.0]])
+        x = x_cpu.to("mcpu")
+
+        # Scalar overloads.
+        check(torch.clamp_min(x, 0.5), torch.clamp_min(x_cpu, 0.5))
+        check(torch.clamp_min(x, nan), torch.clamp_min(x_cpu, nan))
+        for dtype in (torch.float16, torch.bfloat16, torch.float64):
+            check(
+                torch.clamp_min(x.to(dtype), 0.5),
+                torch.clamp_min(x_cpu.to(dtype), 0.5),
+            )
+        i_cpu = torch.tensor([3, -1, 7], dtype=torch.int32)
+        i = i_cpu.to("mcpu")
+        check(torch.clamp_min(i, 2), torch.clamp_min(i_cpu, 2))
+        check(torch.clamp_min(i, 2.5), torch.clamp_min(i_cpu, 2.5))
+        check(torch.clamp_min(x.t(), 1.0), torch.clamp_min(x_cpu.t(), 1.0))
+        self.assertEqual(torch.clamp_min(x[:0], 1.0).shape, (0, 3))
+
+        out = torch.empty((2, 3), device="mcpu")
+        self.assertIs(torch.clamp_min(x, 1.0, out=out), out)
+        check(out, torch.clamp_min(x_cpu, 1.0))
+        strided_out = torch.empty((3, 2), device="mcpu").t()
+        torch.clamp_min(x, 1.0, out=strided_out)
+        check(strided_out, torch.clamp_min(x_cpu, 1.0))
+
+        inplace = x.clone()
+        self.assertIs(inplace.clamp_min_(1.0), inplace)
+        check(inplace, torch.clamp_min(x_cpu, 1.0))
+
+        # Tensor overloads, including broadcast, dtype promotion and a
+        # zero-dimensional CPU scalar operand.
+        min_cpu = torch.tensor([[2.0, 1.0, -3.0]])
+        min_t = min_cpu.to("mcpu")
+        check(torch.clamp_min(x, min_t), torch.clamp_min(x_cpu, min_cpu))
+        check(
+            torch.clamp_min(x, min_t.half()),
+            torch.clamp_min(x_cpu, min_cpu.half()),
+        )
+        check(
+            torch.clamp_min(i, torch.tensor([2, 5, 7], dtype=torch.int64, device="mcpu")),
+            torch.clamp_min(i_cpu, torch.tensor([2, 5, 7], dtype=torch.int64)),
+        )
+        cpu_scalar = torch.tensor(0.75)
+        check(torch.clamp_min(x, cpu_scalar), torch.clamp_min(x_cpu, cpu_scalar))
+        check(torch.clamp_min(cpu_scalar, x), torch.clamp_min(cpu_scalar, x_cpu))
+
+        out = torch.empty((2, 3), device="mcpu")
+        self.assertIs(torch.clamp_min(x, min_t, out=out), out)
+        check(out, torch.clamp_min(x_cpu, min_cpu))
+        inplace = x.clone()
+        self.assertIs(inplace.clamp_min_(min_t), inplace)
+        check(inplace, torch.clamp_min(x_cpu, min_cpu))
+
+        # Errors are raised eagerly on the host, not inside the async kernel.
+        with self.assertRaisesRegex(RuntimeError, "aten::clamp_min.out"):
+            torch.clamp_min(x, 1.0, out=torch.empty(3, device="mcpu"))
+        with self.assertRaisesRegex(RuntimeError, "aten::clamp_min.Tensor_out"):
+            torch.clamp_min(x, min_t, out=torch.empty(3, device="mcpu"))
+        with self.assertRaisesRegex(RuntimeError, "can't be cast"):
+            i.clone().clamp_min_(2.5)
+        with self.assertRaises(NotImplementedError):
+            torch.clamp_min(torch.empty(3, device="mcpu", dtype=torch.complex64), 1.0)
+
     def test_explicit_forward_ops_do_not_fallback(self):
         x = torch.tensor([[1, 2, 3], [4, 5, 6]], device="mcpu", dtype=torch.float32)
         idx = torch.tensor([1, 0], device="mcpu", dtype=torch.long)
