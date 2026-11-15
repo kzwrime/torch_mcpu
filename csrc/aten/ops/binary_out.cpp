@@ -1,4 +1,12 @@
+#include "../native/MCPUFallback.h"
 #include "Common.h"
+#include "RawPlan.h"
+
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
+namespace at::native::mcpu {
+void cpu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack);
+} // namespace at::native::mcpu
+#endif
 
 #include <ATen/ExpandUtils.h>
 #include <ATen/ops/add.h>
@@ -12,7 +20,10 @@
 #include <ATen/ops/less.h>
 #include <ATen/ops/less_equal.h>
 #include <ATen/ops/lt.h>
+#include <ATen/ops/maximum.h>
+#include <ATen/ops/maximum_ops.h>
 #include <ATen/ops/minimum.h>
+#include <ATen/ops/minimum_ops.h>
 #include <ATen/ops/mul.h>
 #include <ATen/ops/ne.h>
 #include <ATen/ops/pow.h>
@@ -109,36 +120,6 @@ struct BinaryKernelArgs {
   ops::TensorViewSpec other;
   ops::TensorViewSpec out;
 };
-
-// A binary operand that is either an mcpu tensor view or a zero-dimensional
-// CPU scalar tensor materialized by value before launch.
-struct BinaryOperandSpec {
-  ops::TensorViewSpec view;
-  std::optional<at::Scalar> scalar;
-  at::ScalarType scalar_type = at::kFloat;
-};
-
-struct BinaryOperandKernelArgs {
-  BinaryOperandSpec self;
-  BinaryOperandSpec other;
-  ops::TensorViewSpec out;
-};
-
-BinaryOperandSpec make_binary_operand_spec(const at::Tensor& tensor) {
-  if (is_cpu_scalar_tensor(tensor)) {
-    return BinaryOperandSpec{{}, tensor.item(), tensor.scalar_type()};
-  }
-  return BinaryOperandSpec{
-      ops::make_cpu_view_spec(tensor), std::nullopt, tensor.scalar_type()};
-}
-
-at::Tensor cpu_tensor_from_operand_spec(const BinaryOperandSpec& spec) {
-  if (spec.scalar.has_value()) {
-    return at::scalar_tensor(
-        *spec.scalar, at::TensorOptions().dtype(spec.scalar_type));
-  }
-  return ops::cpu_view_from_spec(spec.view);
-}
 
 template <ArithmeticOp op>
 at::ScalarType arithmetic_result_type(
@@ -672,41 +653,182 @@ at::Tensor bitwise_and_Tensor(const at::Tensor& self, const at::Tensor& other) {
   return out;
 }
 
+void boxed_cpu_fallback(
+    const c10::OperatorHandle& op,
+    torch::jit::Stack* stack) {
+#if TORCH_MCPU_ENABLE_CPU_FALLBACK
+  at::native::mcpu::cpu_fallback(op, stack);
+#else
+  TORCH_CHECK(false, "CPU fallback is disabled for ", op.schema().name());
+#endif
+}
+
+bool is_standard_minmax_mcpu_tensor(const at::Tensor& tensor) {
+  return ops::is_mcpu_tensor(tensor) &&
+      tensor.layout() == c10::Layout::Strided && !tensor.is_quantized() &&
+      !tensor.is_neg() && !tensor.is_conj();
+}
+
+bool is_whitelisted_minmax_dtype(at::ScalarType dtype) {
+  return ops::is_raw_dtype_supported(dtype);
+}
+
+bool has_non_expanding_strides(const at::Tensor& out) {
+  if (out.is_contiguous()) {
+    return true;
+  }
+  const auto sizes = out.sizes();
+  const auto strides = out.strides();
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    if (sizes[i] > 1 && strides[i] == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+template <bool IsMax>
+void launch_minmax_kernel(
+    const char* record_name,
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  if (out.numel() == 0) {
+    return;
+  }
+  BinaryKernelArgs args{
+      ops::make_cpu_view_spec(self),
+      ops::make_cpu_view_spec(other),
+      ops::make_cpu_view_spec(out)};
+  at::mcpu::launch_timed_kernel_on_stream(
+      at::mcpu::detail::get_kernel_launch_stream(out),
+      record_name,
+      [args = std::move(args),
+       record_name](at::mcpu::kernel_timing::Event* timing_event) mutable {
+        MCPU_KERNEL_TIMING_SCOPE_EVENT(record_name, timing_event);
+        KernelPointerMemoryGuard guard(
+            {args.self.data, args.other.data, args.out.data});
+        auto cpu_self = ops::cpu_view_from_spec(args.self);
+        auto cpu_other = ops::cpu_view_from_spec(args.other);
+        auto cpu_out = ops::cpu_view_from_spec(args.out);
+        if constexpr (IsMax) {
+          at::maximum_out(cpu_out, cpu_self, cpu_other);
+        } else {
+          at::minimum_out(cpu_out, cpu_self, cpu_other);
+        }
+      });
+}
+
+template <bool IsMax, typename FallbackOp>
+at::Tensor& minmax_out_impl(
+    const char* op_name,
+    const char* record_name,
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  if (is_standard_minmax_mcpu_tensor(self) &&
+      is_standard_minmax_mcpu_tensor(other) &&
+      is_standard_minmax_mcpu_tensor(out) && self.device() == out.device() &&
+      other.device() == out.device() &&
+      is_whitelisted_minmax_dtype(self.scalar_type()) &&
+      is_whitelisted_minmax_dtype(other.scalar_type()) &&
+      is_whitelisted_minmax_dtype(out.scalar_type())) {
+    const auto common_dtype = (self.scalar_type() == other.scalar_type())
+        ? self.scalar_type()
+        : at::result_type(self, other);
+    if (is_whitelisted_minmax_dtype(common_dtype)) {
+      TORCH_CHECK(
+          common_dtype == out.scalar_type() ||
+              at::canCast(common_dtype, out.scalar_type()),
+          op_name,
+          ": result type ",
+          common_dtype,
+          " can't be cast to the desired output type ",
+          out.scalar_type());
+      if (self.sizes().equals(other.sizes())) {
+        ops::check_out_sizes(op_name, out, self.sizes());
+      } else {
+        const auto expected_sizes =
+            at::infer_size_dimvector(self.sizes(), other.sizes());
+        ops::check_out_sizes(op_name, out, expected_sizes);
+      }
+      if (has_non_expanding_strides(out) &&
+          ops::has_safe_raw_output_overlap(out, self) &&
+          ops::has_safe_raw_output_overlap(out, other)) {
+        launch_minmax_kernel<IsMax>(record_name, self, other, out);
+        return out;
+      }
+    }
+  }
+
+  if (is_standard_minmax_mcpu_tensor(out) &&
+      ((is_standard_minmax_mcpu_tensor(self) && self.device() == out.device() &&
+        is_cpu_scalar_tensor(other)) ||
+       (is_cpu_scalar_tensor(self) && is_standard_minmax_mcpu_tensor(other) &&
+        other.device() == out.device()))) {
+    const auto expected_sizes =
+        at::infer_size_dimvector(self.sizes(), other.sizes());
+    ops::check_out_sizes(op_name, out, expected_sizes);
+  }
+
+  return at::native::mcpu::custom::
+      call_fallback_fn<&boxed_cpu_fallback, FallbackOp>::call(self, other, out);
+}
+
+template <bool IsMax, typename FallbackOp>
+at::Tensor minmax_Tensor_impl(
+    const char* record_name,
+    const at::Tensor& self,
+    const at::Tensor& other) {
+  if (is_standard_minmax_mcpu_tensor(self) &&
+      is_standard_minmax_mcpu_tensor(other) &&
+      self.device() == other.device() &&
+      is_whitelisted_minmax_dtype(self.scalar_type()) &&
+      is_whitelisted_minmax_dtype(other.scalar_type())) {
+    const auto common_dtype = (self.scalar_type() == other.scalar_type())
+        ? self.scalar_type()
+        : at::result_type(self, other);
+    if (is_whitelisted_minmax_dtype(common_dtype)) {
+      if (self.sizes().equals(other.sizes())) {
+        auto out = at::empty(self.sizes(), self.options().dtype(common_dtype));
+        launch_minmax_kernel<IsMax>(record_name, self, other, out);
+        return out;
+      }
+      const auto out_sizes =
+          at::infer_size_dimvector(self.sizes(), other.sizes());
+      auto out = at::empty(out_sizes, self.options().dtype(common_dtype));
+      launch_minmax_kernel<IsMax>(record_name, self, other, out);
+      return out;
+    }
+  }
+  return at::native::mcpu::custom::
+      call_fallback_fn<&boxed_cpu_fallback, FallbackOp>::call(self, other);
+}
+
+at::Tensor& maximum_out(
+    const at::Tensor& self,
+    const at::Tensor& other,
+    at::Tensor& out) {
+  return minmax_out_impl<true, at::_ops::maximum_out>(
+      "aten::maximum.out", "mcpu::aten::maximum.out", self, other, out);
+}
+
+at::Tensor maximum_Tensor(const at::Tensor& self, const at::Tensor& other) {
+  return minmax_Tensor_impl<true, at::_ops::maximum>(
+      "mcpu::aten::maximum", self, other);
+}
+
 at::Tensor& minimum_out(
     const at::Tensor& self,
     const at::Tensor& other,
     at::Tensor& out) {
-  TORCH_CHECK(
-      !self.is_complex() && !other.is_complex(),
-      "minimum not implemented for complex tensors.");
-  const auto expected_sizes = at::infer_size(self.sizes(), other.sizes());
-  ops::check_out_sizes("aten::minimum.out", out, expected_sizes);
-
-  auto args = std::make_unique<BinaryOperandKernelArgs>(BinaryOperandKernelArgs{
-      make_binary_operand_spec(self),
-      make_binary_operand_spec(other),
-      ops::make_cpu_view_spec(out)});
-  MCPU_LAUNCH_TIMED_KERNEL(
-      "mcpu::aten::minimum.out", ([args = std::move(args)]), {
-        KernelPointerMemoryGuard guard(
-            {args->self.view.data, args->other.view.data, args->out.data});
-        auto cpu_self = cpu_tensor_from_operand_spec(args->self);
-        auto cpu_other = cpu_tensor_from_operand_spec(args->other);
-        auto cpu_out = ops::cpu_view_from_spec(args->out);
-        at::minimum_out(cpu_out, cpu_self, cpu_other);
-      });
-  return out;
+  return minmax_out_impl<false, at::_ops::minimum_out>(
+      "aten::minimum.out", "mcpu::aten::minimum.out", self, other, out);
 }
 
-at::Tensor minimum(const at::Tensor& self, const at::Tensor& other) {
-  // self may be the CPU scalar operand, so take device options from the mcpu
-  // operand.
-  const auto& device_tensor = is_cpu_scalar_tensor(self) ? other : self;
-  auto out = at::empty(
-      at::infer_size(self.sizes(), other.sizes()),
-      device_tensor.options().dtype(at::result_type(self, other)));
-  minimum_out(self, other, out);
-  return out;
+at::Tensor minimum_Tensor(const at::Tensor& self, const at::Tensor& other) {
+  return minmax_Tensor_impl<false, at::_ops::minimum>(
+      "mcpu::aten::minimum", self, other);
 }
 
 at::Tensor sub_Tensor(
@@ -970,7 +1092,9 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("lt.Scalar_out", &lt_Scalar_out);
   m.impl("lt_.Tensor", &lt_Tensor_);
   m.impl("lt_.Scalar", &lt_Scalar_);
-  m.impl("minimum", &minimum);
+  m.impl("maximum", &maximum_Tensor);
+  m.impl("maximum.out", &maximum_out);
+  m.impl("minimum", &minimum_Tensor);
   m.impl("minimum.out", &minimum_out);
   m.impl("mul.Tensor", &mul_Tensor);
   m.impl("mul.out", &mul_out);

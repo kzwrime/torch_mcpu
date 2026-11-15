@@ -939,6 +939,66 @@ class TestFallback(TestCase):
         with self.assertRaisesRegex(RuntimeError, "aten::clamp.Tensor_out"):
             torch.clamp(x, min=clamp_tensor_min, out=bad_unary_out)
 
+        self.assertEqual(
+            torch.clamp_min(x, 5.0).cpu(), torch.clamp_min(x.cpu(), 5.0)
+        )
+        self.assertEqual(
+            torch.clamp_max(x, 6.0).cpu(), torch.clamp_max(x.cpu(), 6.0)
+        )
+        self.assertEqual(
+            torch.clamp_min(x, clamp_tensor_min).cpu(),
+            torch.clamp_min(x.cpu(), clamp_tensor_min.cpu()),
+        )
+        self.assertEqual(
+            torch.clamp_max(x, clamp_tensor_min).cpu(),
+            torch.clamp_max(x.cpu(), clamp_tensor_min.cpu()),
+        )
+        with self.assertRaisesRegex(RuntimeError, "aten::clamp_min.out"):
+            torch.clamp_min(x, 5.0, out=bad_unary_out)
+        with self.assertRaisesRegex(RuntimeError, "aten::clamp_max.out"):
+            torch.clamp_max(x, 6.0, out=bad_unary_out)
+
+        self.assertEqual(
+            torch.maximum(x, clamp_tensor_min).cpu(),
+            torch.maximum(x.cpu(), clamp_tensor_min.cpu()),
+        )
+        self.assertEqual(
+            torch.minimum(x, clamp_tensor_min).cpu(),
+            torch.minimum(x.cpu(), clamp_tensor_min.cpu()),
+        )
+        with self.assertRaisesRegex(RuntimeError, "aten::maximum.out"):
+            torch.maximum(x, clamp_tensor_min, out=bad_unary_out)
+
+        sorted_seq = torch.tensor([0, 3, 7, 12], dtype=torch.int32, device="mcpu")
+        probes = torch.tensor([-1, 0, 3, 5, 12, 20], dtype=torch.int32, device="mcpu")
+        for right in (False, True):
+            for out_int32 in (False, True):
+                actual = torch.searchsorted(
+                    sorted_seq, probes, out_int32=out_int32, right=right
+                )
+                expected = torch.searchsorted(
+                    sorted_seq.cpu(), probes.cpu(), out_int32=out_int32, right=right
+                )
+                self.assertEqual(actual.dtype, expected.dtype)
+                self.assertEqual(actual.cpu(), expected)
+        scalar_ss = torch.searchsorted(sorted_seq, 7, right=True, out_int32=True)
+        self.assertEqual(
+            scalar_ss.cpu(),
+            torch.searchsorted(sorted_seq.cpu(), 7, right=True, out_int32=True),
+        )
+        with self.assertRaisesRegex(RuntimeError, "aten::searchsorted.Tensor_out"):
+            torch.searchsorted(
+                sorted_seq,
+                probes,
+                out=torch.empty(1, dtype=torch.int64, device="mcpu"),
+            )
+
+        int_arange_default = torch.arange(5, device="mcpu")
+        self.assertEqual(int_arange_default.dtype, torch.int64)
+        self.assertEqual(int_arange_default.cpu(), torch.arange(5))
+        neg_arange = torch.arange(7, 1, -2, device="mcpu")
+        self.assertEqual(neg_arange.cpu(), torch.arange(7, 1, -2))
+
         scalar_pow_out = torch.empty_like(x)
         torch.pow(2.0, x, out=scalar_pow_out)
         self.assertEqual(scalar_pow_out.cpu(), torch.pow(2.0, x.cpu()))
@@ -2376,6 +2436,485 @@ class TestFallbackExtended(TestCase):
 
         y = x - 2.0
         self.assertEqual(y.device.type, "mcpu")
+
+    def test_arange_searchsorted_minmax_clamp_timing_no_fallback(self):
+        x = torch.tensor([[1.0, 6.0], [7.0, 2.0]], device="mcpu")
+        x_t = x.t()
+        bounds = torch.tensor([[2.0, 5.0], [4.0, 8.0]], device="mcpu")
+        bounds_t = bounds.t()
+        seq = torch.tensor([1.0, 3.0, 5.0, 9.0], device="mcpu")
+        probes = torch.tensor([0.0, 3.0, 6.0], device="mcpu")
+
+        arange_out_buf = torch.empty(4, dtype=torch.int64, device="mcpu")
+        arange_start_out_buf = torch.empty(3, dtype=torch.int64, device="mcpu")
+        ss_tensor_out_buf = torch.empty(3, dtype=torch.int64, device="mcpu")
+        ss_scalar_out_buf = torch.empty((), dtype=torch.int32, device="mcpu")
+        max_out_buf = torch.empty_like(x)
+        min_out_buf = torch.empty_like(x)
+        clamp_raw_buf = torch.empty_like(x)
+        clamp_nonraw_buf = torch.empty_like(x_t)
+        clamp_tensor_buf = torch.empty_like(x)
+        clamp_min_raw_buf = torch.empty_like(x)
+        clamp_min_nonraw_buf = torch.empty_like(x_t)
+        clamp_min_tensor_buf = torch.empty_like(x)
+        clamp_max_raw_buf = torch.empty_like(x)
+        clamp_max_nonraw_buf = torch.empty_like(x_t)
+        clamp_max_tensor_buf = torch.empty_like(x)
+
+        def run_ops():
+            a1 = torch.arange(4, device="mcpu")
+            a2 = torch.arange(1, 5, device="mcpu")
+            a3 = torch.arange(0, 6, 2, device="mcpu")
+            torch.arange(4, out=arange_out_buf)
+            torch.arange(1, 7, 2, out=arange_start_out_buf)
+
+            ss_t = torch.searchsorted(seq, probes)
+            torch.searchsorted(seq, probes, out=ss_tensor_out_buf)
+            ss_s = torch.searchsorted(seq, 3.0)
+            torch.searchsorted(
+                seq, 3.0, out_int32=True, out=ss_scalar_out_buf
+            )
+
+            mx = torch.maximum(x, bounds)
+            torch.maximum(x, bounds, out=max_out_buf)
+            mn = torch.minimum(x, bounds)
+            torch.minimum(x, bounds, out=min_out_buf)
+
+            torch.clamp(x, min=2.0, max=5.0, out=clamp_raw_buf)
+            torch.clamp(x_t, min=2.0, max=5.0, out=clamp_nonraw_buf)
+            torch.clamp(x, min=bounds, max=None, out=clamp_tensor_buf)
+            torch.clamp_min(x, 2.0, out=clamp_min_raw_buf)
+            torch.clamp_min(x_t, 2.0, out=clamp_min_nonraw_buf)
+            torch.clamp_min(x, bounds_t, out=clamp_min_tensor_buf)
+            torch.clamp_max(x, 5.0, out=clamp_max_raw_buf)
+            torch.clamp_max(x_t, 5.0, out=clamp_max_nonraw_buf)
+            torch.clamp_max(x, bounds_t, out=clamp_max_tensor_buf)
+            return a1, a2, a3, ss_t, ss_s, mx, mn
+
+        _, event_names = self._timed_event_names(run_ops)
+        expected_events = (
+            "mcpu::aten::arange",
+            "mcpu::aten::arange.start",
+            "mcpu::aten::arange.start_step",
+            "mcpu::aten::arange.out",
+            "mcpu::aten::arange.start_out",
+            "mcpu::aten::searchsorted.Tensor",
+            "mcpu::aten::searchsorted.Tensor_out",
+            "mcpu::aten::searchsorted.Scalar",
+            "mcpu::aten::searchsorted.Scalar_out",
+            "mcpu::aten::maximum",
+            "mcpu::aten::maximum.out",
+            "mcpu::aten::minimum",
+            "mcpu::aten::minimum.out",
+            "mcpu::aten::clamp.out.raw",
+            "mcpu::aten::clamp.out",
+            "mcpu::aten::clamp.Tensor_out",
+            "mcpu::aten::clamp_min.out.raw",
+            "mcpu::aten::clamp_min.out",
+            "mcpu::aten::clamp_min.Tensor_out",
+            "mcpu::aten::clamp_max.out.raw",
+            "mcpu::aten::clamp_max.out",
+            "mcpu::aten::clamp_max.Tensor_out",
+        )
+        for name in expected_events:
+            self.assertIn(name, event_names)
+        self.assertNotIn("mcpu::aten::_copy_from", event_names)
+        self.assertFalse(
+            any(name and "fallback" in name.lower() for name in event_names)
+        )
+
+    def test_arange_edge_cases_and_strided_out(self):
+        for dtype in (torch.float16, torch.bfloat16, torch.float32):
+            for start, end, step in (
+                (0.0, 2.1, 0.3),
+                (0.0, 1.0, 0.0001),
+                (0, 100000, 1),
+                (5.0, 5.0, -1.0),
+                (5.0, -1.0, -1.5),
+            ):
+                actual = torch.arange(
+                    start, end, step, dtype=dtype, device="mcpu"
+                )
+                expected = torch.arange(start, end, step, dtype=dtype)
+                self.assertEqual(actual.shape, expected.shape)
+                self.assertEqual(actual.cpu(), expected)
+
+                n = expected.numel()
+                base = torch.full((n, 2), -99.0, dtype=dtype, device="mcpu")
+                torch.arange(start, end, step, out=base[:, 0])
+                torch.mcpu.synchronize()
+                self.assertEqual(base[:, 0].cpu(), expected)
+                self.assertTrue(
+                    torch.equal(base[:, 1].cpu(), torch.full((n,), -99.0, dtype=dtype))
+                )
+
+        int_empty = torch.arange(3, 3, 1, dtype=torch.int64, device="mcpu")
+        self.assertEqual(int_empty.numel(), 0)
+        int_base = torch.full((4, 2), -7, dtype=torch.int64, device="mcpu")
+        torch.arange(4, out=int_base[:, 0])
+        torch.mcpu.synchronize()
+        self.assertEqual(int_base[:, 0].cpu(), torch.arange(4))
+        self.assertTrue(torch.equal(int_base[:, 1].cpu(), torch.full((4,), -7)))
+
+        with self.assertRaises(ValueError):
+            torch.arange(0, 5, 0.5, dtype=torch.int64, device="mcpu")
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            torch.arange(0, 5, 1, dtype=torch.bool, device="mcpu")
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            torch.arange(0, 5, 1, dtype=torch.complex64, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::arange.out"):
+            torch.arange(4, out=torch.empty(3, dtype=torch.int64, device="mcpu"))
+        with self.assertRaisesRegex(RuntimeError, "aten::arange.start_out"):
+            torch.arange(
+                0, 4, 1, out=torch.empty(3, dtype=torch.int64, device="mcpu")
+            )
+        with self.assertRaises(RuntimeError):
+            expanded_out = torch.empty(1, dtype=torch.float32, device="mcpu").expand(4)
+            torch.arange(4, out=expanded_out)
+
+        # Out-of-whitelist arange inputs must fall back cleanly instead of
+        # throwing in worker threads or losing CPU parity.
+        self.assertEqual(
+            torch.arange(0, 200, 1, dtype=torch.int8, device="mcpu").cpu(),
+            torch.arange(0, 200, 1, dtype=torch.int8),
+        )
+        self.assertEqual(
+            torch.arange(0.5, 4.5, 1.0, dtype=torch.int64, device="mcpu").cpu(),
+            torch.arange(0.5, 4.5, 1.0, dtype=torch.int64),
+        )
+        with self.assertRaises(RuntimeError):
+            torch.arange(0, 5, 1e-45, dtype=torch.float32, device="mcpu")
+        arange_fallback_out = torch.empty(4, dtype=torch.int64, device="mcpu")
+        cpu_arange_out = torch.arange(
+            0.5, 4.5, 1.0, out=torch.empty(4, dtype=torch.int64)
+        )
+        _, arange_fallback_events = self._timed_event_names(
+            lambda: torch.arange(0.5, 4.5, 1.0, out=arange_fallback_out)
+        )
+        self.assertEqual(arange_fallback_out.cpu(), cpu_arange_out)
+        self.assertNotIn("mcpu::aten::arange.start_out", arange_fallback_events)
+
+    def test_clamp_nan_dtypes_cpu_scalars_and_errors(self):
+        # NaN propagation on both contiguous (.raw) and transposed paths.
+        nan_x = torch.tensor([[1.0, float("nan")], [-2.0, 5.0]], device="mcpu")
+        for view_fn in (lambda t: t, lambda t: t.t()):
+            mcpu_view = view_fn(nan_x)
+            cpu_view = view_fn(nan_x.cpu())
+            self.assertEqual(
+                torch.clamp_min(mcpu_view, float("nan")).cpu(),
+                torch.clamp_min(cpu_view, float("nan")),
+            )
+            self.assertEqual(
+                torch.clamp_max(mcpu_view, float("nan")).cpu(),
+                torch.clamp_max(cpu_view, float("nan")),
+            )
+            self.assertEqual(
+                torch.clamp(mcpu_view, min=float("nan"), max=2.0).cpu(),
+                torch.clamp(cpu_view, min=float("nan"), max=2.0),
+            )
+            self.assertEqual(
+                torch.clamp(mcpu_view, min=5.0, max=2.0).cpu(),
+                torch.clamp(cpu_view, min=5.0, max=2.0),
+            )
+
+        # In-place full overlap must still succeed on clamp_min/max.out.
+        inplace = torch.tensor([1.0, 5.0, 9.0], device="mcpu")
+        torch.clamp_min(inplace, 3.0, out=inplace)
+        self.assertEqual(
+            inplace.cpu(), torch.clamp_min(torch.tensor([1.0, 5.0, 9.0]), 3.0)
+        )
+
+        # Float scalar must not truncate silently into integer out.
+        int_x = torch.tensor([0, 1, 2], dtype=torch.int64, device="mcpu")
+        int_out = torch.empty_like(int_x)
+        with self.assertRaises(RuntimeError):
+            torch.clamp_min(int_x, 0.5, out=int_out)
+        with self.assertRaises(RuntimeError):
+            torch.clamp(int_x, min=0.5, max=2.5, out=int_out)
+
+        # Float out promotes properly when given integer tensor + float scalar.
+        float_out = torch.empty(3, dtype=torch.float32, device="mcpu")
+        torch.clamp_min(int_x, 0.5, out=float_out)
+        self.assertEqual(float_out.cpu(), torch.clamp_min(int_x.cpu(), 0.5))
+
+        # Bool is supported on single-bound Tensor_out and rejected on scalar / both-bound.
+        bool_x = torch.tensor([True, False], device="mcpu")
+        bool_bound = torch.tensor([True, True], device="mcpu")
+        self.assertEqual(
+            torch.clamp_min(bool_x, bool_bound).cpu(),
+            torch.clamp_min(bool_x.cpu(), bool_bound.cpu()),
+        )
+        self.assertEqual(
+            torch.clamp_max(bool_x, torch.tensor(False)).cpu(),
+            torch.clamp_max(bool_x.cpu(), torch.tensor(False)),
+        )
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            torch.clamp(bool_x, min=bool_bound, max=bool_bound)
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            torch.clamp_min(bool_x, 1, out=torch.empty_like(bool_x))
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            bool_mat = torch.tensor([[True, False]], device="mcpu").t()
+            torch.clamp_min(
+                bool_mat,
+                1,
+                out=torch.empty((2, 1), dtype=torch.bool, device="mcpu"),
+            )
+
+        # 0D CPU scalar tensor in both `self` position and `min`/`max` position.
+        mcpu_bounds = torch.tensor([[2.0, 8.0], [1.0, 6.0]], device="mcpu")
+        cpu_0d_self = torch.tensor(5.0)
+        cpu_0d_min = torch.tensor(3.0)
+        self.assertEqual(
+            torch.clamp_min(cpu_0d_self, mcpu_bounds).cpu(),
+            torch.clamp_min(cpu_0d_self, mcpu_bounds.cpu()),
+        )
+        self.assertEqual(
+            torch.clamp_max(cpu_0d_self, mcpu_bounds).cpu(),
+            torch.clamp_max(cpu_0d_self, mcpu_bounds.cpu()),
+        )
+        self.assertEqual(
+            torch.clamp_min(mcpu_bounds, cpu_0d_min).cpu(),
+            torch.clamp_min(mcpu_bounds.cpu(), cpu_0d_min),
+        )
+        self.assertEqual(
+            torch.clamp_max(mcpu_bounds, cpu_0d_min).cpu(),
+            torch.clamp_max(mcpu_bounds.cpu(), cpu_0d_min),
+        )
+        with self.assertRaises(RuntimeError):
+            torch.clamp(cpu_0d_self, min=mcpu_bounds)
+        with self.assertRaises(RuntimeError):
+            torch.clamp(cpu_0d_self, min=mcpu_bounds, max=torch.tensor(7.0))
+        _, nan_raw_events = self._timed_event_names(
+            lambda: torch.clamp_min(nan_x, float("nan"), out=torch.empty_like(nan_x))
+        )
+        self.assertNotIn("mcpu::aten::clamp_min.out.raw", nan_raw_events)
+        self.assertIn("mcpu::aten::clamp_min.out", nan_raw_events)
+        _, cpu_clamp_fallback_events = self._timed_event_names(
+            lambda: (
+                torch.clamp_min(cpu_0d_self, mcpu_bounds),
+                torch.clamp_max(cpu_0d_self, mcpu_bounds),
+            )
+        )
+        self.assertNotIn("mcpu::aten::clamp_min.Tensor_out", cpu_clamp_fallback_events)
+        self.assertNotIn("mcpu::aten::clamp_max.Tensor_out", cpu_clamp_fallback_events)
+        bad_out = torch.empty(1, device="mcpu")
+        with self.assertRaisesRegex(RuntimeError, "aten::clamp_min.Tensor_out"):
+            torch.clamp_min(mcpu_bounds, cpu_0d_min, out=bad_out)
+        with self.assertRaisesRegex(RuntimeError, "aten::clamp_max.Tensor_out"):
+            torch.clamp_max(mcpu_bounds, cpu_0d_min, out=bad_out)
+
+        # Host-side error guards (must raise cleanly without worker crash).
+        with self.assertRaises(RuntimeError):
+            torch.clamp(nan_x, min=None, max=None, out=torch.empty_like(nan_x))
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            c = torch.tensor([1 + 2j], dtype=torch.complex64, device="mcpu")
+            torch.clamp_min(c, 0.0, out=torch.empty_like(c))
+        with self.assertRaises(RuntimeError):
+            torch.clamp_min(
+                torch.tensor([1.0, 2.0], device="mcpu"),
+                0.0,
+                out=torch.empty(2, dtype=torch.int64, device="mcpu"),
+            )
+        with self.assertRaises(RuntimeError):
+            torch.clamp_min(
+                torch.tensor([1.0, 2.0], device="mcpu"),
+                torch.tensor([0.0, 0.0], device="mcpu"),
+                out=torch.empty(2, dtype=torch.int64, device="mcpu"),
+            )
+        with self.assertRaises(RuntimeError):
+            i8_t = torch.tensor([[1, 2], [3, 4]], dtype=torch.int8, device="mcpu").t()
+            torch.clamp(i8_t, min=-200, max=200, out=torch.empty((2, 2), dtype=torch.int8, device="mcpu"))
+        buf = torch.tensor([1.0, 2.0, 3.0, 4.0], device="mcpu")
+        _, clamp_overlap_events = self._timed_event_names(
+            lambda: torch.clamp_min(buf[:3], 1.0, out=buf[1:])
+        )
+        self.assertNotIn("mcpu::aten::clamp_min.out.raw", clamp_overlap_events)
+        self.assertNotIn("mcpu::aten::clamp_min.out", clamp_overlap_events)
+        self.assertEqual(buf.cpu(), torch.tensor([1.0, 1.0, 2.0, 3.0]))
+
+    def test_maximum_minimum_edge_cases(self):
+        a = torch.tensor([[1, 5], [7, 2]], dtype=torch.int32, device="mcpu")
+        b = torch.tensor([[2.5, float("nan")], [6.0, 3.5]], dtype=torch.float32, device="mcpu")
+        self.assertEqual(
+            torch.maximum(a.t(), b.t()).cpu(),
+            torch.maximum(a.cpu().t(), b.cpu().t()),
+        )
+        self.assertEqual(
+            torch.minimum(a.t(), b.t()).cpu(),
+            torch.minimum(a.cpu().t(), b.cpu().t()),
+        )
+
+        # 0D CPU scalar on both self and other sides (must fall back cleanly).
+        cpu_0d = torch.tensor(4.0)
+        self.assertEqual(torch.maximum(cpu_0d, b).cpu(), torch.maximum(cpu_0d, b.cpu()))
+        self.assertEqual(torch.minimum(b, cpu_0d).cpu(), torch.minimum(b.cpu(), cpu_0d))
+        _, minmax_fallback_events = self._timed_event_names(
+            lambda: (torch.maximum(cpu_0d, b), torch.minimum(b, cpu_0d))
+        )
+        self.assertNotIn("mcpu::aten::maximum", minmax_fallback_events)
+        self.assertNotIn("mcpu::aten::minimum", minmax_fallback_events)
+
+        with self.assertRaisesRegex(RuntimeError, "aten::minimum.out"):
+            torch.minimum(a, b, out=torch.empty(1, dtype=torch.float32, device="mcpu"))
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            c = torch.tensor([1 + 2j], dtype=torch.complex64, device="mcpu")
+            torch.maximum(c, c)
+        with self.assertRaises(RuntimeError):
+            torch.maximum(
+                b,
+                b,
+                out=torch.empty_like(b, dtype=torch.int64),
+            )
+        buf = torch.tensor([1.0, 2.0, 3.0, 4.0], device="mcpu")
+        _, max_overlap_events = self._timed_event_names(
+            lambda: torch.maximum(buf[:3], buf[:3], out=buf[1:])
+        )
+        self.assertNotIn("mcpu::aten::maximum.out", max_overlap_events)
+        self.assertEqual(buf.cpu(), torch.tensor([1.0, 1.0, 2.0, 3.0]))
+
+    def test_searchsorted_edge_cases(self):
+        # 2D batched sequence with non-contiguous stride and sorter.
+        raw_seq = torch.tensor(
+            [[30.0, 99.0, 10.0, 99.0, 20.0], [60.0, 99.0, 40.0, 99.0, 50.0]],
+            device="mcpu",
+        )
+        seq_2d = raw_seq[:, ::2]
+        sorter_2d = torch.tensor([[1, 2, 0], [1, 2, 0]], dtype=torch.int64, device="mcpu")
+        probes_2d = torch.tensor([[5.0, 10.0, 25.0], [45.0, 50.0, 99.0]], device="mcpu")
+
+        for side in ("left", "right"):
+            actual = torch.searchsorted(seq_2d, probes_2d, side=side, sorter=sorter_2d)
+            expected = torch.searchsorted(
+                seq_2d.cpu(), probes_2d.cpu(), side=side, sorter=sorter_2d.cpu()
+            )
+            self.assertEqual(actual.cpu(), expected)
+        _, sorter_events = self._timed_event_names(
+            lambda: torch.searchsorted(
+                seq_2d, probes_2d, side="right", sorter=sorter_2d
+            )
+        )
+        self.assertIn("mcpu::aten::searchsorted.Tensor", sorter_events)
+        self.assertNotIn("mcpu::aten::_copy_from", sorter_events)
+        self.assertFalse(
+            any(name and "fallback" in name.lower() for name in sorter_events)
+        )
+
+        # Non-MCPU sorter falls back cleanly without failing.
+        res_cpu_sorter, cpu_sorter_events = self._timed_event_names(
+            lambda: torch.searchsorted(
+                seq_2d, probes_2d, side="right", sorter=sorter_2d.cpu()
+            )
+        )
+        self.assertEqual(res_cpu_sorter.cpu(), expected)
+        self.assertNotIn("mcpu::aten::searchsorted.Tensor", cpu_sorter_events)
+
+        # 0D CPU scalar tensor input via Tensor overload + Scalar_out error preservation.
+        seq_1d = torch.tensor([1.0, 3.0, 5.0], device="mcpu")
+        cpu_probe = torch.tensor(3.0)
+        self.assertEqual(
+            torch.searchsorted(seq_1d, cpu_probe, side="right").cpu(),
+            torch.searchsorted(seq_1d.cpu(), cpu_probe, side="right"),
+        )
+        _, cpu_probe_events = self._timed_event_names(
+            lambda: torch.searchsorted(seq_1d, cpu_probe, side="right")
+        )
+        self.assertNotIn("mcpu::aten::searchsorted.Tensor", cpu_probe_events)
+        with self.assertRaisesRegex(RuntimeError, "aten::searchsorted.Tensor_out"):
+            torch.searchsorted(
+                seq_1d, cpu_probe, out=torch.empty(1, dtype=torch.int64, device="mcpu")
+            )
+        with self.assertRaisesRegex(RuntimeError, "aten::searchsorted.Scalar_out"):
+            torch.searchsorted(
+                seq_1d, 3.0, out=torch.empty(1, dtype=torch.int64, device="mcpu")
+            )
+
+        # Host-side error checks (no SIGABRT).
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            b_seq = torch.tensor([False, True], device="mcpu")
+            torch.searchsorted(b_seq, b_seq)
+        with self.assertRaises((RuntimeError, NotImplementedError)):
+            c_seq = torch.tensor([1 + 0j, 2 + 0j], dtype=torch.complex64, device="mcpu")
+            torch.searchsorted(c_seq, c_seq)
+        with self.assertRaises(RuntimeError):
+            torch.searchsorted(seq_1d, torch.tensor([2.0], device="mcpu"), right=True, side="left")
+        with self.assertRaises(RuntimeError):
+            torch.searchsorted(seq_1d, torch.tensor([2.0], device="mcpu"), side="middle")
+        with self.assertRaises(RuntimeError):
+            expanded_out = torch.empty(1, dtype=torch.int64, device="mcpu").expand(3)
+            torch.searchsorted(seq_1d, torch.tensor([1.0, 2.0, 3.0], device="mcpu"), out=expanded_out)
+
+    @skipIfTorchDynamo()
+    def test_whitelisted_ops_stream_ordering(self):
+        s1 = torch.Stream(device="mcpu:0")
+        s2 = torch.Stream(device="mcpu:0")
+
+        torch.mcpu.reset_kernel_timing()
+        torch.mcpu.set_kernel_timing_enabled(True)
+        try:
+            with s1:
+                seq_f = torch.arange(
+                    0.0, 6.0, 1.0, dtype=torch.float32, device="mcpu"
+                )
+                sorter = torch.tensor(
+                    [5, 4, 3, 2, 1, 0], dtype=torch.int64, device="mcpu"
+                )
+            s2.wait_stream(s1)
+            with s2:
+                clamp_raw = torch.clamp(seq_f, min=1.0, max=4.0)
+                clamp_nan = torch.clamp_min(seq_f, float("nan"))
+                other = torch.full((6,), 2.5, dtype=torch.float32, device="mcpu")
+                mx = torch.maximum(seq_f, other)
+                mn = torch.minimum(seq_f, other)
+                ss = torch.searchsorted(
+                    seq_f.flip(0), other, side="right", sorter=sorter
+                )
+            s2.synchronize()
+            timing = torch.mcpu.get_kernel_timing()
+        finally:
+            torch.mcpu.set_kernel_timing_enabled(False)
+            torch.mcpu.reset_kernel_timing()
+
+        event_names = [
+            event.get("name")
+            for thread in timing
+            for event in thread.get("events", [])
+        ]
+        cpu_seq = torch.arange(0.0, 6.0, 1.0, dtype=torch.float32)
+        cpu_other = torch.full((6,), 2.5, dtype=torch.float32)
+        self.assertEqual(clamp_raw.cpu(), torch.clamp(cpu_seq, min=1.0, max=4.0))
+        self.assertEqual(clamp_nan.cpu(), torch.clamp_min(cpu_seq, float("nan")))
+        self.assertEqual(mx.cpu(), torch.maximum(cpu_seq, cpu_other))
+        self.assertEqual(mn.cpu(), torch.minimum(cpu_seq, cpu_other))
+        self.assertEqual(
+            ss.cpu(),
+            torch.searchsorted(
+                cpu_seq.flip(0),
+                cpu_other,
+                side="right",
+                sorter=torch.tensor([5, 4, 3, 2, 1, 0], dtype=torch.int64),
+            ),
+        )
+        self.assertIn("mcpu::aten::clamp.out.raw", event_names)
+        self.assertIn("mcpu::aten::clamp_min.out", event_names)
+        self.assertIn("mcpu::aten::maximum", event_names)
+        self.assertIn("mcpu::aten::minimum", event_names)
+        self.assertIn("mcpu::aten::searchsorted.Tensor", event_names)
+        self.assertNotIn("mcpu::aten::_copy_from", event_names)
+        self.assertFalse(
+            any(name and "fallback" in name.lower() for name in event_names)
+        )
+
+        # Async D2H scalar write followed immediately by mixed CPU scalar ops must
+        # preserve stream order via fallback synchronization.
+        mcpu_x = torch.tensor([1.0, 6.0], device="mcpu")
+        cpu_0d = torch.full((), -999.0, dtype=torch.float32)
+        src_scalar = torch.tensor(4.0, device="mcpu")
+        cpu_0d.copy_(src_scalar, non_blocking=True)
+        max_res = torch.maximum(mcpu_x, cpu_0d)
+        clamp_res = torch.clamp_min(mcpu_x, cpu_0d)
+        expected = torch.tensor([4.0, 6.0], dtype=torch.float32)
+        self.assertEqual(max_res.cpu(), expected)
+        self.assertEqual(clamp_res.cpu(), expected)
 
 
 class TestSDPAExtended(NNTestCase):
