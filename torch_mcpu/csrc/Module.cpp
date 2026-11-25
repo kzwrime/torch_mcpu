@@ -1,6 +1,7 @@
 #include <ATen/ATen.h>
 #include <ATen/Context.h>
 
+#include <torch/csrc/Event.h>
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/autograd/python_variable.h>
 #include <torch/csrc/utils.h>
@@ -11,10 +12,10 @@
 
 #include <c10/core/CachingDeviceAllocator.h>
 #include <runtime/McpuKernelTiming.h>
-#include <runtime/OpenRegFunctions.h>
 #include <runtime/McpuOpTiming.h>
-#include <runtime/OpenRegStream.h>
+#include <runtime/OpenRegFunctions.h>
 #include <runtime/OpenRegSharedAllocator.h>
+#include <runtime/OpenRegStream.h>
 #include <limits>
 
 // Forward-declare allocator management functions from libtorch_mcpu.so.
@@ -31,7 +32,7 @@ void resetAccumulatedStats(c10::DeviceIndex device);
 namespace c10d {
 PyObject* _create_process_group_mcpu(PyObject* self, PyObject* args);
 void registerMcpuDistributedBindings(PyObject* module);
-}
+} // namespace c10d
 
 namespace py = pybind11;
 
@@ -195,6 +196,22 @@ static PyObject* _resetAccumulatedMemoryStats(PyObject* self, PyObject* arg) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* _eventElapsedTime(PyObject* self, PyObject* args) {
+  HANDLE_TH_ERRORS
+  PyObject* start_obj = nullptr;
+  PyObject* end_obj = nullptr;
+  if (!PyArg_ParseTuple(args, "OO", &start_obj, &end_obj)) {
+    return nullptr;
+  }
+  TORCH_CHECK(
+      THPEvent_Check(start_obj) && THPEvent_Check(end_obj),
+      "expected both arguments to be torch.Event objects");
+  const auto& start_evt = reinterpret_cast<const THPEvent*>(start_obj)->event;
+  const auto& end_evt = reinterpret_cast<const THPEvent*>(end_obj)->event;
+  return PyFloat_FromDouble(start_evt.elapsedTime(end_evt));
+  END_HANDLE_TH_ERRORS
+}
+
 static PyObject* _getStreamPriorityRange(PyObject* self, PyObject* noargs) {
   HANDLE_TH_ERRORS
   int least = 0, greatest = 0;
@@ -334,9 +351,9 @@ static PyObject* _getKernelTiming(PyObject* self, PyObject* noargs) {
     for (Py_ssize_t j = 0; j < static_cast<Py_ssize_t>(snapshot.events.size());
          ++j) {
       const auto& event = snapshot.events[static_cast<std::size_t>(j)];
-      const auto elapsed_time =
-          event.end_time > event.begin_time ? event.end_time - event.begin_time
-                                            : 0;
+      const auto elapsed_time = event.end_time > event.begin_time
+          ? event.end_time - event.begin_time
+          : 0;
       PyObject* py_event = Py_BuildValue(
           "{s:s,s:K,s:K,s:K,s:K}",
           "name",
@@ -351,8 +368,8 @@ static PyObject* _getKernelTiming(PyObject* self, PyObject* noargs) {
           static_cast<unsigned long long>(elapsed_time));
       PyList_SET_ITEM(py_events, j, py_event);
     }
-    PyObject* py_thread = Py_BuildValue(
-        "{s:s,s:O}", "role", snapshot.role, "events", py_events);
+    PyObject* py_thread =
+        Py_BuildValue("{s:s,s:O}", "role", snapshot.role, "events", py_events);
     Py_DECREF(py_events);
     PyList_SET_ITEM(py_threads, i, py_thread);
   }
@@ -381,7 +398,11 @@ static PyMethodDef methods[] = {
      METH_NOARGS,
      nullptr},
     {"_get_default_stream", _getDefaultStream, METH_O, nullptr},
-    {"_get_stream_worker_policy", _getStreamWorkerPolicy, METH_VARARGS, nullptr},
+    {"_event_elapsed_time", _eventElapsedTime, METH_VARARGS, nullptr},
+    {"_get_stream_worker_policy",
+     _getStreamWorkerPolicy,
+     METH_VARARGS,
+     nullptr},
     {"_set_op_timing_enabled", _setOpTimingEnabled, METH_O, nullptr},
     {"_reset_op_timing", _resetOpTiming, METH_NOARGS, nullptr},
     {"_get_op_timing", _getOpTiming, METH_NOARGS, nullptr},

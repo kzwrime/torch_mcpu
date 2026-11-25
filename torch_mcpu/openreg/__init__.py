@@ -143,7 +143,8 @@ class Event(_TORCH_EVENT_BASE):
 
     def elapsed_time(self, end_event) -> float:
         _maybe_delay_sync(self)
-        return super().elapsed_time(end_event)
+        _maybe_delay_sync(end_event)
+        return torch_mcpu._C._event_elapsed_time(self, end_event)
 
 class StreamContext:
     r"""Context-manager that selects a given stream.

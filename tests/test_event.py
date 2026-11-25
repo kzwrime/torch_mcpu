@@ -143,9 +143,12 @@ class TestEvent(TestCase):
     @skipIfTorchDynamo()
     def test_event_elapsed_time(self):
         stream = torch.Stream(device="mcpu:0")
+        marker = torch.zeros(1, dtype=torch.int64, device="mcpu")
 
         event1 = torch.Event(device="mcpu:0", enable_timing=True)
         event1.record(stream)
+        with stream:
+            torch.ops.mcpu.stream_sleep_fill_(marker, 1, 100)
         event2 = torch.Event(device="mcpu:0", enable_timing=True)
         event2.record(stream)
 
@@ -155,6 +158,15 @@ class TestEvent(TestCase):
 
         ms = event1.elapsed_time(event2)
         self.assertTrue(ms > 0)
+
+        # Verify default-stream torch.Event / torch.mcpu.Event subclass interop
+        # (used by vLLM EplbState.rearrange timing).
+        start_evt = torch.Event(enable_timing=True)
+        end_evt = torch.mcpu.Event(enable_timing=True)
+        start_evt.record()
+        end_evt.record()
+        end_evt.synchronize()
+        self.assertGreaterEqual(start_evt.elapsed_time(end_evt), 0.0)
 
     @skipIfTorchDynamo()
     def test_event_wait_stream(self):
